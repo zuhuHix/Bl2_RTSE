@@ -47,8 +47,8 @@ rows: list[tuple[str, str, str, str]] = []  # (module, what, verdict, detail)
 def check(module: str, owner: str, name: str, kind: str = "any") -> bool:
     """Is `name` (a field, or a function when it ends in "()") a real member of the owner's class?"""
     cls = CLASS_OF.get(owner)
-    function = name.endswith("()") or kind == "function"
-    bare = name[:-2] if name.endswith("()") else name
+    function = "(" in name or kind == "function"  # "Fn()" or "Fn(Param, Other=True)"
+    bare = name.partition("(")[0]
     if cls is None:
         rows.append((module, f"{owner}.{name}", "SKIP", "owner is not a game class"))
         return False
@@ -74,18 +74,18 @@ def struct_check(module: str, struct: str, names: tuple[str, ...]) -> None:
 for key, candidates in character.FIELDS.items():
     for owner, attribute in candidates:
         check("character", owner, attribute)
-for function in ("GetCurrencyOnHand", "AddCurrencyOnHand"):
-    check("character", "pc", function + "()")   # the code calls these on the controller
-    check("character", "pri", function + "()")  # where they should be
+for function in ("GetCurrencyOnHand", "AddCurrencyOnHand", "SetCurrencyOnHand"):
+    check("character", "pri", function + "()")
+check("character", "pc", "GetExpPoints()")
+check("character", "pc", "ResourcePoolManager")  # where the experience pool lives
 
 # ---- ammo ----
-check("ammo", "pawn", "ResourcePoolManager")
 check("ammo", "pc", "ResourcePoolManager")
 for field in ("ResourcePools",):
     rows.append(("ammo", "ResourcePoolManager.ResourcePools", "REAL" if ix.field("ResourcePoolManager", field) else "MISSING", str(ix.field("ResourcePoolManager", field))))
 for name in ("GetCurrentValue()", "GetMaxValue()", "SetCurrentValue()"):
     check("ammo", "pool", name)
-for name in ("Data", "CurrentValue", "MaxValue", "Definition"):
+for name in ("CurrentValue", "MaxValue", "Definition"):
     check("ammo", "pool", name)
 
 # ---- sdu ----
@@ -93,12 +93,9 @@ for kind, spec in sdu.STORAGE.items():
     for what, candidates in spec.items():
         for owner, name in candidates:
             check(f"sdu.{kind}.{what}", owner, name)
-for what, candidates in (("ammo_level", sdu.AMMO_LEVEL), ("ammo_capacity_read", sdu.AMMO_CAPACITY_READ), ("ammo_capacity_write", sdu.AMMO_CAPACITY_WRITE), ("refresh", sdu.REFRESH_CALLS)):
+for what, candidates in (("ammo_level", sdu.AMMO_LEVEL), ("ammo_level_write", sdu.AMMO_LEVEL_WRITE), ("ammo_capacity_read", sdu.AMMO_CAPACITY_READ), ("ammo_capacity_write", sdu.AMMO_CAPACITY_WRITE), ("refresh", sdu.REFRESH_CALLS)):
     for owner, name in candidates:
-        if owner == "data":
-            rows.append((f"sdu.{what}", f"data.{name}", "MISSING", "ResourcePool has no Data field"))
-        else:
-            check(f"sdu.{what}", owner, name)
+        check(f"sdu.{what}", owner, name)
 
 # ---- world ----
 for name in (world.PLAYTHROUGH_READERS, world.PLAYTHROUGH_SETTERS):

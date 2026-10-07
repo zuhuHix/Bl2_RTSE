@@ -28,14 +28,8 @@ DEBUG_SKILLS_FILE = Path(__file__).parent / "debug_skills.json"
 TIER_UNLOCK_POINTS = 5  # a tier unlocks once the tiers below it hold 5 points each (as in the game; used only to show "locked")
 MAX_GRADE_FALLBACK = 5  # used only when a skill's own maximum can't be read
 
-# Where the tree might live: (owner, attribute), tried in order. The first is real; the rest are fallbacks.
-TREE_SOURCES: tuple[tuple[str, str], ...] = (
-    ("pc", "PlayerSkillTree"),
-    ("pc", "SkillTree"),
-    ("pc", "PlayerSkills"),
-    ("pawn", "SkillTree"),
-    ("pri", "SkillTree"),
-)
+# Where the tree lives: (owner, attribute), tried in order. Real: WillowPlayerController.PlayerSkillTree.
+TREE_SOURCES: tuple[tuple[str, str], ...] = (("pc", "PlayerSkillTree"),)
 # The list of skills inside the tree (real: Skills, an array of PlayerSkillTreeSkillData). The tree itself is also tried.
 LIST_FIELDS = ("Skills", "SkillList", "SkillItems", "Items")
 # A list entry is the skill's definition or a record that points at one (real: Definition) and holds the points (real: Grade).

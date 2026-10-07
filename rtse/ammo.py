@@ -1,7 +1,10 @@
 """Ammo pools: how much of each ammo type the player is carrying.
 
-The player's pawn keeps its ammo in resource pools. Their exact field names have not been confirmed
-in a running game, so reading is defensive and the dump saves everything a pool exposes.
+The player controller keeps its ammo in resource pools: Controller.ResourcePoolManager.ResourcePools holds
+ResourcePool objects (AmmoResourcePool for ammo) with GetCurrentValue/SetCurrentValue/GetMaxValue, and each pool's
+Definition names its ammo (D_Resourcepools.AmmoPools.Ammo_Repeater_Pistol_Pool, ...). Those names were read from the
+game's own class definitions and data; none of it has run in a live game, so reading is still defensive and the dump
+saves everything a pool exposes.
 """
 
 from __future__ import annotations
@@ -38,10 +41,9 @@ class AmmoError(Exception):
 
 def _pools() -> list[Any]:
     pc = get_pc(possibly_loading=True)
-    pawn = getattr(pc, "Pawn", None) if pc is not None else None
-    if pawn is None:
+    if pc is None:
         raise AmmoError(409, "not in a save")
-    manager = getattr(pawn, "ResourcePoolManager", None)
+    manager = getattr(pc, "ResourcePoolManager", None)  # real: declared on Controller, not on the pawn
     pools = getattr(manager, "ResourcePools", None) if manager is not None else None
     if pools is None:
         raise AmmoError(501, "this game build doesn't expose the player's resource pools - run the ammo dump")
@@ -52,9 +54,9 @@ def _names(pool: Any) -> str:
     """Everything name-like about a pool, lower-cased, so its ammo type can be recognised."""
     found: list[str] = []
     targets = [pool]
-    data = getattr(pool, "Data", None)
-    if data is not None:
-        targets.append(data)
+    definition = getattr(pool, "Definition", None)  # real: the ResourcePoolDefinition, whose path names the ammo type
+    if definition is not None:
+        targets.append(definition)
     for target in targets:
         if isinstance(target, unreal.UObject):
             found.append(target._path_name())  # noqa: SLF001
@@ -79,14 +81,11 @@ def _number(pool: Any, getter: str, *fields: str) -> float | None:
         return float(getattr(pool, getter)())
     except Exception:  # noqa: BLE001, S110
         pass
-    for owner in (pool, getattr(pool, "Data", None)):
-        if owner is None:
+    for field in fields:
+        try:
+            return float(getattr(pool, field))
+        except Exception:  # noqa: BLE001, S112
             continue
-        for field in fields:
-            try:
-                return float(getattr(owner, field))
-            except Exception:  # noqa: BLE001, S112
-                continue
     return None
 
 
@@ -146,11 +145,11 @@ def set_value(params: dict[str, Any]) -> dict[str, Any]:
         pool.SetCurrentValue(float(value))
         via = "SetCurrentValue"
     except Exception:  # noqa: BLE001
-        data = getattr(pool, "Data", None)
-        if data is None:
+        try:
+            pool.CurrentValue = float(value)  # real field (Float); the call above is the preferred route
+            via = "CurrentValue"
+        except Exception:  # noqa: BLE001
             raise AmmoError(501, "this game build can't write ammo - run the ammo dump") from None
-        data.CurrentValue = float(value)
-        via = "Data.CurrentValue"
 
     after = _describe(index, pool)
     applied = {"label": before["label"], "requested": value, "via": via, "before": before["value"], "after": after and after["value"]}
@@ -163,7 +162,7 @@ def debug_dump() -> dict[str, Any]:
     out: dict[str, Any] = {"pools": []}
     for index, pool in enumerate(_pools()):
         entry: dict[str, Any] = {"index": index, "type": type(pool).__name__, "names": _names(pool)[:400]}
-        for label, owner in (("pool", pool), ("data", getattr(pool, "Data", None))):
+        for label, owner in (("pool", pool), ("definition", getattr(pool, "Definition", None))):
             if owner is None:
                 continue
             try:

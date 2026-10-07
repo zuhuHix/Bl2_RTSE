@@ -1,13 +1,22 @@
 """Save Deposit Upgrades (SDUs): backpack slots, bank slots and per-ammo-type capacity.
 
-None of the field or function names below have been confirmed in a running game. Every value lists the
-places it might live (candidates), is read defensively, and reports which candidate worked (`sources`);
-a value nobody could read is None ("unavailable"), never an exception. Every write is read back and
-returns what the game now says. Run the SDU dump from the web UI to find the real names.
+The names below were checked against the game's own class definitions and data (they exist, with these types
+and parameters); none of it has run in a live game. What the game says:
+  - ammo: each ResourcePool has GetUpgradeLevel() / SetUpgradeLevel(NewUpgradeLevel) and GetMaxValue(); its
+    definition gives BaseMaxValue and TotalUpgradeCount (6), and the capacity added per upgrade
+    (GD_BlackMarket.Misc.Att_*AmmoPerUpgrade).
+  - backpack: WillowInventoryManager.InventorySlotMax_Misc (default 12) and SetInventoryMaxSize(NewSize, ...);
+    Att_BackPackSlotsPerUpgrade is 3. There is no stored backpack/bank SDU level, only the capacity.
+  - bank: WillowInventoryManager.ClientSetBankSlots(NewSlotCount); Att_BankStartingSlots is 6 and
+    Att_BankSlotsPerUpgrade is 2. Which controller call reads the bank size is still a guess.
+Every value lists the places it might live (candidates), is read defensively, and reports which candidate
+worked (`sources`); a value nobody could read is None ("unavailable"), never an exception. Every write is read
+back and returns what the game now says. Run the SDU dump from the web UI to see what the live objects hold.
 
 Candidate syntax: (owner, name). A name ending in "()" is a function: it is called with no arguments to
-read, or with the new value to write. Owners: pc, pri, pawn, invmgr (pawn.InvManager); for ammo, pool
-(a resource pool) and data (pool.Data).
+read, or with the new value to write. A name like "SetX(Param, Other=True)" is write-only: the value goes in
+Param and the others are fixed keyword arguments. Owners: pc, pri, pawn, invmgr (pawn.InvManager); for ammo,
+pool (a resource pool).
 """
 
 from __future__ import annotations
@@ -25,25 +34,27 @@ DEBUG_SDU_FILE = Path(__file__).parent / "debug_sdu.json"
 MAX_AMMO_CAPACITY = 100_000
 MAX_SLOTS = 255  # a raw slot-count write is refused above this
 
-# Capacity tables, level -> capacity. FROM MEMORY of the base game (Gibbed's editor / the wiki), not
-# read from the game, so they are only used to label the page, clamp levels and as a fallback write.
-BACKPACK_TABLE = (12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 39)  # levels 0-13
-BANK_TABLE = (12, 14, 16, 18, 20, 22, 24)  # levels 0-6
-
-
+# Capacity tables, level -> capacity: base + per-upgrade x level, with the base and per-upgrade numbers READ FROM THE
+# GAME'S DATA (pool definitions' BaseMaxValue, GD_BlackMarket.Misc.Att_*PerUpgrade, Default__WillowInventoryManager).
+# Used to label the page, clamp levels and as a fallback write. Two things are NOT in the data: that capacity is
+# exactly base + step x level, and how many backpack / bank upgrades exist (9 each is assumed, from the known
+# maximums of 39 backpack and 24 bank slots). Ammo has TotalUpgradeCount = 6 for every type.
 def _linear(base: int, step: int, levels: int) -> tuple[int, ...]:
     return tuple(base + step * level for level in range(levels + 1))
 
 
+BACKPACK_TABLE = _linear(12, 3, 9)  # slots 12-39, levels 0-9
+BANK_TABLE = _linear(6, 2, 9)  # slots 6-24, levels 0-9
+
 # ammo key (ammo.KINDS) -> (label, table)
 AMMO_TABLES: dict[str, tuple[str, tuple[int, ...]]] = {
-    "pistol": ("Pistol", _linear(200, 100, 7)),
-    "smg": ("SMG", _linear(400, 200, 7)),
-    "rifle": ("Assault Rifle", _linear(400, 100, 7)),
-    "shotgun": ("Shotgun", _linear(50, 25, 7)),
-    "sniper": ("Sniper Rifle", _linear(20, 10, 7)),
-    "launcher": ("Launcher", _linear(8, 4, 7)),
-    "grenade": ("Grenades", _linear(3, 1, 3)),
+    "pistol": ("Pistol", _linear(200, 100, 6)),
+    "smg": ("SMG", _linear(360, 180, 6)),
+    "rifle": ("Assault Rifle", _linear(280, 140, 6)),
+    "shotgun": ("Shotgun", _linear(80, 20, 6)),
+    "sniper": ("Sniper Rifle", _linear(48, 12, 6)),
+    "launcher": ("Launcher", _linear(12, 3, 6)),
+    "grenade": ("Grenades", _linear(3, 1, 6)),
 }
 
 # kind -> {group, label, table, unit}; ammo kinds are "ammo_<key>"
@@ -55,39 +66,29 @@ for _key in ammo.ORDER:
     _label, _table = AMMO_TABLES[_key]
     KINDS[f"ammo_{_key}"] = {"group": "ammo", "label": _label, "unit": "rounds", "table": _table, "ammo_key": _key}
 
-# Where the stored SDU level might live, and where the resulting capacity might be read / written.
+# Where the stored SDU level might live, and where the resulting capacity might be read / written. The game stores
+# no backpack/bank level (only the capacity), so "level" is empty and the level is worked out from the capacity table.
 STORAGE: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {
     "backpack": {
-        "level": (
-            ("pc", "BackpackSDULevel"), ("pc", "BackpackUpgradeLevel"), ("pc", "BackpackSDUCount"), ("pc", "SDUCount"),
-            ("pri", "BackpackSDULevel"), ("pawn", "BackpackSDULevel"),
-        ),
-        "capacity_read": (
-            ("invmgr", "InventorySlotMax"), ("pc", "GetBackpackSize()"), ("pc", "BackpackSize"),
-            ("invmgr", "GetBackpackSize()"), ("invmgr", "BackpackSize"),
-        ),
-        "capacity_write": (("invmgr", "InventorySlotMax"), ("pc", "BackpackSize"), ("invmgr", "BackpackSize")),
+        "level": (),
+        "capacity_read": (("invmgr", "InventorySlotMax_Misc"), ("invmgr", "GetUnreadiedInventoryMaxSize()")),  # real
+        "capacity_write": (("invmgr", "SetInventoryMaxSize(NewSize, bOverrideDefaultMin=True)"), ("invmgr", "InventorySlotMax_Misc")),  # real
     },
     "bank": {
-        "level": (
-            ("pc", "BankSDULevel"), ("pc", "BankUpgradeLevel"), ("pc", "BankSDUCount"),
-            ("pri", "BankSDULevel"), ("pawn", "BankSDULevel"),
-        ),
-        "capacity_read": (
-            ("pc", "GetBankSize()"), ("pc", "BankSize"), ("pc", "ChestSlots"), ("pc", "BankSlots"),
-            ("pc", "GetChestSize()"),
-        ),
-        "capacity_write": (("pc", "BankSize"), ("pc", "ChestSlots"), ("pc", "BankSlots")),
+        "level": (),
+        # real names; whether these return the TOTAL slots (what the table assumes) is a guess: the dump shows both
+        "capacity_read": (("pc", "GetBankUpgradeSlots()"), ("pc", "MaxBankSlotsLoadedFromSavegame")),
+        "capacity_write": (("invmgr", "ClientSetBankSlots(NewSlotCount)"),),  # real
     },
 }
-AMMO_LEVEL = (
-    ("pool", "Level"), ("data", "Level"), ("pool", "UpgradeLevel"), ("data", "UpgradeLevel"),
-    ("data", "SDULevel"), ("data", "UpgradeCount"), ("pool", "SDULevel"),
-)
-AMMO_CAPACITY_READ = (("pool", "GetMaxValue()"), ("data", "MaxValue"), ("pool", "MaxValue"))
-AMMO_CAPACITY_WRITE = (("data", "MaxValue"), ("pool", "SetMaxValue()"), ("pool", "MaxValue"), ("data", "BaseMaxValue"))
+AMMO_LEVEL = (("pool", "GetUpgradeLevel()"),)  # real
+AMMO_LEVEL_WRITE = (("pool", "SetUpgradeLevel(NewUpgradeLevel)"),)  # real
+AMMO_CAPACITY_READ = (("pool", "GetMaxValue()"), ("pool", "MaxValue"))  # real (MaxValue is an attribute)
+# No direct setter exists: the maximum is an attribute built from the base value and the upgrade level. These are
+# real fields, but writing them is a guess that only helps for a capacity that isn't on the level table.
+AMMO_CAPACITY_WRITE = (("pool", "MaxValueBaseValue"), ("pool", "MaxValue"))
 # Optional nudges after a write so the game recomputes things; failures are ignored.
-REFRESH_CALLS = (("pool", "UpdateMaxValue()"), ("pool", "OnMaxValueChanged()"))
+REFRESH_CALLS = (("pool", "ApplyUpgrades()"),)  # real
 
 DUMP_WORDS = ("backpack", "bank", "slot", "sdu", "upgrade", "chest", "capacity", "storage", "inventory", "ammo", "max")
 
@@ -144,7 +145,15 @@ def _write(owners: dict[str, Any], candidates: tuple[tuple[str, str], ...], valu
         if target is None:
             continue
         try:
-            if name.endswith("()"):
+            if "(" in name and not name.endswith("()"):
+                function, _, rest = name[:-1].partition("(")
+                params = [part.strip() for part in rest.split(",")]
+                kwargs = {params[0]: value}
+                for fixed in params[1:]:
+                    key, _, literal = fixed.partition("=")
+                    kwargs[key.strip()] = {"True": True, "False": False}.get(literal.strip(), literal.strip())
+                getattr(target, function)(**kwargs)
+            elif name.endswith("()"):
                 getattr(target, name[:-2])(value)
             else:
                 current = getattr(target, name)  # does it exist?
@@ -183,7 +192,7 @@ def _nearest_level(kind: str, capacity: int | None) -> int | None:
 
 
 def _pool_owners(pool: Any) -> dict[str, Any]:
-    return {"pool": pool, "data": getattr(pool, "Data", None)}
+    return {"pool": pool}
 
 
 def _ammo_pools() -> tuple[dict[str, tuple[int, Any]], str | None]:
@@ -302,7 +311,7 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
     via: dict[str, Any] = {"level": None, "capacity": None, "refresh": []}
 
     if kind in STORAGE:
-        level_fields, cap_write = STORAGE[kind]["level"], STORAGE[kind]["capacity_write"]
+        cap_write = STORAGE[kind]["capacity_write"]
         targets = owners
     else:
         found, problem = _ammo_pools()
@@ -310,11 +319,10 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
         if key not in found:
             raise SduError(501, problem or "that ammo pool wasn't found - run the SDU dump")
         targets = _pool_owners(found[key][1])
-        level_fields, cap_write = AMMO_LEVEL, AMMO_CAPACITY_WRITE
+        cap_write = AMMO_CAPACITY_WRITE
 
-    # only write a level field that exists; readability is the existence check
-    existing = tuple(c for c in level_fields if _read(targets, (c,))[0] is not None)
-    via["level"] = _write(targets, existing, level) if existing else None
+    # ammo pools have a real level setter; backpack and bank have no stored level (their capacity is written below)
+    via["level"] = _write(targets, AMMO_LEVEL_WRITE, level) if kind not in STORAGE else None
     via["refresh"] = _refresh(targets)
 
     after = _kind_state(kind)
@@ -400,6 +408,8 @@ def _probe(owners: dict[str, Any], candidates: tuple[tuple[str, str], ...]) -> l
         row: dict[str, Any] = {"candidate": f"{owner}.{name}"}
         if target is None:
             row["result"] = "<no such owner>"
+        elif "(" in name and not name.endswith("()"):
+            row["result"] = "<write-only: not probed>"
         else:
             try:
                 row["result"] = getattr(target, name[:-2])() if name.endswith("()") else getattr(target, name)
@@ -422,7 +432,7 @@ def debug_dump() -> dict[str, Any]:
         out["ammo"][key] = {
             "index": index,
             "pool": _scalars(pool),
-            "data": _scalars(pool_owners["data"]) if pool_owners["data"] is not None else None,
+            "definition": _scalars(pool.Definition) if getattr(pool, "Definition", None) is not None else None,
             "level_candidates": _probe(pool_owners, AMMO_LEVEL),
             "capacity_candidates": _probe(pool_owners, AMMO_CAPACITY_READ + AMMO_CAPACITY_WRITE),
         }
