@@ -74,3 +74,6 @@
 .sk-meta { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; color: var(--muted); }
 .sk-meta em { font-style: normal; color: var(--ink); background: var(--blaze); padding: 0 7px; border: 2px solid #000; }
 .sk-detail .level { margin: 0; }
+
+.sk-over { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; white-space: nowrap; }
+.sk-over input { accent-color: var(--yellow, #ffd21f); width: 16px; height: 16px; }

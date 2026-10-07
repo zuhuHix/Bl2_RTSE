@@ -27,6 +27,7 @@ DEBUG_SKILLS_FILE = Path(__file__).parent / "debug_skills.json"
 
 TIER_UNLOCK_POINTS = 5  # a tier unlocks once the tiers below it hold 5 points each (as in the game; used only to show "locked")
 MAX_GRADE_FALLBACK = 5  # used only when a skill's own maximum can't be read
+OVER_MAX_LIMIT = 255  # the most a request may ask for when it opts out of the skill's own maximum (the same cap the notify call uses)
 
 # Where the tree lives: (owner, attribute), tried in order. Real: WillowPlayerController.PlayerSkillTree.
 TREE_SOURCES: tuple[tuple[str, str], ...] = (("pc", "PlayerSkillTree"),)
@@ -357,6 +358,9 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
     level = _whole(params.get("level"), "level")
     merged = next((s for s in read()["skills"] if s["id"] == index), before)  # its max may only be known from the game-file tree
     top = merged["max"] if merged["max"] is not None else MAX_GRADE_FALLBACK
+    over_max = params.get("over_max") is True
+    if over_max:
+        top = OVER_MAX_LIMIT  # opt-in: the game never offers ranks past the maximum, so what it does with one is untested
     if not 0 <= level <= top:
         raise SkillsError(400, f"{before['name']} must be 0-{top}")
     if before["level"] is None:
@@ -368,7 +372,7 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
     after = next((s for s in state["skills"] if s["id"] == index), None)
     applied = {
         "name": before["name"], "requested": level, "via": via, "notified": notified,
-        "before": before["level"], "after": after and after["level"],
+        "before": before["level"], "after": after and after["level"], "over_max": over_max,
     }
     logging.info(f"RTSE: skills {applied}")
     return {**state, "applied": applied}

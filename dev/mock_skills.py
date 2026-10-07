@@ -91,12 +91,13 @@ def handle(path: str, params: dict, shared: dict) -> dict | None:
         except (KeyError, TypeError, IndexError):
             raise ValueError("unknown skill") from None
         info = tree["skills"][skill_path]
-        if not 0 <= level <= info["max"]:
-            raise ValueError(f"{info['name']} must be 0-{info['max']}")
+        top = 255 if params.get("over_max") is True else info["max"]
+        if not 0 <= level <= top:
+            raise ValueError(f"{info['name']} must be 0-{top}")
         levels = _levels(active)
         before = levels[skill_path]
         levels[skill_path] = level  # no tier check, on purpose
-        applied = {"name": info["name"], "requested": level, "via": "tree.SetSkillGrade", "notified": None, "before": before, "after": level}
+        applied = {"name": info["name"], "requested": level, "via": "tree.SetSkillGrade", "notified": None, "before": before, "after": level, "over_max": params.get("over_max") is True}
         return {**_state(shared), "applied": applied}
     if path == "/api/skills/reset":
         if params.get("confirm") is not True:
