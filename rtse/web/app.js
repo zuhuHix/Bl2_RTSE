@@ -5,6 +5,9 @@ import {
 import { SLOT_REGION, gunFor, gunSvg, plateSvg } from "./guns.js";
 import { CLASS_INFO, classFromText, portraitUrl } from "./portraits.js";
 import { emblemSvg, itemClassSvg, letterSvg, plateEl, ui } from "./icons.js";
+import * as sduPage from "./page_sdu.js";
+import * as skillsPage from "./page_skills.js";
+import * as worldPage from "./page_world.js";
 
 const token = new URLSearchParams(location.search).get("t") || "";
 const MODES = [
@@ -368,6 +371,9 @@ function renderWorkspace() {
   const root = $("#workspace");
   if (state.page === "character") return renderCharacter(root);
   if (state.page === "ammo") return renderAmmo(root);
+  if (state.page === "sdu") return sduPage.render(root, pageCtx);
+  if (state.page === "skills") return skillsPage.render(root, pageCtx);
+  if (state.page === "world") return worldPage.render(root, pageCtx);
   const detail = state.detail;
   if (!detail) {
     fill(root, h("div", { class: "empty" }, state.selected
@@ -656,7 +662,10 @@ function renderPinned() {
     pin("character", openCharacter, portraitEl(), "Character",
       cls.key ? `${CLASS_INFO[cls.key].name} / ${CLASS_INFO[cls.key].job}` : (c && c.name) || "Level, skill points, money",
       c && c.level != null && h("div", { class: "lvl" }, h("small", { text: "LV" }), String(c.level))),
-    pin("ammo", openAmmo, icon("crosshair", 20), "Ammo", "Every ammo type", null));
+    pin("ammo", openAmmo, icon("crosshair", 20), "Ammo", "Every ammo type", null),
+    pin("sdu", openSdu, icon("backpack", 20), "Upgrades", "Backpack, bank, ammo SDUs", null),
+    pin("skills", openSkills, icon("sliders", 20), "Skills", "Skill tree", null),
+    pin("world", openWorld, icon("swap", 20), "World", "Missions, challenges, travel", null));
 }
 
 async function openCharacter() {
@@ -675,6 +684,23 @@ async function loadCharacter() {
   renderPinned();
   if (state.page === "character") renderWorkspace();
 }
+
+// ---------- feature pages (own modules: page_sdu.js, page_skills.js, page_world.js) ----------
+
+const pageCtx = { h, fill, icon, api, toast, guarded, dump, dropdown, rerender: () => renderWorkspace() };
+
+async function openPage(page, module) {
+  state.page = page;
+  closePicker();
+  renderPinned();
+  renderInventory();
+  renderWorkspace();
+  await module.load(pageCtx);
+}
+
+const openSdu = () => openPage("sdu", sduPage);
+const openSkills = () => openPage("skills", skillsPage);
+const openWorld = () => openPage("world", worldPage);
 
 // ---------- ammo ----------
 
@@ -723,6 +749,7 @@ function ammoCard(pool) {
       h("button", { class: "btn sm primary", onclick: commit }, "Set"),
       pool.max != null && h("button", { class: "btn sm", onclick: () => applyAmmo(pool, "max") }, "Fill"),
       h("button", { class: "btn sm danger", onclick: () => applyAmmo(pool, 0) }, "Empty")),
+    sduPage.ammoCapacityControls(pool, { ...pageCtx, rerender: loadAmmo }),
   );
 }
 

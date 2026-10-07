@@ -77,6 +77,19 @@ try:
     check("missing icon -> 404", request("GET", "/icons/nothing.png")[0], 404)
     check("bundled font served", request("GET", "/fonts/bebas-neue-400.woff2")[0], 200)
     check("non-font in fonts dir refused", request("GET", "/fonts/readme.txt")[0], 403)
+    for page in ("sdu", "skills", "world"):
+        check(f"page_{page}.js served", request("GET", f"/page_{page}.js")[0], 200)
+        check(f"page_{page}.css served", request("GET", f"/page_{page}.css")[0], 200)
+        check(f"page_{page}.js with spoofed Host", request("GET", f"/page_{page}.js", {"Host": "evil.example"})[0], 403)
+        check(f"page_{page} traversal refused", request("GET", f"/page_{page}.js/../../api.py")[0], 403)
+        check(f"page_{page} encoded traversal refused", request("GET", f"/icons/..%2fpage_{page}.js")[0], 403)
+        check(f"{page} python source not served", request("GET", f"/{page}.py")[0], 403)
+        check(f"{page} api without token", request("GET", f"/api/{page}")[0], 403)
+    check("debug dump json not served", request("GET", "/debug_sdu.json")[0], 403)
+    check("missing page module -> 404", request("GET", "/page_nothing.js")[0], 404)
+    check("sdu post without token", request("POST", "/api/sdu/set", {"Content-Type": "application/json"}, b"{}")[0], 403)
+    check("world post without token", request("POST", "/api/world/mission", {"Content-Type": "application/json"}, b"{}")[0], 403)
+    check("skills reset post without token", request("POST", "/api/skills/reset", {"Content-Type": "application/json"}, b"{}")[0], 403)
     check("model served", request("GET", "/models/pistol.glb")[0], 200)
     check("model table served", request("GET", "/models/parts.json")[0], 200)
     check("portrait served", request("GET", "/portraits/siren.webp")[0], 200)
@@ -106,6 +119,19 @@ try:
         403,
     )
     check("post bad json", request("POST", "/api/item/set_level", {"X-RTSE-Token": token}, b"not json")[0], 400)
+    # Authenticated routes go through the game thread, which doesn't exist here; call them directly.
+    for route in ("/api/sdu", "/api/skills", "/api/world"):
+        try:
+            server.api.GET_ROUTES[route]({})
+            check(f"{route} outside a save -> 409", 0, 409, "no error raised")
+        except server.api.ApiError as ex:
+            check(f"{route} outside a save -> 409", ex.status, 409)
+    for route in ("/api/skills/reset", "/api/world/missions/reset", "/api/world/playthrough"):
+        try:
+            server.api.POST_ROUTES[route]({})
+            check(f"{route} refuses without confirm", 0, 400, "no error raised")
+        except server.api.ApiError as ex:
+            check(f"{route} refuses without confirm", ex.status, 400)
 finally:
     server.stop()
 

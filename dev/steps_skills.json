@@ -4,7 +4,7 @@
   "height": 900,
   "steps": [
     {"wait": 1200},
-    {"click": ".pin:nth-child(3)"},
+    {"clickText": "Skill tree"},
     {"wait": 900},
     {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_1_tree.png"},
     {"scroll": {"selector": "#workspace", "top": 560}},
