@@ -3,3 +3,4 @@ tools/
 dev/out/
 __pycache__/
 *.bak
+.claude/

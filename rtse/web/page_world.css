@@ -1,0 +1,63 @@
+/* ---- world & progress page (missions, challenges, fast travel, playthrough) ---- */
+.wl-body {
+  --st-complete: var(--good); --st-active: var(--hazard); --st-ready: var(--steel); --st-not_started: #6b6657; --st-failed: var(--blaze); --st-unknown: #6b6657;
+  padding: 18px 22px 24px;
+}
+.wl-tabs { margin-bottom: 18px; flex-wrap: wrap; }
+.wl-tabs .wl-off { font-family: var(--body); font-size: 11px; letter-spacing: .06em; }
+.wl-pts { margin-bottom: 14px; }
+.wl-pts button { position: relative; padding-right: 22px; }
+.wl-now { position: absolute; top: 9px; right: 8px; width: 8px; height: 8px; background: var(--hazard); transform: rotate(45deg); border: 1px solid #000; }
+.wl-pts button.on .wl-now { background: var(--ink); border-color: var(--ink); }
+
+.wl-toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 10px; }
+.wl-find { position: relative; flex: 0 1 300px; min-width: 200px; }
+.wl-find .ui-icon { position: absolute; left: 10px; top: 9px; color: var(--muted); pointer-events: none; }
+.wl-search { width: 100%; padding-left: 32px; }
+.wl-chips { max-height: none; overflow: visible; }
+.wl-n { font-style: normal; font-size: 11px; opacity: .7; margin-left: 2px; }
+.wl-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 10px; min-height: 30px; }
+.wl-count { color: var(--muted); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; font-size: 12px; }
+.wl-bulk { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* the scrolling list: tall enough to be useful, never taller than the window */
+.wl-list { max-height: clamp(320px, calc(100vh - 470px), 640px); overflow: auto; border: 3px solid #000; background: var(--ink); box-shadow: inset 0 0 0 1px var(--line); outline: none; }
+.wl-none { padding: 22px 16px; }
+.wl-group { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 12px; padding: 6px 14px 3px; background: var(--panel-2); border-bottom: 2px solid #000; border-top: 2px solid #000; }
+.wl-group span { font-family: var(--display); font-size: 22px; letter-spacing: .06em; color: var(--hazard); line-height: 1.1; }
+.wl-group em { margin-left: auto; font-style: normal; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+
+.wl-row { display: grid; grid-template-columns: 14px 1fr auto; gap: 14px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.wl-row:hover { background: rgba(255, 210, 31, .05); }
+.wl-dot { width: 11px; height: 11px; background: var(--st, #6b6657); border: 2px solid #000; transform: rotate(45deg); display: block; }
+.wl-main { min-width: 0; }
+.wl-name { font-weight: 700; font-size: 16px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-sub { display: flex; gap: 12px; align-items: baseline; margin-top: 2px; min-width: 0; }
+.wl-st { color: var(--st); font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.wl-id { font: 11.5px Consolas, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.wl-desc { color: var(--muted); font-size: 13px; font-weight: 600; margin-top: 1px; }
+.wl-prog { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.wl-prog .bar { flex: 0 1 220px; width: 220px; margin: 0; height: 12px; }
+.wl-prog .bar i { background: var(--st); }
+.wl-prog span { font-family: var(--display); font-size: 18px; letter-spacing: .04em; color: var(--bone); }
+.wl-btns { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+
+/* the inline "Really? Yes / Cancel" that replaces a risky button */
+.wl-ask { display: inline-flex; align-items: center; gap: 6px; padding: 1px 6px 1px 10px; border: 2px dashed var(--blaze); background: rgba(255, 90, 44, .1); }
+.wl-ask b { color: var(--blaze); font-family: var(--display); font-weight: 400; font-size: 17px; letter-spacing: .06em; padding-top: 2px; }
+.btn.yes { background: var(--blaze); color: var(--ink); }
+.btn.yes:hover { background: #ff7a50; }
+
+.wl-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; padding: 12px; }
+.wl-card { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 9px 12px; background: var(--panel); border: 2px solid #000; box-shadow: 3px 3px 0 #000; border-left: 7px solid #6b6657; }
+.wl-card.unlocked { border-left-color: var(--good); }
+.wl-card.locked { border-left-color: var(--blaze); }
+.wl-card .wl-btns { flex-direction: column; align-items: flex-end; gap: 5px; }
+.wl-stamp { font-family: var(--display); font-size: 15px; letter-spacing: .1em; color: var(--muted); }
+.wl-card.unlocked .wl-stamp { color: var(--good); }
+.wl-card.locked .wl-stamp { color: var(--blaze); }
+
+.wl-pt-grid { padding-top: 0; }
+.wl-pt.here { box-shadow: 4px 4px 0 var(--c); }
+.wl-pt .cc-val { font-size: 64px; }
+.wl-pt .stamp { margin: 0; }

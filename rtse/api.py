@@ -15,7 +15,7 @@ from typing import Any, Callable, NamedTuple
 from mods_base import get_pc
 from unrealsdk import find_all, find_object, logging, unreal
 
-from . import ammo, character, stats
+from . import ammo, character, sdu, skills, stats, world
 
 Params = dict[str, Any]
 
@@ -961,7 +961,7 @@ def _module_route(action: Callable[[Params], dict[str, Any]]) -> Callable[[Param
     def route(params: Params) -> dict[str, Any]:
         try:
             return action(params)
-        except (character.CharacterError, ammo.AmmoError) as ex:
+        except (character.CharacterError, ammo.AmmoError, sdu.SduError, skills.SkillsError, world.WorldError) as ex:
             raise ApiError(ex.status, str(ex)) from None
 
     return route
@@ -986,6 +986,12 @@ GET_ROUTES: dict[str, Route] = {
     "/api/debug/character": _module_route(lambda _params: character.debug_dump()),
     "/api/ammo": _module_route(lambda _params: ammo.read()),
     "/api/debug/ammo": _module_route(lambda _params: ammo.debug_dump()),
+    "/api/sdu": _module_route(lambda _params: sdu.read()),
+    "/api/debug/sdu": _module_route(lambda _params: sdu.debug_dump()),
+    "/api/skills": _module_route(lambda _params: skills.read()),
+    "/api/debug/skills": _module_route(lambda _params: skills.debug_dump()),
+    "/api/world": _module_route(world.read),
+    "/api/debug/world": _module_route(lambda _params: world.debug_dump()),
 }
 POST_ROUTES: dict[str, Route] = {
     "/api/item/set_part": set_part,
@@ -994,4 +1000,13 @@ POST_ROUTES: dict[str, Route] = {
     "/api/item/set_stat": set_stat,
     "/api/character/set": _module_route(character.set_field),
     "/api/ammo/set": _module_route(ammo.set_value),
+    "/api/sdu/set": _module_route(sdu.set_level),
+    "/api/sdu/ammo_max": _module_route(sdu.set_ammo_max),
+    "/api/skills/set": _module_route(skills.set_level),
+    "/api/skills/reset": _module_route(skills.reset),
+    "/api/world/mission": _module_route(world.set_mission),
+    "/api/world/missions/reset": _module_route(world.reset_missions),
+    "/api/world/challenge": _module_route(world.set_challenge),
+    "/api/world/stations": _module_route(world.unlock_stations),
+    "/api/world/playthrough": _module_route(world.set_playthrough),
 }
