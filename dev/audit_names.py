@@ -39,7 +39,9 @@ ix = class_index.Index()
 CLASS_OF = {  # the owner names the modules use -> the real class they hold at runtime
     "pc": "WillowPlayerController", "pri": "WillowPlayerReplicationInfo", "pawn": "WillowPlayerPawn",
     "invmgr": "WillowInventoryManager", "pool": "AmmoResourcePool", "tree": "PlayerSkillTree",
-    "missions": "MissionTracker", "challenges": "ChallengeManager", "game": "WillowGameInfo", "gri": "WillowGameReplicationInfo",
+    "missions": "MissionTracker", "game": "WillowGameInfo", "gri": "WillowGameReplicationInfo",
+    "missiondef": "MissionDefinition", "chaldef": "ChallengeDefinition", "chalcat": "ChallengeCategoryDefinition",
+    "station": "FastTravelStationDefinition",
 }
 rows: list[tuple[str, str, str, str]] = []  # (module, what, verdict, detail)
 
@@ -100,24 +102,44 @@ for what, candidates in (("ammo_level", sdu.AMMO_LEVEL), ("ammo_level_write", sd
 # ---- world ----
 for name in (world.PLAYTHROUGH_READERS, world.PLAYTHROUGH_SETTERS):
     for owner, function in name:
-        check("world.playthrough", "gri" if owner == "game" else owner, function + "()")
+        check("world.playthrough", owner, function + "()")
 for owner, attribute in world.PLAYTHROUGH_FIELDS:
-    check("world.playthrough", "gri" if owner == "game" else owner, attribute)
+    check("world.playthrough", owner, attribute)
 for owner, attribute in (*world.MISSION_PLAYTHROUGH_LISTS, *world.MISSION_FLAT_LISTS):
     check("world.missions", owner, attribute)
-for path_name, attributes in world.OWNER_PATHS.items():
-    for attribute in attributes:
-        if attribute.startswith("WorldInfo"):
-            rows.append(("world.owners", f"pc.{attribute}", "REAL" if ix.field("WillowPlayerController", "WorldInfo") else "MISSING", "Actor.WorldInfo; Game is server-side only"))
-        else:
-            check("world.owners", "pc", attribute)
-struct_check("world.missions", "IMission.MissionData", (*world.MISSION_DEF[:1], *world.MISSION_STATUS[:1]))
-struct_check("world.missions", "WillowPlayerController.MissionPlaythroughData", ("PlayThroughNumber", "MissionList"))
+for owner, function in world.MISSION_SETTERS:
+    check("world.missions", owner, function + "()")
+# owner paths are walked segment by segment: each segment must be a real field of the class reached so far
+SEGMENT_CLASS = {"WorldInfo": "WorldInfo", "GRI": "WillowGameReplicationInfo", "MissionTracker": "MissionTracker", "Game": "WillowGameInfo"}
+for owner_key, paths in world.OWNER_PATHS.items():
+    for path in paths:
+        cls = "WillowPlayerController"
+        for segment in path.split("."):
+            hit = ix.field(cls, segment)
+            rows.append(("world.owners", f"{cls}.{segment}", "REAL" if hit else "MISSING", f"{hit[0]} (on {hit[1]})" if hit else f"owner '{owner_key}' path {path}"))
+            cls = SEGMENT_CLASS.get(segment, cls)
+struct_check("world.missions", "IMission.MissionData", (*world.MISSION_DEF, *world.MISSION_STATUS))
+struct_check("world.missions", "WillowPlayerController.MissionPlaythroughData", (*world.MISSION_PT_NUMBER, *world.MISSION_GROUP_ENTRIES))
+for name in (*world.MISSION_NAME, *world.MISSION_PLOT_FLAG):
+    check("world.missions", "missiondef", name)
 for owner, attribute in world.CHALLENGE_LISTS:
     check("world.challenges", owner, attribute)
-struct_check("world.challenges", "ChallengeDefinition.ChallengeData", ("ChallengeDefinition",))
-for owner, attribute in (*world.STATION_LISTS, world.STATION_GETTER, world.STATION_SETTER):
-    check("world.stations", owner, attribute)
+struct_check("world.challenges", "ChallengeDefinition.ChallengeData", world.CHALLENGE_DEF)
+for name in (*world.CHALLENGE_NAME, *world.CHALLENGE_DESC, *world.CHALLENGE_DEF_GOAL, *world.CHALLENGE_LEVELS, *world.CHALLENGE_CATEGORY):
+    check("world.challenges", "chaldef", name)
+for name in world.CHALLENGE_CATEGORY_NAME:
+    check("world.challenges", "chalcat", name)
+for function in ("IsChallengeComplete", "IsChallengeLevelComplete", "GetChallengeTotalProgress", "ServerCompleteChallenge", "GetCurrentChallengeLevel",
+                 "GetHighestChallengeLevelComplete", "PlayerHasChallenge", "IsPlaythroughComplete"):
+    check("world.challenges", "pc", function + "()")
+for owner, attribute in (*world.STATION_LISTS, world.STATION_GETTER, *world.STATION_SETTERS):
+    check("world.stations", owner, attribute + ("()" if (owner, attribute) in (world.STATION_GETTER, *world.STATION_SETTERS) else ""))
+for name in (*world.STATION_NAME, *world.STATION_LEVEL):
+    check("world.stations", "station", name)
+for name in ("PlayerReplicationInfo", "LastVisitedTeleporter"):
+    check("world.stations", "pc", name)
+for function in ("NotifyPlaythroughChanged", "GetMissionStatus"):
+    check("world.playthrough" if function.startswith("Notify") else "world.missions", "gri" if function.startswith("Notify") else "missions", function + "()")
 
 # ---- skills ----
 for owner, attribute in skills.TREE_SOURCES:
