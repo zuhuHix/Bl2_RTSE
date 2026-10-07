@@ -1,37 +1,94 @@
 {
-  "url": "http://127.0.0.1:8772/?t=mock",
+  "url": "http://127.0.0.1:8766/?t=mock",
   "width": 1440,
-  "height": 900,
+  "height": 1000,
   "steps": [
-    {"wait": 1200},
-    {"clickText": "Skill tree"},
-    {"wait": 900},
-    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_1_tree.png"},
-    {"scroll": {"selector": "#workspace", "top": 560}},
-    {"wait": 300},
-    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_2_scrolled.png"},
-    {"scroll": {"selector": "#workspace", "top": 0}},
-    {"eval": "document.querySelectorAll('.sk-branch')[1].querySelectorAll('.sk')[2].querySelector('.btn.primary').click()"},
-    {"wait": 600},
-    {"eval": "JSON.stringify([...document.querySelectorAll('.sk-branch')[1].querySelectorAll('.sk')].slice(0,6).map(e => e.querySelector('.sk-name').textContent + ' ' + e.querySelector('.sk-num').textContent + (e.classList.contains('locked') ? ' L' : '')))"},
-    {"eval": "document.querySelectorAll('.sk-branch')[2].querySelectorAll('.sk-tier')[4].querySelectorAll('.sk')[0].querySelectorAll('.sk-pip')[2].click()"},
-    {"wait": 600},
-    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_3_set_locked.png"},
-    {"clickText": "Reset tree"},
-    {"wait": 400},
-    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_4_confirm.png"},
-    {"clickText": "Cancel"},
-    {"wait": 300},
-    {"eval": "document.querySelector('.sk-confirm') ? 'confirm still open' : 'confirm closed'"},
-    {"clickText": "Reset tree"},
-    {"wait": 300},
-    {"clickText": "Yes"},
-    {"wait": 700},
-    {"eval": "JSON.stringify({unspent: document.querySelector('.stepper input').value, spent: document.querySelector('.facts').textContent})"},
-    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_5_reset.png"},
-    {"clickText": "Character"},
-    {"wait": 700},
-    {"eval": "document.querySelector('.cc-val').textContent"},
-    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/skills_6_character.png"}
+    {
+      "wait": 1200
+    },
+    {
+      "clickText": "Skill tree"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "shot": "dev/out/skills_1_tree.png"
+    },
+    {
+      "eval": "document.querySelectorAll('.sk.compact')[3].click()"
+    },
+    {
+      "wait": 400
+    },
+    {
+      "shot": "dev/out/skills_2_detail.png"
+    },
+    {
+      "scroll": {
+        "selector": "#workspace",
+        "top": 700
+      }
+    },
+    {
+      "wait": 300
+    },
+    {
+      "shot": "dev/out/skills_3_lower.png"
+    },
+    {
+      "eval": "document.querySelector('.sk-detail .btn.primary') && document.querySelector('.sk-detail input').value"
+    },
+    {
+      "click": ".sk-detail .btn:nth-of-type(2)"
+    },
+    {
+      "wait": 700
+    },
+    {
+      "eval": "document.querySelector('.toast') && document.querySelector('.toast').textContent"
+    },
+    {
+      "clickText": "Reset tree"
+    },
+    {
+      "wait": 300
+    },
+    {
+      "shot": "dev/out/skills_4_confirm.png"
+    },
+    {
+      "clickText": "Cancel"
+    },
+    {
+      "eval": "fetch('/api/skills?class=siren', {headers: {'X-RTSE-Token': 'mock'}}).then(r => r.json()).then(d => d.tree.branches.map(b => b.label).join(','))"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "wait": 700
+    },
+    {
+      "scroll": {
+        "selector": "#workspace",
+        "top": 0
+      }
+    },
+    {
+      "clickText": "Every ammo type"
+    },
+    {
+      "wait": 400
+    },
+    {
+      "clickText": "Skill tree"
+    },
+    {
+      "wait": 800
+    },
+    {
+      "shot": "dev/out/skills_5_siren.png"
+    }
   ]
 }

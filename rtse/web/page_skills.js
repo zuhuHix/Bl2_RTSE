@@ -11,6 +11,7 @@ const state = {
   data: null, // the last /api/skills reply
   busy: false, // a write is in flight; clicks are ignored until it lands
   confirmReset: false, // the inline "Really reset?" step is showing
+  selected: null, // id of the skill shown in the detail card
 };
 
 /** Fetches the tree, then redraws. A failed fetch shows as an unavailable tree rather than an empty page. */
@@ -18,7 +19,9 @@ export async function load(passed) {
   ctx = passed || ctx;
   if (!ctx) return;
   try {
-    state.data = await ctx.api("GET", "/api/skills");
+    const data = await ctx.api("GET", "/api/skills");
+    if (state.data && state.data.class_key !== data.class_key) state.selected = null;
+    state.data = data;
   } catch (error) {
     state.data = { available: false, reason: error.message, skills: [], branches: [], skill_points: null, limits: { skill_points: 999, tier_unlock: 5 }, sources: {} };
   }
@@ -99,6 +102,75 @@ function tile(skill) {
         h("button", { class: "btn sm primary", title: "Set to its maximum", disabled: !known || maxed || null, onclick: () => setLevel(skill, top) }, "Max"))));
 }
 
+// ---------- the real tree: action skill, three branches of six tiers, three cells per tier ----------
+
+const plainText = (text) => (text || "").replace(/<StringAliasMap:[^>]*>/g, "[key]").replace(/\s+/g, " ").trim();
+
+function compactTile(skill) {
+  const known = skill.level != null;
+  const maxed = known && skill.max != null && skill.level >= skill.max;
+  const cls = ["sk", "compact", skill.locked && "locked", maxed && "maxed", known && skill.level > 0 && "has", state.selected === skill.id && "picked"].filter(Boolean).join(" ");
+  return h("div", { class: cls, title: `${skill.name}
+${plainText(skill.description)}`, onclick: () => { state.selected = skill.id; ctx.rerender(); } },
+    h("div", { class: "sk-name", text: skill.name }),
+    h("div", { class: "sk-top" },
+      pips(skill),
+      h("div", { class: "sk-num" }, h("b", { text: known ? String(skill.level) : "?" }), h("small", { text: `/${skill.max ?? "?"}` }))));
+}
+
+function tierRow(tier, skills) {
+  return h("div", { class: `sk-tier${tier.locked ? " locked" : ""}` },
+    h("div", { class: "sk-tier-head" },
+      h("span", { text: `Tier ${tier.number}` }),
+      h("i", { text: tier.need ? `needs ${tier.need} pts above` : "open" }),
+      tier.locked && h("em", { text: "locked", title: "Locked in the game's menu. RTSE can still set these." })),
+    h("div", { class: "sk-cells" }, tier.cells.map((id) => (id == null ? h("div", { class: "sk-empty" }) : compactTile(skills[id])))));
+}
+
+function realBranch(branch, skills) {
+  return h("section", { class: "sk-branch" },
+    h("header", {}, h("h2", { text: branch.label }), h("div", { class: "sk-pts" }, h("b", { text: String(branch.points) }), h("small", { text: "pts" }))),
+    branch.tiers.map((tier) => tierRow(tier, skills)));
+}
+
+function actionCard(skill) {
+  return h("div", { class: "sk-action" },
+    h("span", { class: "stamp equipped", text: "Action skill" }),
+    h("div", {},
+      h("h3", { text: skill.name }),
+      h("p", { text: plainText(skill.description) })));
+}
+
+function detailCard(data) {
+  const skill = data.skills.find((s) => s.id === state.selected);
+  if (!skill) return h("div", { class: "sk-detail hint", text: "Click a skill to read what it does and set it to an exact rank." });
+  const top = skill.max ?? 5;
+  const known = skill.level != null;
+  const box = h("input", { type: "number", min: 0, max: top, value: skill.level ?? 0, "aria-label": `${skill.name} points`, onkeydown: (e) => e.key === "Enter" && commit() });
+  const commit = () => {
+    const value = parseInt(box.value, 10);
+    if (Number.isInteger(value) && value >= 0 && value <= top) setLevel(skill, value);
+    else ctx.toast(`${skill.name} must be 0-${top}`, true);
+  };
+  const nudge = (by) => () => { box.value = Math.max(0, Math.min(top, (parseInt(box.value, 10) || 0) + by)); };
+  return h("div", { class: "sk-detail" },
+    h("div", { class: "sk-detail-text" },
+      h("h3", { text: skill.name }),
+      h("div", { class: "sk-meta" },
+        skill.branch_label && h("span", { text: skill.row == null ? skill.branch_label : `${skill.branch_label} / tier ${skill.row + 1}` }),
+        h("span", { text: `max rank ${top}${skill.max_from ? " (from game files)" : ""}` }),
+        skill.locked && h("em", { text: "locked in the game's menu" })),
+      h("p", { text: plainText(skill.description) || "No description." })),
+    known && h("div", { class: "level" },
+      h("div", { class: "stepper" },
+        h("button", { title: "Down", "aria-label": "Down", onclick: nudge(-1) }, icon("minus", 15)),
+        box,
+        h("button", { title: "Up", "aria-label": "Up", onclick: nudge(1) }, icon("plus", 15))),
+      h("button", { class: "btn primary", onclick: commit }, icon("check", 15), "Set"),
+      h("button", { class: "btn", disabled: skill.level >= top || null, onclick: () => setLevel(skill, top) }, "Max"),
+      h("button", { class: "btn danger", disabled: skill.level === 0 || null, onclick: () => setLevel(skill, 0) }, "Zero")));
+}
+
 /** One branch's tiers, top to bottom. A skill whose tier is unknown goes in a single untitled group. */
 function branchColumn(branch, skills) {
   const mine = skills.filter((s) => s.branch === branch.key);
@@ -164,7 +236,8 @@ export function render(root, passed) {
     return;
   }
   const ok = data.available;
-  const maxed = data.skills.filter((s) => s.max != null && s.level >= s.max).length;
+  const shown = data.skills.filter((s) => !s.action && !s.hidden);
+  const maxed = shown.filter((s) => s.max != null && s.level >= s.max).length;
   fill(
     root,
     h("div", { class: "bench" },
@@ -174,7 +247,7 @@ export function render(root, passed) {
           h("h1", { text: "Skill tree" }),
           h("div", { class: "facts" },
             ok && h("span", {}, h("b", { text: String(data.spent) }), "points spent"),
-            ok && h("span", {}, h("b", { text: `${maxed}/${data.skills.length}` }), "skills maxed"),
+            ok && h("span", {}, h("b", { text: `${maxed}/${shown.length}` }), "skills maxed"),
             ok && h("span", { text: `${data.branches.length} branches` }),
             !ok && h("span", { text: "tree unavailable" }))),
         pointsBox(data)),
@@ -182,7 +255,11 @@ export function render(root, passed) {
         !ok && h("div", { class: "warn-banner" }, icon("alert", 18), `${data.reason || "The skill tree can't be read"}. Save the skills dump below and send it over.`),
         ok && data.reason && h("div", { class: "warn-banner" }, icon("alert", 18), `${data.reason}.`),
         ok && resetBar(data),
-        ok && h("div", { class: "sk-tree" }, data.branches.map((branch) => branchColumn(branch, data.skills))))),
+        ok && data.tree && data.tree.action != null && actionCard(data.skills[data.tree.action]),
+        ok && data.tree && detailCard(data),
+        ok && data.tree && h("div", { class: "sk-tree" }, data.tree.branches.map((branch) => realBranch(branch, data.skills))),
+        ok && data.tree && data.tree.unplaced.length > 0 && h("p", { class: "note", text: `${data.tree.unplaced.length} skills in the game's list aren't part of the drawn tree (hidden helper skills).` }),
+        ok && !data.tree && h("div", { class: "sk-tree" }, data.branches.map((branch) => branchColumn(branch, data.skills))))),
     devTools(data),
   );
 }

@@ -1,9 +1,15 @@
 """The player's skill tree: every skill of the class with its points and maximum.
 
-NOTHING HERE HAS BEEN CONFIRMED IN A RUNNING GAME. Every class, field and function name below is a guess
-from memory of the Borderlands 2 SDK, so each thing lists the places it might live (candidates), is tried
-in order, and reports which one worked. If the tree can't be read the page shows "unavailable" instead of
-failing. Run the skills dump from the web UI to find the real names.
+The class, field and function names marked "real" below were read from the installed game's own class
+definitions (WillowGame.upk): WillowPlayerController.PlayerSkillTree is a PlayerSkillTree whose Skills array
+holds PlayerSkillTreeSkillData (Definition, Grade), with SetSkillGrade(Skill, SkillGrade) on the tree and
+ResetSkillTree on the controller. That proves they exist, NOT that they behave as hoped: nothing here has run in
+a live game. The rest are guesses, so each thing lists the places it might live (candidates), is tried in order,
+and reports which one worked. If the tree can't be read the page shows "unavailable" instead of failing. Run
+the skills dump from the web UI to see what the live objects really hold.
+
+The tree's layout (branches, tiers, cells, names, descriptions) comes from rtse/skilltrees.json, extracted from the
+game's packages; the game only supplies the live grades.
 """
 
 from __future__ import annotations
@@ -15,14 +21,14 @@ from typing import Any
 
 from unrealsdk import logging, unreal
 
-from . import character
+from . import character, skilltree_data
 
 DEBUG_SKILLS_FILE = Path(__file__).parent / "debug_skills.json"
 
 TIER_UNLOCK_POINTS = 5  # a tier unlocks once the tiers below it hold 5 points each (as in the game; used only to show "locked")
 MAX_GRADE_FALLBACK = 5  # used only when a skill's own maximum can't be read
 
-# Where the tree might live: (owner, attribute), tried in order. The tree is an object with a list of skills.
+# Where the tree might live: (owner, attribute), tried in order. The first is real; the rest are fallbacks.
 TREE_SOURCES: tuple[tuple[str, str], ...] = (
     ("pc", "PlayerSkillTree"),
     ("pc", "SkillTree"),
@@ -30,20 +36,19 @@ TREE_SOURCES: tuple[tuple[str, str], ...] = (
     ("pawn", "SkillTree"),
     ("pri", "SkillTree"),
 )
-# What the list of skills inside the tree might be called. The tree itself is also tried as a list.
+# The list of skills inside the tree (real: Skills, an array of PlayerSkillTreeSkillData). The tree itself is also tried.
 LIST_FIELDS = ("Skills", "SkillList", "SkillItems", "Items")
-# A list entry is either the skill's definition, or a record that points at one (and holds the points).
+# A list entry is the skill's definition or a record that points at one (real: Definition) and holds the points (real: Grade).
 DEFINITION_FIELDS = ("Definition", "SkillDefinition", "Skill", "SkillDef")
-GRADE_FIELDS = ("Grade", "CurrentGrade", "SkillGrade", "Rank", "Level")  # points put into the skill
-GRADE_GETTERS = ("GetSkillGrade", "GetSkillRank", "GetSkillLevel")  # called as (definition) on the controller or tree
-GRADE_SETTERS = ("SetSkillGrade", "SetSkillRank", "SetSkillLevel", "ForceSkillGrade")  # called as (definition, points)
-MAX_FIELDS = ("MaxGrade", "MaxRank", "MaxLevel")
-TIER_FIELDS = ("Tier", "SkillTier", "TierIndex")
-BRANCH_FIELDS = ("Branch", "SkillBranch", "BranchDefinition")
-NAME_FIELDS = ("SkillName", "DisplayName", "SkillDisplayName")
-BRANCH_NAME_FIELDS = ("BranchName", "DisplayName", "Name")
-NOTIFY_FUNCTIONS = ("NotifySkillRankChanged", "OnSkillGradeChanged", "UpdateSkillGrade")  # called as (definition, points)
-RESET_FUNCTIONS = ("ResetSkillTree", "ResetSkills", "RespecSkills")  # called with no arguments
+GRADE_FIELDS = ("Grade", "CurrentGrade", "SkillGrade", "Rank", "Level")
+GRADE_GETTERS = ("GetSkillGrade", "GetSkillGradeByDef")  # real, on the controller: (Definition) -> grade
+GRADE_SETTERS = ("SetSkillGrade",)  # real, on the tree: (Skill, SkillGrade) -> bool; also tried on the controller
+MAX_FIELDS = ("MaxGrade", "MaxRank", "MaxLevel")  # real: SkillDefinition.MaxGrade
+TIER_FIELDS = ("Tier", "SkillTier", "TierIndex")  # not on the definition; the tier data comes from skilltrees.json
+BRANCH_FIELDS = ("Branch", "SkillBranch", "BranchDefinition")  # likewise
+NAME_FIELDS = ("SkillName", "DisplayName", "SkillDisplayName")  # real: SkillDefinition.SkillName
+BRANCH_NAME_FIELDS = ("BranchName", "DisplayName", "Name")  # real: SkillTreeBranchDefinition.BranchName
+RESET_FUNCTIONS = ("ResetSkillTree",)  # real, on the controller: (bIsCharacterLoad, bIgnoreProficiencies) -> points returned
 
 
 class SkillsError(Exception):
@@ -144,10 +149,24 @@ def _text(obj: Any, fields: tuple[str, ...]) -> str | None:
 
 
 def _to_int(value: Any) -> int | None:
+    if isinstance(value, tuple):  # functions with out parameters return (result, *outs)
+        value = value[0] if value else None
     try:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _call(target: Any, name: str, args: tuple[Any, ...] = (), kwargs: dict[str, Any] | None = None) -> Any:
+    """Calls a game function by name with keyword arguments (immune to parameter order), falling back to positional ones."""
+    function = getattr(target, name)
+    if kwargs:
+        try:
+            return function(**kwargs)
+        except Exception:  # noqa: BLE001
+            if not args:
+                raise
+    return function(*args)
 
 
 def _grade(found: _Found, entry: Any, definition: Any) -> tuple[int | None, str | None]:
@@ -162,7 +181,7 @@ def _grade(found: _Found, entry: Any, definition: Any) -> tuple[int | None, str 
     for owner, target in (("pc", found.owners.get("pc")), ("tree", found.tree)):
         for getter in GRADE_GETTERS:
             try:
-                value = _to_int(getattr(target, getter)(definition))
+                value = _to_int(_call(target, getter, (definition,), {"Definition": definition, "SkillDef": definition}))
             except Exception:  # noqa: BLE001, S112
                 continue
             if value is not None:
@@ -243,9 +262,19 @@ def _state(found: _Found | None, reason: str, owners: dict[str, Any]) -> dict[st
     if found is None:
         return out
     skills = [_describe(found, index, entry) for index, entry in enumerate(found.entries)]
-    out["branches"] = _classify(skills)
+    class_key, tree = skilltree_data.match({s["path"] for s in skills if s["path"]})
+    if tree is None:
+        out["branches"] = _classify(skills)
+    else:
+        for skill in skills:
+            skill.update(description=None, icon=None, col=None, action=False, hidden=False, row=None, requires=None, locked=None)
+        layout = skilltree_data.apply(tree, skills)
+        out["tree"] = layout
+        out["class_key"] = out["class_key"] or class_key
+        out["branches"] = [{"key": b["key"], "label": b["label"], "points": b["points"], "rows": len(b["tiers"])} for b in layout["branches"]]
     out["skills"] = skills
-    out["spent"] = sum(skill["level"] or 0 for skill in skills)
+    # the action skill (always rank 1) and hidden helper skills aren't points the player spent
+    out["spent"] = sum(skill["level"] or 0 for skill in skills if not skill.get("action") and not skill.get("hidden"))
     unreadable = [skill["name"] for skill in skills if skill["level"] is None]
     if unreadable:
         out["reason"] = f"couldn't read the points of {len(unreadable)} skills (e.g. {unreadable[0]}) - run the skills dump"
@@ -288,19 +317,28 @@ def _definition(entry: Any) -> Any:
 
 
 def _notify(found: _Found, definition: Any, level: int) -> str | None:
-    """Tells the game a skill's points changed so it re-applies the skill's effects. Which call does that is a guess."""
-    for owner, target in (("pc", found.owners.get("pc")), ("tree", found.tree)):
-        for name in NOTIFY_FUNCTIONS:
-            try:
-                getattr(target, name)(definition, level)
-                return f"{owner}.{name}"
-            except Exception:  # noqa: BLE001, S112
-                continue
-    return None
+    """After a raw field write: tells the controller the grade changed. OnSkillGradeChanged(Skill, NewSkillPoints, Grade)
+    is real, but whether calling it makes the game re-apply the skill's effects is a guess."""
+    points, _where = character._read(found.owners, "skill_points")  # noqa: SLF001
+    try:
+        found.owners["pc"].OnSkillGradeChanged(Skill=definition, NewSkillPoints=max(0, min(255, points or 0)), Grade=max(0, min(255, level)))
+        return "pc.OnSkillGradeChanged"
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _store(found: _Found, entry: Any, definition: Any, level: int, grade_via: str | None) -> tuple[str, str | None]:
     """Writes one skill's points. Returns how it was written and whether the game was told."""
+    # The tree's own SetSkillGrade is the game's entry point and should notify the tree's listeners itself.
+    for owner, target in (("tree", found.tree), ("pc", found.owners.get("pc"))):
+        for setter in GRADE_SETTERS:
+            try:
+                _call(target, setter, (definition, level), {"Skill": definition, "SkillGrade": level})
+            except Exception:  # noqa: BLE001, S112
+                continue
+            if _grade(found, entry, definition)[0] == level:
+                return f"{owner}.{setter}", None
+    # Otherwise write the entry's grade field directly and tell the controller.
     via = None
     if grade_via and grade_via.startswith("field:"):
         field = grade_via.split(":", 1)[1]
@@ -309,15 +347,6 @@ def _store(found: _Found, entry: Any, definition: Any, level: int, grade_via: st
             via = f"entry.{field}"
         except Exception:  # noqa: BLE001
             via = None
-    if via is None or _grade(found, entry, definition)[0] != level:
-        for owner, target in (("pc", found.owners.get("pc")), ("tree", found.tree)):
-            for setter in GRADE_SETTERS:
-                try:
-                    getattr(target, setter)(definition, level)
-                except Exception:  # noqa: BLE001, S112
-                    continue
-                if _grade(found, entry, definition)[0] == level:
-                    return f"{owner}.{setter}", _notify(found, definition, level)
     if via is None:
         raise SkillsError(501, "this game build can't write skill points - run the skills dump")
     return via, _notify(found, definition, level)
@@ -332,7 +361,8 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
     entry = found.entries[index]
     before = _describe(found, index, entry)
     level = _whole(params.get("level"), "level")
-    top = before["max"] if before["max"] is not None else MAX_GRADE_FALLBACK
+    merged = next((s for s in read()["skills"] if s["id"] == index), before)  # its max may only be known from the game-file tree
+    top = merged["max"] if merged["max"] is not None else MAX_GRADE_FALLBACK
     if not 0 <= level <= top:
         raise SkillsError(400, f"{before['name']} must be 0-{top}")
     if before["level"] is None:
@@ -358,30 +388,28 @@ def reset(params: dict[str, Any]) -> dict[str, Any]:
     if found is None:
         raise SkillsError(501, f"skill tree unavailable: {reason}")
     before = _state(found, "", owners)
-    if not any(s["level"] for s in before["skills"]):
+    if not before["spent"]:
         return {**before, "applied": {"via": None, "before": 0, "after": 0, "refunded": 0, "refund_via": None, "skill_points": before["skill_points"]}}
 
     # The game's own reset is tried first (it should also undo the skills' effects); anything it leaves is zeroed by hand.
+    # bIgnoreProficiencies=True is a guess at "leave the weapon proficiencies alone"; bIsCharacterLoad=False is "a player reset".
     via = None
-    for owner in ("pc", "tree", "pri"):
-        target = found.tree if owner == "tree" else owners.get(owner)
-        for name in RESET_FUNCTIONS:
-            try:
-                getattr(target, name)()
-                via = f"{owner}.{name}"
-            except Exception:  # noqa: BLE001, S112
-                continue
-            break
-        if via:
-            break
+    for name in RESET_FUNCTIONS:
+        try:
+            _call(owners["pc"], name, (), {"bIsCharacterLoad": False, "bIgnoreProficiencies": True})
+            via = f"pc.{name}"
+        except Exception:  # noqa: BLE001, S112
+            continue
+        break
     found, _reason = _locate(owners)
     if found is None:
         raise SkillsError(501, "the skill tree disappeared while resetting - run the skills dump")
 
     zeroed = 0
+    keep = {s["id"] for s in _state(found, "", owners)["skills"] if s.get("action") or s.get("hidden")}  # the game grants these itself
     for index, entry in enumerate(found.entries):
         info = _describe(found, index, entry)
-        if info["level"]:
+        if info["level"] and index not in keep:
             _store(found, entry, _definition(entry), 0, info["grade_via"])
             zeroed += 1
     if zeroed:
@@ -480,6 +508,16 @@ def debug_dump() -> dict[str, Any]:
             "fields": [f for f in info["fields"] if "skill" in f.lower()],
             "functions": [f for f in info["functions"] if "skill" in f.lower()],
         }
+    out["tree_data"] = {"file": str(skilltree_data.TREES_FILE), "classes": sorted(skilltree_data.trees())}
+    if found is not None:
+        paths = {_path(_definition(entry)) for entry in found.entries} - {None}
+        key, tree = skilltree_data.match(paths)
+        out["tree_data"].update(
+            matched_class=key,
+            live_skills=len(paths),
+            not_in_tree_data=sorted(paths - set(tree["skills"])) if tree else sorted(paths),
+            missing_from_live=sorted(set(tree["skills"]) - paths) if tree else [],
+        )
     out["candidates"] = {f"{owner}.{attr}": ("present" if getattr(owners.get(owner), attr, None) is not None else "missing") for owner, attr in TREE_SOURCES}
     out["skill_points"] = character._read(owners, "skill_points")  # noqa: SLF001
 
