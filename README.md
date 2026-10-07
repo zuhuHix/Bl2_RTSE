@@ -15,6 +15,77 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **Skills:** your real skill tree for your class. Set any skill to any rank (even locked ones), change unspent points, or reset the whole tree.
 - **World:** missions, challenges, fast travel stations and playthrough (Normal / TVHM / UVHM).
 
+## A tour of the editor
+
+The screenshots below were taken with the demo data from `dev/mock_server.py` (see [For tinkerers](#for-tinkerers)), not from a live game, so the names and numbers are placeholders. In the real thing they come from your character.
+
+The left side is always your **Loadout**: five pages pinned at the top (Character, Ammo, Upgrades, Skills, World), then a search box and everything you have equipped or in your backpack.
+
+![The editor with nothing selected](docs/screenshots/01-home.png)
+
+### Gear
+
+Click any weapon, shield, grenade mod, relic or class mod in the list.
+
+![A pistol open in the gear page, with the 3D view and part slots](docs/screenshots/02-gear.png)
+
+- **3D view.** Drag to orbit, or use **Side / Angle / Top / Blueprint**. Click a part on the model to swap it. Colours show which manufacturer made each part.
+- **Level.** Change the item's level with the stepper and hit **Set**.
+- **Part slots.** One tile for each slot (body, grip, barrel, sight, stock, element, accessories, material). Empty slots are dashed. Click a tile to swap that part.
+
+![The part picker for a pistol barrel](docs/screenshots/03-part-picker.png)
+
+- **Part picker.** **Legal** shows only parts this gun could roll in the game. **Any gun** shows parts from other guns of the same type. **Everything** shows every part in the game. You can search by name, maker or element, filter by manufacturer, and see a preview of the gun with the part on it. Double-click a part to bolt it on, or **Remove current part**.
+
+![The stats bench with damage, ammo and accuracy numbers](docs/screenshots/04-stats-bench.png)
+
+- **Stats bench.** The gun's real numbers (damage, magazine size, reload time, spread, range and so on) with the game's base value next to each one. Type a number and **Set**, or use **/2, x2, x10**. Your tuned values are saved in `rtse/overrides.json` and re-applied whenever the game rebuilds that weapon.
+- **Item info & dev tools** (below the stats) has the item's id, class, level requirement and game stage, plus the **Save ... dump** buttons for bug reports.
+
+### Character
+
+![The character page](docs/screenshots/05-character.png)
+
+Your level and XP, plus unspent **skill points**, **cash**, **eridium**, **seraph crystals** and **torgue tokens**. Each one has a box to type an exact value and **Set**, quick **+** buttons, and **Max** where it makes sense. The game caps cash and tokens at two billion.
+
+### Ammo
+
+![The ammo page](docs/screenshots/06-ammo.png)
+
+One card per ammo type with how much you have, your capacity and how full that is. **Set** an exact amount, **Fill** to capacity, **Empty** it, change the capacity directly, or change the ammo SDU level. **Fill everything** tops up all types at once.
+
+### Upgrades
+
+![The upgrades page](docs/screenshots/07-upgrades.png)
+
+Your SDU (Storage Deck Upgrade) levels, the same idea as the Gibbed editor. **Backpack** and **Bank** slots, and **Ammo capacity** for every ammo type. Step the level up or down, **Set** it, or **Max** it. **Max everything** does the lot. Each card says where the game's number came from.
+
+### Skills
+
+![The skill tree page, with one skill selected](docs/screenshots/08-skills.png)
+
+The real skill tree for your class (Zer0 in this picture), straight from the game's own data. Your action skill is at the top. Click any skill to read what it does and set it to an exact rank with the stepper, **Max** or **Zero**. This ignores tier locks, so you can put points into locked skills. It doesn't spend skill points. You can also set your **Unspent** points, or **Reset tree**.
+
+### World
+
+The **World** page has four tabs.
+
+![World page, missions tab](docs/screenshots/09-world-missions.png)
+
+- **Missions.** Every mission, grouped by storyline, with its state. Pick the playthrough (PT1 Normal, PT2 TVHM, PT3 UVHM) and filter by Active, Ready, Not started, Complete or Failed. Search by name. **Reset** one mission, or **Complete all shown / Reset all shown** for whatever the filters currently show.
+
+![World page, challenges tab](docs/screenshots/10-world-challenges.png)
+
+- **Challenges.** Each challenge with a progress bar. **Complete** or **Reset** one at a time, or everything shown.
+
+![World page, fast travel tab](docs/screenshots/11-world-fast-travel.png)
+
+- **Fast travel.** Every fast travel station, locked or unlocked. **Unlock** or **Lock** one, or **Unlock all shown**.
+
+![World page, playthrough tab](docs/screenshots/12-world-playthrough.png)
+
+- **Playthrough.** Shows which playthrough you're in and lets you switch between Normal, TVHM and UVHM. Read the note on that page first: save and reload afterwards, since switching mid-playthrough can leave your mission log out of step.
+
 ## Heads up before you start
 
 - **Back up your saves first.** They're in `Documents\My Games\Borderlands 2\WillowGame\SaveData`. Copy that folder somewhere. It takes ten seconds and saves you if you break something.
