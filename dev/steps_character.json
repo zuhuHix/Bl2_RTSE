@@ -1,0 +1,15 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 1200},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/char_0_home.png"},
+    {"clickText": "Zer0 Cool"},
+    {"wait": 800},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/char_1_page.png"},
+    {"clickText": "Max"},
+    {"wait": 800},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/char_2_after_max.png"}
+  ]
+}

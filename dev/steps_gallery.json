@@ -1,0 +1,21 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 900},
+    {"clickText": "Nukem Launcher"},
+    {"wait": 500},
+    {"eval": "document.querySelector('.gunwrap').getBoundingClientRect().height"},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gallery_1_launcher.png"},
+    {"clickText": "Scoped Sniper"},
+    {"wait": 500},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gallery_2_sniper.png"},
+    {"clickText": "Bunny Gun"},
+    {"wait": 500},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gallery_3_rifle.png"},
+    {"clickText": "Rapid Shield"},
+    {"wait": 500},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gallery_4_shield.png"}
+  ]
+}

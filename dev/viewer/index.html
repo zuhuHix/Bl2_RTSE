@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>part viewer (dev)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14120f; overflow: hidden; }
+  canvas { display: block; }
+  #info { position: fixed; left: 10px; top: 8px; color: #f3ecd9; font: 13px Consolas, monospace; white-space: pre; text-shadow: 1px 1px 0 #000; }
+</style>
+<div id="info"></div>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three/three.module.js", "three/addons/": "../vendor/three/" } }
+</script>
+<script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+  const q = new URLSearchParams(location.search);
+  const files = (q.get("files") || "").split(",").filter(Boolean);
+  const mode = q.get("mode") || "overlap"; // overlap | exploded
+  const view = q.get("view") || "side";   // side | top | front | iso
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.append(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14120f);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  const light = new THREE.DirectionalLight(0xffffff, 1.4);
+  light.position.set(3, 5, 4);
+  scene.add(light);
+
+  const COLORS = [0xffd21f, 0xff5a2c, 0x5fa0d6, 0x67d983, 0xb25cff, 0xf3ecd9];
+  const info = [];
+  const loader = new GLTFLoader();
+  const loaded = await Promise.all(files.map((f) => loader.loadAsync(f)));
+  const group = new THREE.Group();
+  scene.add(group);
+  let offset = 0;
+  loaded.forEach((gltf, i) => {
+    const root = gltf.scene;
+    root.traverse((o) => {
+      if (o.isMesh || o.isSkinnedMesh) {
+        o.material = new THREE.MeshStandardMaterial({ color: COLORS[i % COLORS.length], roughness: 0.55, flatShading: true });
+      }
+    });
+    const box = new THREE.Box3().setFromObject(root);
+    const size = box.getSize(new THREE.Vector3());
+    const c = box.getCenter(new THREE.Vector3());
+    info.push(`${files[i].split("/").pop()}  size ${size.x.toFixed(1)} x ${size.y.toFixed(1)} x ${size.z.toFixed(1)}  center ${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}  min ${box.min.x.toFixed(1)},${box.min.y.toFixed(1)},${box.min.z.toFixed(1)}`);
+    if (mode === "exploded") { root.position.x += offset - c.x; offset += size.x + 4; }
+    group.add(root);
+  });
+
+  const all = new THREE.Box3().setFromObject(group);
+  const center = all.getCenter(new THREE.Vector3());
+  const radius = all.getSize(new THREE.Vector3()).length() * 0.6 || 10;
+  const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 5000);
+  const dir = { side: [0, 0, 1], top: [0, 1, 0.001], front: [1, 0, 0], iso: [1, 0.6, 1] }[view];
+  camera.position.copy(center).addScaledVector(new THREE.Vector3(...dir).normalize(), radius * 2.4);
+  camera.lookAt(center);
+  scene.add(new THREE.AxesHelper(radius * 0.5));
+  renderer.render(scene, camera);
+  document.getElementById("info").textContent = `${mode} / ${view}\n${info.join("\n")}\nwhole bounds: ${all.min.toArray().map((n) => n.toFixed(1))} -> ${all.max.toArray().map((n) => n.toFixed(1))}`;
+  document.title = "ready";
+</script>

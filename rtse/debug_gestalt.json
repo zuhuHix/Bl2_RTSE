@@ -1,0 +1,2832 @@
+{
+  "weapon_type": "GD_Weap_Pistol.A_Weapons.WeaponType_Jakobs_Pistol",
+  "gestalt": "Weap_Pistol.GestaltDef_Pistol",
+  "gestalt_class": "GestaltSkeletalMeshDefinition",
+  "definition": {
+    "GestaltPartBoundsEntry": "GearboxFramework.GestaltSkeletalMeshDefinition:GestaltPartBoundsEntry",
+    "GestaltPartPermutation": "GearboxFramework.GestaltSkeletalMeshDefinition:GestaltPartPermutation",
+    "GestaltSocketRemapEntry": "GearboxFramework.GestaltSkeletalMeshDefinition:GestaltSocketRemapEntry",
+    "GestaltInfo": "GearboxFramework.GestaltSkeletalMeshDefinition:GestaltInfo",
+    "GestaltPart": "GearboxFramework.GestaltSkeletalMeshDefinition:GestaltPart",
+    "GestaltAccessoryNameEntry": "GearboxFramework.GestaltSkeletalMeshDefinition:GestaltAccessoryNameEntry",
+    "GestaltSkeletalMesh": "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh",
+    "bStaticMeshRigidBodyMesh": false,
+    "GestaltInfos": {
+      "length": 1,
+      "items": [
+        {
+          "Parts": {
+            "length": 59,
+            "items": [
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Bandit",
+                "MaterialIndex": 0,
+                "FirstIndex": 0,
+                "NumPrimitives": 199
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Tediore",
+                "MaterialIndex": 0,
+                "FirstIndex": 597,
+                "NumPrimitives": 216
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Dahl",
+                "MaterialIndex": 0,
+                "FirstIndex": 1245,
+                "NumPrimitives": 388
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Bandit",
+                "MaterialIndex": 0,
+                "FirstIndex": 2409,
+                "NumPrimitives": 744
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Bandit_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 4641,
+                "NumPrimitives": 1144
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Tediore",
+                "MaterialIndex": 0,
+                "FirstIndex": 8073,
+                "NumPrimitives": 260
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Vladof",
+                "MaterialIndex": 0,
+                "FirstIndex": 8853,
+                "NumPrimitives": 262
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Dahl",
+                "MaterialIndex": 0,
+                "FirstIndex": 9639,
+                "NumPrimitives": 294
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Torgue",
+                "MaterialIndex": 0,
+                "FirstIndex": 10521,
+                "NumPrimitives": 308
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Maliwan",
+                "MaterialIndex": 0,
+                "FirstIndex": 11445,
+                "NumPrimitives": 252
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Jakobs",
+                "MaterialIndex": 0,
+                "FirstIndex": 12201,
+                "NumPrimitives": 246
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Hyperion",
+                "MaterialIndex": 0,
+                "FirstIndex": 12939,
+                "NumPrimitives": 166
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Bandit",
+                "MaterialIndex": 0,
+                "FirstIndex": 13437,
+                "NumPrimitives": 643
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Tediore",
+                "MaterialIndex": 0,
+                "FirstIndex": 15366,
+                "NumPrimitives": 360
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Vladof",
+                "MaterialIndex": 0,
+                "FirstIndex": 16446,
+                "NumPrimitives": 480
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Dahl",
+                "MaterialIndex": 0,
+                "FirstIndex": 17886,
+                "NumPrimitives": 194
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Torgue",
+                "MaterialIndex": 0,
+                "FirstIndex": 18468,
+                "NumPrimitives": 462
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Maliwan",
+                "MaterialIndex": 0,
+                "FirstIndex": 19854,
+                "NumPrimitives": 440
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Jakobs",
+                "MaterialIndex": 0,
+                "FirstIndex": 21174,
+                "NumPrimitives": 570
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Scope_Hyperion",
+                "MaterialIndex": 0,
+                "FirstIndex": 22884,
+                "NumPrimitives": 190
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Elemental2",
+                "MaterialIndex": 0,
+                "FirstIndex": 23454,
+                "NumPrimitives": 50
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Elemental1",
+                "MaterialIndex": 0,
+                "FirstIndex": 23604,
+                "NumPrimitives": 176
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Elemental3",
+                "MaterialIndex": 0,
+                "FirstIndex": 24132,
+                "NumPrimitives": 96
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Blade2",
+                "MaterialIndex": 0,
+                "FirstIndex": 24420,
+                "NumPrimitives": 126
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Laser",
+                "MaterialIndex": 0,
+                "FirstIndex": 24798,
+                "NumPrimitives": 96
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Grip_Stock",
+                "MaterialIndex": 0,
+                "FirstIndex": 25086,
+                "NumPrimitives": 136
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Tech1",
+                "MaterialIndex": 0,
+                "FirstIndex": 25494,
+                "NumPrimitives": 104
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Tech2",
+                "MaterialIndex": 0,
+                "FirstIndex": 25806,
+                "NumPrimitives": 88
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Tech3",
+                "MaterialIndex": 0,
+                "FirstIndex": 26070,
+                "NumPrimitives": 48
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Dahl_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 26214,
+                "NumPrimitives": 436
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Acc_Barrel_Blade1",
+                "MaterialIndex": 0,
+                "FirstIndex": 27522,
+                "NumPrimitives": 92
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Vladof",
+                "MaterialIndex": 0,
+                "FirstIndex": 27798,
+                "NumPrimitives": 565
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Vladof_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 29493,
+                "NumPrimitives": 572
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Torgue",
+                "MaterialIndex": 0,
+                "FirstIndex": 31209,
+                "NumPrimitives": 1130
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Torgue_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 34599,
+                "NumPrimitives": 412
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Maliwan",
+                "MaterialIndex": 0,
+                "FirstIndex": 35835,
+                "NumPrimitives": 1098
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Maliwan_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 39129,
+                "NumPrimitives": 160
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Jakobs",
+                "MaterialIndex": 0,
+                "FirstIndex": 39609,
+                "NumPrimitives": 1592
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Jakobs_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 44385,
+                "NumPrimitives": 554
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Hyperion",
+                "MaterialIndex": 0,
+                "FirstIndex": 46047,
+                "NumPrimitives": 750
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Hyperion_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 48297,
+                "NumPrimitives": 512
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Tediore",
+                "MaterialIndex": 0,
+                "FirstIndex": 49833,
+                "NumPrimitives": 412
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Tediore_Var1",
+                "MaterialIndex": 0,
+                "FirstIndex": 51069,
+                "NumPrimitives": 144
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Bandit",
+                "MaterialIndex": 0,
+                "FirstIndex": 51501,
+                "NumPrimitives": 174
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Vladof",
+                "MaterialIndex": 0,
+                "FirstIndex": 52023,
+                "NumPrimitives": 198
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Dahl",
+                "MaterialIndex": 0,
+                "FirstIndex": 52617,
+                "NumPrimitives": 520
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Torgue",
+                "MaterialIndex": 0,
+                "FirstIndex": 54177,
+                "NumPrimitives": 275
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Maliwan",
+                "MaterialIndex": 0,
+                "FirstIndex": 55002,
+                "NumPrimitives": 186
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Jakobs",
+                "MaterialIndex": 0,
+                "FirstIndex": 55560,
+                "NumPrimitives": 375
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Grip_Hyperion",
+                "MaterialIndex": 0,
+                "FirstIndex": 56685,
+                "NumPrimitives": 326
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Maliwan_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 57663,
+                "NumPrimitives": 321
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Hyperion_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 58626,
+                "NumPrimitives": 402
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Jakobs_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 59832,
+                "NumPrimitives": 277
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Barrel_Alien",
+                "MaterialIndex": 0,
+                "FirstIndex": 60663,
+                "NumPrimitives": 614
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Bandit_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 62505,
+                "NumPrimitives": 330
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Dahl_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 63495,
+                "NumPrimitives": 439
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Tediore_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 64812,
+                "NumPrimitives": 384
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Torgue_Var2",
+                "MaterialIndex": 0,
+                "FirstIndex": 65964,
+                "NumPrimitives": 328
+              },
+              {
+                "SkeletalMeshFragment": null,
+                "SkeletalMeshFragmentName": "Pistol_Body_Vladof_Var2",
+                "MaterialIndex": 1,
+                "FirstIndex": 66948,
+                "NumPrimitives": 538
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "GestaltAccessoryNames": {
+      "length": 0,
+      "items": []
+    },
+    "GestaltSocketMappings": {
+      "length": 60,
+      "items": [
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Bandit",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Bandit_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Bandit",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Bandit_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Dahl",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Dahl_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Dahl",
+          "OriginalSocketName": "EjectPort",
+          "MangledSocketName": "Pistol_Body_Dahl_EjectPort"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Dahl",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Dahl_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Bandit",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Bandit_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Bandit",
+          "OriginalSocketName": "EjectPort",
+          "MangledSocketName": "Pistol_Body_Bandit_EjectPort"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Bandit",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Bandit_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Tediore",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Tediore_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Tediore",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Tediore_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Vladof",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Vladof_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Vladof",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Vladof_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Dahl",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Dahl_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Dahl",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Dahl_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Torgue",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Torgue_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Torgue",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Torgue_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Maliwan",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Maliwan_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Maliwan",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Maliwan_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Jakobs",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Jakobs_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Jakobs",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Jakobs_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Hyperion",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Hyperion_Muzzle"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Hyperion",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Hyperion_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Bandit",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Bandit_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Bandit",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Bandit_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Tediore",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Tediore_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Tediore",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Tediore_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Vladof",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Vladof_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Vladof",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Vladof_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Dahl",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Dahl_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Dahl",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Dahl_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Torgue",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Torgue_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Torgue",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Torgue_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Maliwan",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Maliwan_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Maliwan",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Maliwan_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Jakobs",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Jakobs_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Jakobs",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Jakobs_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Hyperion",
+          "OriginalSocketName": "EyeSocket1",
+          "MangledSocketName": "Pistol_Scope_Hyperion_EyeSocket1"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Scope_Hyperion",
+          "OriginalSocketName": "SightFX",
+          "MangledSocketName": "Pistol_Scope_Hyperion_SightFX"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Acc_Barrel_Elemental2",
+          "OriginalSocketName": "elemental",
+          "MangledSocketName": "Acc_Barrel_Elemental2_Elemental"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Acc_Barrel_Elemental1",
+          "OriginalSocketName": "elemental",
+          "MangledSocketName": "Acc_Barrel_Elemental1_Elemental"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Acc_Barrel_Elemental3",
+          "OriginalSocketName": "elemental",
+          "MangledSocketName": "Acc_Barrel_Elemental3_Elemental"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Acc_Barrel_Laser",
+          "OriginalSocketName": "LaserSight",
+          "MangledSocketName": "Acc_Barrel_Laser_LaserSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Vladof",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Vladof_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Vladof",
+          "OriginalSocketName": "EjectPort",
+          "MangledSocketName": "Pistol_Body_Vladof_EjectPort"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Vladof",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Vladof_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Torgue",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Torgue_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Torgue",
+          "OriginalSocketName": "EjectPort",
+          "MangledSocketName": "Pistol_Body_Torgue_EjectPort"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Torgue",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Torgue_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Maliwan",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Maliwan_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Maliwan",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Maliwan_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Jakobs",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Jakobs_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Jakobs",
+          "OriginalSocketName": "EjectPort",
+          "MangledSocketName": "Pistol_Body_Jakobs_EjectPort"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Jakobs",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Jakobs_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Hyperion",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Hyperion_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Hyperion",
+          "OriginalSocketName": "EjectPort",
+          "MangledSocketName": "Pistol_Body_Hyperion_EjectPort"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Hyperion",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Hyperion_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Tediore",
+          "OriginalSocketName": "RearSight",
+          "MangledSocketName": "Pistol_Body_Tediore_RearSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Body_Tediore",
+          "OriginalSocketName": "EyeSocket2",
+          "MangledSocketName": "Pistol_Body_Tediore_EyeSocket2"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Alien",
+          "OriginalSocketName": "FrontSight",
+          "MangledSocketName": "Pistol_Barrel_Alien_FrontSight"
+        },
+        {
+          "SkeletalMeshFragment": null,
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Alien",
+          "OriginalSocketName": "Muzzle",
+          "MangledSocketName": "Pistol_Barrel_Alien_Muzzle"
+        }
+      ]
+    },
+    "GestaltPartBounds": {
+      "length": 59,
+      "items": [
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Bandit",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.2972848415374756,
+              "Y": -16.64218521118164,
+              "Z": 6.23848819732666
+            },
+            "BoxExtent": {
+              "X": 2.702028274536133,
+              "Y": 9.673172950744629,
+              "Z": 4.593287944793701
+            },
+            "SphereRadius": 11.043981552124023
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Tediore",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0,
+              "Y": -1.1309700012207031,
+              "Z": -5.42900276184082
+            },
+            "BoxExtent": {
+              "X": 2.670602321624756,
+              "Y": 18.98571014404297,
+              "Z": 8.697502136230469
+            },
+            "SphereRadius": 21.05316734313965
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Dahl",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.001730203628540039,
+              "Y": 3.561549186706543,
+              "Z": 6.956042766571045
+            },
+            "BoxExtent": {
+              "X": 2.4703221321105957,
+              "Y": 10.534241676330566,
+              "Z": 4.826618194580078
+            },
+            "SphereRadius": 11.847742080688477
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Bandit",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 4.846977233886719,
+              "Y": 5.052045822143555,
+              "Z": 7.712989330291748
+            },
+            "BoxExtent": {
+              "X": 8.553095817565918,
+              "Y": 12.024702072143555,
+              "Z": 6.234103679656982
+            },
+            "SphereRadius": 16.019142150878906
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Bandit_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 6.235936164855957,
+              "Y": 7.672130584716797,
+              "Z": 11.35560417175293
+            },
+            "BoxExtent": {
+              "X": 9.009597778320312,
+              "Y": 11.547348022460938,
+              "Z": 9.003600120544434
+            },
+            "SphereRadius": 17.19240951538086
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Tediore",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -9.5367431640625e-07,
+              "Y": -13.527921676635742,
+              "Z": 6.273523807525635
+            },
+            "BoxExtent": {
+              "X": 2.315725564956665,
+              "Y": 6.576665878295898,
+              "Z": 4.155824184417725
+            },
+            "SphereRadius": 8.117018699645996
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Vladof",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -9.5367431640625e-07,
+              "Y": -24.487133026123047,
+              "Z": 6.961299896240234
+            },
+            "BoxExtent": {
+              "X": 2.3339004516601562,
+              "Y": 17.519474029541016,
+              "Z": 5.038200378417969
+            },
+            "SphereRadius": 18.37831687927246
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Dahl",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 2.002716064453125e-05,
+              "Y": -14.659689903259277,
+              "Z": 6.658789157867432
+            },
+            "BoxExtent": {
+              "X": 2.2573885917663574,
+              "Y": 7.685738563537598,
+              "Z": 4.860908031463623
+            },
+            "SphereRadius": 9.369888305664062
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Torgue",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -3.0994415283203125e-06,
+              "Y": -17.28354263305664,
+              "Z": 6.012616157531738
+            },
+            "BoxExtent": {
+              "X": 2.9963765144348145,
+              "Y": 10.31801700592041,
+              "Z": 6.915621757507324
+            },
+            "SphereRadius": 12.777541160583496
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Maliwan",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0,
+              "Y": -15.441656112670898,
+              "Z": 5.615135669708252
+            },
+            "BoxExtent": {
+              "X": 2.3523049354553223,
+              "Y": 8.468599319458008,
+              "Z": 4.943236827850342
+            },
+            "SphereRadius": 10.083952903747559
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Jakobs",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.00044798851013183594,
+              "Y": -26.140132904052734,
+              "Z": 6.631249904632568
+            },
+            "BoxExtent": {
+              "X": 2.5566506385803223,
+              "Y": 19.170955657958984,
+              "Z": 4.984749794006348
+            },
+            "SphereRadius": 19.97272491455078
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Hyperion",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -7.152557373046875e-07,
+              "Y": -18.855632781982422,
+              "Z": 5.305369853973389
+            },
+            "BoxExtent": {
+              "X": 2.1241683959960938,
+              "Y": 11.88555908203125,
+              "Z": 7.0022149085998535
+            },
+            "SphereRadius": 13.95742130279541
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Bandit",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.06216907501220703,
+              "Y": -8.526780128479004,
+              "Z": 13.286905288696289
+            },
+            "BoxExtent": {
+              "X": 4.123151779174805,
+              "Y": 4.250336647033691,
+              "Z": 5.010995864868164
+            },
+            "SphereRadius": 7.757307529449463
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Tediore",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.9000003337860107,
+              "Y": -3.5569076538085938,
+              "Z": 14.745728492736816
+            },
+            "BoxExtent": {
+              "X": 3.687000036239624,
+              "Y": 4.0859503746032715,
+              "Z": 4.792872428894043
+            },
+            "SphereRadius": 7.297985076904297
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Vladof",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -4.041968822479248,
+              "Y": -5.707481384277344,
+              "Z": 13.56825065612793
+            },
+            "BoxExtent": {
+              "X": 2.855051040649414,
+              "Y": 16.001251220703125,
+              "Z": 6.204550266265869
+            },
+            "SphereRadius": 17.397924423217773
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Dahl",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 3.5762786865234375e-07,
+              "Y": -2.4338343143463135,
+              "Z": 12.420392990112305
+            },
+            "BoxExtent": {
+              "X": 1.8500007390975952,
+              "Y": 3.8289058208465576,
+              "Z": 2.590113639831543
+            },
+            "SphereRadius": 4.979127407073975
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Torgue",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -9.5367431640625e-07,
+              "Y": -5.922172546386719,
+              "Z": 14.019126892089844
+            },
+            "BoxExtent": {
+              "X": 2.788362503051758,
+              "Y": 11.439262390136719,
+              "Z": 4.038974285125732
+            },
+            "SphereRadius": 12.4476900100708
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Maliwan",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0,
+              "Y": 0.07815337181091309,
+              "Z": 11.212769508361816
+            },
+            "BoxExtent": {
+              "X": 2.1710386276245117,
+              "Y": 1.5162806510925293,
+              "Z": 1.9369497299194336
+            },
+            "SphereRadius": 3.280897617340088
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Jakobs",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.33784937858581543,
+              "Y": -6.35108757019043,
+              "Z": 14.215949058532715
+            },
+            "BoxExtent": {
+              "X": 2.930751085281372,
+              "Y": 13.48691177368164,
+              "Z": 4.120549201965332
+            },
+            "SphereRadius": 14.403645515441895
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Scope_Hyperion",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 4.76837158203125e-07,
+              "Y": -0.5578479766845703,
+              "Z": 12.29456901550293
+            },
+            "BoxExtent": {
+              "X": 4.225501537322998,
+              "Y": 6.6170148849487305,
+              "Z": 2.450261116027832
+            },
+            "SphereRadius": 8.224568367004395
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Elemental2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -2.194005250930786,
+              "Y": -9.069611549377441,
+              "Z": 5.683427810668945
+            },
+            "BoxExtent": {
+              "X": 2.0076186656951904,
+              "Y": 1.582167387008667,
+              "Z": 0.9577662944793701
+            },
+            "SphereRadius": 2.729671001434326
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Elemental1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -1.3155124187469482,
+              "Y": -9.600404739379883,
+              "Z": 2.5025765895843506
+            },
+            "BoxExtent": {
+              "X": 1.642711877822876,
+              "Y": 2.1787381172180176,
+              "Z": 0.8389129042625427
+            },
+            "SphereRadius": 2.8546762466430664
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Elemental3",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -2.7008790969848633,
+              "Y": -9.122220993041992,
+              "Z": 5.2712507247924805
+            },
+            "BoxExtent": {
+              "X": 2.2044076919555664,
+              "Y": 1.5460541248321533,
+              "Z": 1.3465856313705444
+            },
+            "SphereRadius": 3.0104799270629883
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Blade2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.1920928955078125e-07,
+              "Y": -30.316965103149414,
+              "Z": -5.210366249084473
+            },
+            "BoxExtent": {
+              "X": 1.5313389301300049,
+              "Y": 23.685121536254883,
+              "Z": 8.302694320678711
+            },
+            "SphereRadius": 25.144874572753906
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Laser",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.013236522674560547,
+              "Y": -13.961151123046875,
+              "Z": -0.7748534679412842
+            },
+            "BoxExtent": {
+              "X": 2.168079376220703,
+              "Y": 6.539613246917725,
+              "Z": 3.44284987449646
+            },
+            "SphereRadius": 7.701968669891357
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Grip_Stock",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.006408214569091797,
+              "Y": 36.32212829589844,
+              "Z": -12.913114547729492
+            },
+            "BoxExtent": {
+              "X": 1.7400031089782715,
+              "Y": 26.100683212280273,
+              "Z": 11.100034713745117
+            },
+            "SphereRadius": 28.416263580322266
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Tech1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 2.62398099899292,
+              "Y": -11.263769149780273,
+              "Z": 8.644708633422852
+            },
+            "BoxExtent": {
+              "X": 1.4060580730438232,
+              "Y": 1.8547325134277344,
+              "Z": 1.5373282432556152
+            },
+            "SphereRadius": 2.7893385887145996
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Tech2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 2.764585494995117,
+              "Y": -11.656005859375,
+              "Z": 8.871492385864258
+            },
+            "BoxExtent": {
+              "X": 1.3407665491104126,
+              "Y": 2.7529773712158203,
+              "Z": 1.150665283203125
+            },
+            "SphereRadius": 3.271172523498535
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Tech3",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 2.787593364715576,
+              "Y": -11.52126407623291,
+              "Z": 8.80486011505127
+            },
+            "BoxExtent": {
+              "X": 0.973436176776886,
+              "Y": 2.3408193588256836,
+              "Z": 1.8019781112670898
+            },
+            "SphereRadius": 3.11032772064209
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Dahl_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.007905960083007812,
+              "Y": 9.898564338684082,
+              "Z": 6.118532657623291
+            },
+            "BoxExtent": {
+              "X": 2.9266316890716553,
+              "Y": 6.755381107330322,
+              "Z": 4.322080612182617
+            },
+            "SphereRadius": 8.537020683288574
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Acc_Barrel_Blade1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.008732080459594727,
+              "Y": -29.567298889160156,
+              "Z": -0.7459263801574707
+            },
+            "BoxExtent": {
+              "X": 2.0090808868408203,
+              "Y": 25.739768981933594,
+              "Z": 3.8372836112976074
+            },
+            "SphereRadius": 26.10166358947754
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Vladof",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.7804481983184814,
+              "Y": -0.3036375045776367,
+              "Z": 1.211050033569336
+            },
+            "BoxExtent": {
+              "X": 2.7704501152038574,
+              "Y": 14.741449356079102,
+              "Z": 10.756750106811523
+            },
+            "SphereRadius": 18.457881927490234
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Vladof_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -1.7908992767333984,
+              "Y": 3.6015524864196777,
+              "Z": 2.1653499603271484
+            },
+            "BoxExtent": {
+              "X": 4.545899391174316,
+              "Y": 10.420248985290527,
+              "Z": 10.080849647521973
+            },
+            "SphereRadius": 15.194417953491211
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Torgue",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.0005028247833251953,
+              "Y": 2.9224958419799805,
+              "Z": 4.940872669219971
+            },
+            "BoxExtent": {
+              "X": 3.592529296875,
+              "Y": 9.900635719299316,
+              "Z": 8.532842636108398
+            },
+            "SphereRadius": 13.555007934570312
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Torgue_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0,
+              "Y": 3.4344239234924316,
+              "Z": 7.640822410583496
+            },
+            "BoxExtent": {
+              "X": 5.513354301452637,
+              "Y": 10.478229522705078,
+              "Z": 6.273849010467529
+            },
+            "SphereRadius": 13.39968490600586
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Maliwan",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.430511474609375e-06,
+              "Y": 5.679291725158691,
+              "Z": 6.477428913116455
+            },
+            "BoxExtent": {
+              "X": 4.107315540313721,
+              "Y": 12.653358459472656,
+              "Z": 5.521626949310303
+            },
+            "SphereRadius": 14.40367603302002
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Maliwan_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.6689300537109375e-06,
+              "Y": 10.187082290649414,
+              "Z": 7.845008850097656
+            },
+            "BoxExtent": {
+              "X": 3.5790576934814453,
+              "Y": 8.05971622467041,
+              "Z": 3.896757125854492
+            },
+            "SphereRadius": 9.641234397888184
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Jakobs",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.39869046211242676,
+              "Y": 4.098117828369141,
+              "Z": 4.150125980377197
+            },
+            "BoxExtent": {
+              "X": 3.5646095275878906,
+              "Y": 11.071128845214844,
+              "Z": 7.2500762939453125
+            },
+            "SphereRadius": 13.70547103881836
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Jakobs_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.430511474609375e-05,
+              "Y": 5.502717971801758,
+              "Z": 7.404971122741699
+            },
+            "BoxExtent": {
+              "X": 3.7605276107788086,
+              "Y": 9.802505493164062,
+              "Z": 4.345528602600098
+            },
+            "SphereRadius": 11.362847328186035
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Hyperion",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.9073486328125e-06,
+              "Y": 5.6915483474731445,
+              "Z": 7.353488922119141
+            },
+            "BoxExtent": {
+              "X": 4.975123882293701,
+              "Y": 12.660557746887207,
+              "Z": 5.327850341796875
+            },
+            "SphereRadius": 14.609160423278809
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Hyperion_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.430511474609375e-06,
+              "Y": 6.515017509460449,
+              "Z": 7.278680801391602
+            },
+            "BoxExtent": {
+              "X": 6.010946750640869,
+              "Y": 13.88377571105957,
+              "Z": 5.7191972732543945
+            },
+            "SphereRadius": 16.17405128479004
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Tediore",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -7.152557373046875e-07,
+              "Y": 5.4966630935668945,
+              "Z": 6.317549705505371
+            },
+            "BoxExtent": {
+              "X": 2.580899953842163,
+              "Y": 12.479949951171875,
+              "Z": 4.199850082397461
+            },
+            "SphereRadius": 13.418231010437012
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Tediore_Var1",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.3935229778289795,
+              "Y": 9.338628768920898,
+              "Z": 4.360050201416016
+            },
+            "BoxExtent": {
+              "X": 3.013277053833008,
+              "Y": 9.322229385375977,
+              "Z": 2.242349863052368
+            },
+            "SphereRadius": 10.050469398498535
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Bandit",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.2818877696990967,
+              "Y": -1.0995407104492188,
+              "Z": -4.259699821472168
+            },
+            "BoxExtent": {
+              "X": 2.545778751373291,
+              "Y": 16.26878547668457,
+              "Z": 7.956507682800293
+            },
+            "SphereRadius": 18.288257598876953
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Vladof",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.1920928955078125e-06,
+              "Y": 3.5489635467529297,
+              "Z": -3.754199981689453
+            },
+            "BoxExtent": {
+              "X": 2.0756006240844727,
+              "Y": 10.945150375366211,
+              "Z": 6.942700386047363
+            },
+            "SphereRadius": 13.126520156860352
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Dahl",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.007261753082275391,
+              "Y": 3.9336042404174805,
+              "Z": -3.2755661010742188
+            },
+            "BoxExtent": {
+              "X": 2.220674991607666,
+              "Y": 10.801776885986328,
+              "Z": 8.677370071411133
+            },
+            "SphereRadius": 14.03233814239502
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Torgue",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 9.5367431640625e-07,
+              "Y": 6.560942649841309,
+              "Z": -6.324894905090332
+            },
+            "BoxExtent": {
+              "X": 4.093194007873535,
+              "Y": 12.891318321228027,
+              "Z": 9.588799476623535
+            },
+            "SphereRadius": 16.579668045043945
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Maliwan",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.6689300537109375e-06,
+              "Y": 7.592573642730713,
+              "Z": -5.523929595947266
+            },
+            "BoxExtent": {
+              "X": 3.0204575061798096,
+              "Y": 7.294167995452881,
+              "Z": 8.794336318969727
+            },
+            "SphereRadius": 11.818138122558594
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Jakobs",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0002868175506591797,
+              "Y": 6.018913269042969,
+              "Z": -4.842337608337402
+            },
+            "BoxExtent": {
+              "X": 3.265597343444824,
+              "Y": 11.94729995727539,
+              "Z": 9.012751579284668
+            },
+            "SphereRadius": 15.317695617675781
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Grip_Hyperion",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0,
+              "Y": 4.208922386169434,
+              "Z": -5.995571136474609
+            },
+            "BoxExtent": {
+              "X": 2.254019260406494,
+              "Y": 11.700654983520508,
+              "Z": 9.978489875793457
+            },
+            "SphereRadius": 15.542078018188477
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Maliwan_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -1.3082530498504639,
+              "Y": 4.083073616027832,
+              "Z": 7.701907157897949
+            },
+            "BoxExtent": {
+              "X": 2.7375833988189697,
+              "Y": 10.889435768127441,
+              "Z": 4.416342735290527
+            },
+            "SphereRadius": 12.065581321716309
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Hyperion_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.430511474609375e-06,
+              "Y": 6.022982597351074,
+              "Z": 9.727155685424805
+            },
+            "BoxExtent": {
+              "X": 4.777003288269043,
+              "Y": 13.883426666259766,
+              "Z": 6.111388206481934
+            },
+            "SphereRadius": 15.903407096862793
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Jakobs_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.0659170150756836,
+              "Y": 8.597814559936523,
+              "Z": 7.36317777633667
+            },
+            "BoxExtent": {
+              "X": 4.147836208343506,
+              "Y": 3.0153839588165283,
+              "Z": 5.212577819824219
+            },
+            "SphereRadius": 7.312185287475586
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Barrel_Alien",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 0.0041484832763671875,
+              "Y": -16.309072494506836,
+              "Z": 6.51463508605957
+            },
+            "BoxExtent": {
+              "X": 6.863092422485352,
+              "Y": 9.325115203857422,
+              "Z": 5.460299968719482
+            },
+            "SphereRadius": 12.801355361938477
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Bandit_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": 1.2266709804534912,
+              "Y": 7.0369648933410645,
+              "Z": 7.88619327545166
+            },
+            "BoxExtent": {
+              "X": 5.160946846008301,
+              "Y": 11.868250846862793,
+              "Z": 4.633622169494629
+            },
+            "SphereRadius": 13.746315956115723
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Dahl_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.7558627128601074,
+              "Y": 5.07144832611084,
+              "Z": 7.407416343688965
+            },
+            "BoxExtent": {
+              "X": 2.434218168258667,
+              "Y": 9.488533973693848,
+              "Z": 4.436309814453125
+            },
+            "SphereRadius": 10.753536224365234
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Vladof_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -0.7011494636535645,
+              "Y": 5.824613094329834,
+              "Z": 7.230900287628174
+            },
+            "BoxExtent": {
+              "X": 3.0558507442474365,
+              "Y": 8.747099876403809,
+              "Z": 4.175100326538086
+            },
+            "SphereRadius": 10.162748336791992
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Tediore_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -1.08544921875,
+              "Y": 6.060786247253418,
+              "Z": 6.773800373077393
+            },
+            "BoxExtent": {
+              "X": 3.661550998687744,
+              "Y": 11.897027015686035,
+              "Z": 4.656100273132324
+            },
+            "SphereRadius": 13.290051460266113
+          }
+        },
+        {
+          "SkeletalMeshFragmentName": "Pistol_Body_Torgue_Var2",
+          "ReferencePoseBounds": {
+            "Origin": {
+              "X": -1.2444653511047363,
+              "Y": 5.310857772827148,
+              "Z": 6.107457160949707
+            },
+            "BoxExtent": {
+              "X": 5.3296661376953125,
+              "Y": 8.262492179870605,
+              "Z": 4.225559234619141
+            },
+            "SphereRadius": 10.701844215393066
+          }
+        }
+      ]
+    },
+    "EDebugBreakType": "<EnumType>",
+    "EAutomatedRunResult": "<EnumType>",
+    "ETickingGroup": "<EnumType>",
+    "InvAspectRatio16x9": "0.56249",
+    "InvAspectRatio5x4": "0.8",
+    "InvAspectRatio4x3": "0.75",
+    "AspectRatio16x9": "1.77778",
+    "AspectRatio5x4": "1.25",
+    "AspectRatio4x3": "1.33333",
+    "INDEX_NONE": "-1",
+    "UnrRotToDeg": "0.00549316540360483",
+    "DegToUnrRot": "182.0444",
+    "RadToUnrRot": "10430.3783504704527",
+    "UnrRotToRad": "0.00009587379924285",
+    "DegToRad": "0.017453292519943296",
+    "RadToDeg": "57.295779513082321600",
+    "Pi": "3.1415926535897932",
+    "MaxInt": "0x7fffffff",
+    "NameBasedObjectPath": "Core.Object:NameBasedObjectPath",
+    "MAX_OBJECT_PATH_COMPONENTS": "6",
+    "SmartVector": "Core.Object:SmartVector",
+    "Flag": "Core.Object:Flag",
+    "BoneAtom": "Core.Object:BoneAtom",
+    "OctreeElementId": "Core.Object:OctreeElementId",
+    "RenderCommandFence": "Core.Object:RenderCommandFence",
+    "RawDistribution": "Core.Object:RawDistribution",
+    "InterpCurveLinearColor": "Core.Object:InterpCurveLinearColor",
+    "InterpCurvePointLinearColor": "Core.Object:InterpCurvePointLinearColor",
+    "InterpCurveQuat": "Core.Object:InterpCurveQuat",
+    "InterpCurvePointQuat": "Core.Object:InterpCurvePointQuat",
+    "InterpCurveTwoVectors": "Core.Object:InterpCurveTwoVectors",
+    "InterpCurvePointTwoVectors": "Core.Object:InterpCurvePointTwoVectors",
+    "InterpCurveVector": "Core.Object:InterpCurveVector",
+    "InterpCurvePointVector": "Core.Object:InterpCurvePointVector",
+    "InterpCurveVector2D": "Core.Object:InterpCurveVector2D",
+    "InterpCurvePointVector2D": "Core.Object:InterpCurvePointVector2D",
+    "InterpCurveFloat": "Core.Object:InterpCurveFloat",
+    "InterpCurvePointFloat": "Core.Object:InterpCurvePointFloat",
+    "EInterpMethodType": "<EnumType>",
+    "EInterpCurveMode": "<EnumType>",
+    "Cylinder": "Core.Object:Cylinder",
+    "Matrix": "Core.Object:Matrix",
+    "BoxSphereBounds": "Core.Object:BoxSphereBounds",
+    "Box": "Core.Object:Box",
+    "LinearColor": "Core.Object:LinearColor",
+    "Color": "Core.Object:Color",
+    "EAspectRatioAxisConstraint": "<EnumType>",
+    "EInputEvent": "<EnumType>",
+    "EAxis": "<EnumType>",
+    "TAlphaBlend": "Core.Object:TAlphaBlend",
+    "AlphaBlendType": "<EnumType>",
+    "TPOV": "Core.Object:TPOV",
+    "SHVectorRGB": "Core.Object:SHVectorRGB",
+    "SHVector": "Core.Object:SHVector",
+    "IntPoint3D": "Core.Object:IntPoint3D",
+    "IntPoint": "Core.Object:IntPoint",
+    "PackedNormal": "Core.Object:PackedNormal",
+    "Quat": "Core.Object:Quat",
+    "Rotator": "Core.Object:Rotator",
+    "Plane2D": "Core.Object:Plane2D",
+    "Plane": "Core.Object:Plane",
+    "TwoVectors": "Core.Object:TwoVectors",
+    "Vector2D": "Core.Object:Vector2D",
+    "Vector4": "Core.Object:Vector4",
+    "Vector": "Core.Object:Vector",
+    "Guid": "Core.Object:Guid",
+    "StableArray_Mirror": "Core.Object:StableArray_Mirror",
+    "ChunkedList_Mirror": "Core.Object:ChunkedList_Mirror",
+    "InlinePointerArray_Mirror": "Core.Object:InlinePointerArray_Mirror",
+    "Array_Mirror": "Core.Object:Array_Mirror",
+    "IndirectArray_Mirror": "Core.Object:IndirectArray_Mirror",
+    "FColorVertexBuffer_Mirror": "Core.Object:FColorVertexBuffer_Mirror",
+    "RenderCommandFence_Mirror": "Core.Object:RenderCommandFence_Mirror",
+    "UntypedBulkData_Mirror": "Core.Object:UntypedBulkData_Mirror",
+    "MultiMap_Mirror": "Core.Object:MultiMap_Mirror",
+    "Map_Mirror": "Core.Object:Map_Mirror",
+    "Set_Mirror": "Core.Object:Set_Mirror",
+    "SparseArray_Mirror": "Core.Object:SparseArray_Mirror",
+    "BitArray_Mirror": "Core.Object:BitArray_Mirror",
+    "ThreadSafeCounter": "Core.Object:ThreadSafeCounter",
+    "Double": "Core.Object:Double",
+    "VfTableObject": {
+      "Dummy": 28018848
+    },
+    "HashNext": {
+      "Dummy": 354064856
+    },
+    "ObjectFlags": 4223241343222808,
+    "HashOuterNext": {
+      "Dummy": 353908824
+    },
+    "StateFrame": {
+      "Dummy": 0
+    },
+    "Linker": null,
+    "LinkerIndex": {
+      "Dummy": -1
+    },
+    "ObjectInternalInteger": 130366,
+    "NetIndex": 0,
+    "Outer": "Weap_Pistol",
+    "Name": "GestaltDef_Pistol",
+    "Class": "GearboxFramework.GestaltSkeletalMeshDefinition",
+    "ObjectArchetype": "GearboxFramework.Default__GestaltSkeletalMeshDefinition",
+    "QWord": "Core.Object:QWord",
+    "Pointer": "Core.Object:Pointer"
+  },
+  "GestaltSkeletalMesh_object": {
+    "SoftBodySpecialBoneInfo": "Engine.SkeletalMesh:SoftBodySpecialBoneInfo",
+    "SoftBodyBoneType": "<EnumType>",
+    "SoftBodyTetraLink": "Engine.SkeletalMesh:SoftBodyTetraLink",
+    "ClothSpecialBoneInfo": "Engine.SkeletalMesh:ClothSpecialBoneInfo",
+    "ClothBoneType": "<EnumType>",
+    "SkeletalMeshLODInfo": "Engine.SkeletalMesh:SkeletalMeshLODInfo",
+    "TriangleSortSettings": "Engine.SkeletalMesh:TriangleSortSettings",
+    "TriangleSortAxis": "<EnumType>",
+    "ClothMovementScaleGen": "<EnumType>",
+    "TriangleSortOption": "<EnumType>",
+    "BoneBreakOption": "<EnumType>",
+    "BoneMirrorExport": "Engine.SkeletalMesh:BoneMirrorExport",
+    "BoneMirrorInfo": "Engine.SkeletalMesh:BoneMirrorInfo",
+    "Bounds": {
+      "Origin": {
+        "X": 5.266546249389648,
+        "Y": 3.7383346557617188,
+        "Z": 2.1198253631591797
+      },
+      "BoxExtent": {
+        "X": 18.988582611083984,
+        "Y": 84.78517150878906,
+        "Z": 27.242979049682617
+      },
+      "SphereRadius": 91.0564193725586
+    },
+    "Materials": {
+      "length": 2,
+      "items": [
+        null,
+        "Common_GunMaterials.Materials.Pistol.Mati_DahlUncommon"
+      ]
+    },
+    "ClothingAssets": {
+      "length": 0,
+      "items": []
+    },
+    "Origin": {
+      "X": 0.0,
+      "Y": 0.0,
+      "Z": 0.0
+    },
+    "RotOrigin": {
+      "Pitch": 0,
+      "Yaw": 0,
+      "Roll": 0
+    },
+    "RefSkeleton": {
+      "length": 30,
+      "items": [
+        25624,
+        0,
+        0,
+        0,
+        0,
+        -2147483648,
+        864026623,
+        -1082130433,
+        0,
+        -2147483648,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        -1,
+        85380,
+        0,
+        0,
+        0,
+        -2147483648,
+        0,
+        -1087044364,
+        1060439281,
+        -1386217472,
+        998473728
+      ]
+    },
+    "SkeletalDepth": 5,
+    "NameIndexMap": "<error RuntimeError('Unknown object type MapProperty')>",
+    "LODModels": {
+      "Data": {
+        "Dummy": 354008056
+      },
+      "ArrayNum": 1,
+      "ArrayMax": 1
+    },
+    "RefBasesInvMatrix": {
+      "length": 30,
+      "items": [
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 5.960463411724959e-08,
+            "W": 1.0
+          },
+          "Translation": {
+            "X": -0.0,
+            "Y": 0.0,
+            "Z": 0.0
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 0.004013061989098787,
+            "Y": 4.911272499796837e-10,
+            "Z": 0.0
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.06997357308864594,
+            "Y": -0.06997355073690414,
+            "Z": 0.7036361694335938,
+            "W": 0.7036360502243042
+          },
+          "Translation": {
+            "X": 7.191171169281006,
+            "Y": 1.354897221972351e-06,
+            "Z": 5.772326469421387
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 12.276544570922852,
+            "Y": 1.0558450185271795e-06,
+            "Z": -4.25037956237793
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": -5.594520092010498,
+            "Y": 8.210624713456127e-08,
+            "Z": -2.16758131980896
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": -1.0251340866088867,
+            "Y": 1.6437410116195679,
+            "Z": -2.2047486305236816
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -5.268354197340841e-09,
+            "Y": 5.26835775005452e-09,
+            "Z": 0.7071070671081543,
+            "W": 0.7071065306663513
+          },
+          "Translation": {
+            "X": 0.6388312578201294,
+            "Y": 2.838717136910418e-07,
+            "Z": -6.502933025360107
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": -14.852069854736328,
+            "Y": -3.340998091516667e-06,
+            "Z": -6.470909595489502
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.25142884254455566,
+            "Y": 0.48480111360549927,
+            "Z": -0.662779688835144,
+            "W": 0.5123234391212463
+          },
+          "Translation": {
+            "X": 15.774214744567871,
+            "Y": 6.54172945022583,
+            "Z": -13.824688911437988
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.1553887128829956,
+            "Y": -0.4347032308578491,
+            "Z": 0.7500306367874146,
+            "W": -0.47364723682403564
+          },
+          "Translation": {
+            "X": 9.358448028564453,
+            "Y": 3.5764081478118896,
+            "Z": -15.083958625793457
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.43273013830184937,
+            "Y": -0.15794922411441803,
+            "Z": -0.4728703200817108,
+            "W": 0.751126229763031
+          },
+          "Translation": {
+            "X": 9.446962356567383,
+            "Y": -3.5102832317352295,
+            "Z": -15.044486045837402
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.48312869668006897,
+            "Y": -0.25403138995170593,
+            "Z": -0.5111442804336548,
+            "W": 0.6639176607131958
+          },
+          "Translation": {
+            "X": 15.861148834228516,
+            "Y": -6.44447660446167,
+            "Z": -13.76998233795166
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.4553949236869812,
+            "Y": -0.43329423666000366,
+            "Z": -0.42637908458709717,
+            "W": 0.6504403948783875
+          },
+          "Translation": {
+            "X": 19.32413101196289,
+            "Y": 1.2564622163772583,
+            "Z": -7.509584426879883
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.4313690960407257,
+            "Y": -0.4535040557384491,
+            "Z": 0.6509400606155396,
+            "W": -0.42957186698913574
+          },
+          "Translation": {
+            "X": 19.340728759765625,
+            "Y": -1.2373912334442139,
+            "Z": -7.469462871551514
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -3.930393344120375e-09,
+            "Y": -3.9303929000311655e-09,
+            "Z": 0.7071067690849304,
+            "W": 0.7071068286895752
+          },
+          "Translation": {
+            "X": 0.004013235680758953,
+            "Y": 1.4619924115777394e-07,
+            "Z": -15.644182205200195
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 0.004013061989098787,
+            "Y": 4.911271389573812e-10,
+            "Z": 0.0
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 0.004013061989098787,
+            "Y": 4.911271389573812e-10,
+            "Z": 0.0
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0918835774064064,
+            "Y": -0.10906804352998734,
+            "Z": 0.6421908140182495,
+            "W": 0.7531617879867554
+          },
+          "Translation": {
+            "X": -5.975680828094482,
+            "Y": 5.888224124908447,
+            "Z": -8.189763069152832
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.1081676036119461,
+            "Y": 0.09679047763347626,
+            "Z": 0.7543385624885559,
+            "W": 0.6402381658554077
+          },
+          "Translation": {
+            "X": -6.028684139251709,
+            "Y": -5.9433112144470215,
+            "Z": -8.14116096496582
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.08988036215305328,
+            "Y": -0.110416479408741,
+            "Z": 0.6248673796653748,
+            "W": 0.7676396369934082
+          },
+          "Translation": {
+            "X": -7.009325981140137,
+            "Y": 0.0023759757168591022,
+            "Z": -5.090456485748291
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.11352124065160751,
+            "Y": 0.09570138901472092,
+            "Z": 0.7685436606407166,
+            "W": 0.6223303079605103
+          },
+          "Translation": {
+            "X": -7.034787654876709,
+            "Y": -0.08611764013767242,
+            "Z": -5.071624279022217
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 13.1267671585083,
+            "Y": 1.7011195421218872,
+            "Z": -11.532642364501953
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 13.1267671585083,
+            "Y": -1.7009984254837036,
+            "Z": -11.532642364501953
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.13007330894470215,
+            "Y": 0.13007333874702454,
+            "Z": 0.6950404047966003,
+            "W": 0.6950401663780212
+          },
+          "Translation": {
+            "X": 1.0033245086669922,
+            "Y": -12.646687507629395,
+            "Z": -7.404181480407715
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.13007330894470215,
+            "Y": 0.13007333874702454,
+            "Z": 0.6950404047966003,
+            "W": 0.6950401663780212
+          },
+          "Translation": {
+            "X": 1.003326177597046,
+            "Y": -12.651900291442871,
+            "Z": -11.67374324798584
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 9.563423156738281,
+            "Y": 7.222068347800814e-07,
+            "Z": -8.507323265075684
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": -0.09229595214128494,
+            "Y": -0.09229593724012375,
+            "Z": 0.701057493686676,
+            "W": 0.7010573744773865
+          },
+          "Translation": {
+            "X": -9.962862968444824,
+            "Y": 4.1733119360287674e-07,
+            "Z": 1.6208263635635376
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": -3.9058468341827393,
+            "Y": -2.946950985460717e-07,
+            "Z": -8.99411678314209
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 2.63417843093805e-09,
+            "Y": 2.6341775427596303e-09,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": 1.9064983129501343,
+            "Y": 6.209620551089756e-07,
+            "Z": -10.970946311950684
+          },
+          "Scale": 1.0
+        },
+        {
+          "Rotation": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.7071069478988647,
+            "W": 0.7071066498756409
+          },
+          "Translation": {
+            "X": -5.888590335845947,
+            "Y": -1.370606810269237e-06,
+            "Z": 0.29293179512023926
+          },
+          "Scale": 1.0
+        }
+      ]
+    },
+    "ReferencePoseBounds": {
+      "Origin": {
+        "X": 4.174257755279541,
+        "Y": 3.5578689575195312,
+        "Z": -1.8269729614257812
+      },
+      "BoxExtent": {
+        "X": 11.071277618408203,
+        "Y": 58.86493682861328,
+        "Z": 22.186176300048828
+      },
+      "SphereRadius": 63.873939514160156
+    },
+    "SkelMirrorTable": {
+      "length": 0,
+      "items": []
+    },
+    "SkelMirrorAxis": 1,
+    "SkelMirrorFlipAxis": 4,
+    "Sockets": {
+      "length": 60,
+      "items": [
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_360",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_361",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_362",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_363",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_364",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_365",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_366",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_367",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_368",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_369",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_370",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_371",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_372",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_373",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_374",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_375",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_376",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_377",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_378",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_379",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_380",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_381",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_382",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_383",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_384",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_385",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_386",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_387",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_388",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_389",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_390",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_391",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_392",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_393",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_394",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_395",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_396",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_397",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_398",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_399",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_400",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_401",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_402",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_403",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_404",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_405",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_406",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_407",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_408",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_409",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_410",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_411",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_412",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_413",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_414",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_415",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_416",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_417",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_418",
+        "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh:SkeletalMeshSocket_419"
+      ]
+    },
+    "BoneBreakNames": {
+      "length": 0,
+      "items": []
+    },
+    "BoneBreakOptions": {
+      "length": 0,
+      "items": []
+    },
+    "LODInfo": {
+      "length": 1,
+      "items": [
+        {
+          "DisplayFactor": 0.0,
+          "LODHysteresis": 0.019999999552965164,
+          "LODMaterialMap": {
+            "length": 0,
+            "items": []
+          },
+          "bEnableShadowCasting": {
+            "length": 2,
+            "items": [
+              true,
+              true
+            ]
+          },
+          "TriangleSorting": {
+            "length": 0,
+            "items": []
+          },
+          "TriangleSortSettings": {
+            "length": 2,
+            "items": [
+              {
+                "TriangleSorting": "TRISORT_None",
+                "CustomLeftRightAxis": "TSA_X_Axis",
+                "CustomLeftRightBoneName": "None"
+              },
+              {
+                "TriangleSorting": "TRISORT_None",
+                "CustomLeftRightAxis": "TSA_X_Axis",
+                "CustomLeftRightBoneName": "None"
+              }
+            ]
+          },
+          "bDisableCompressions": false
+        }
+      ]
+    },
+    "PerPolyCollisionBones": {
+      "length": 0,
+      "items": []
+    },
+    "AddToParentPerPolyCollisionBone": {
+      "length": 0,
+      "items": []
+    },
+    "PerPolyBoneKDOPs": {
+      "length": 0,
+      "items": []
+    },
+    "bPerPolyUseSoftWeighting": false,
+    "bUseSimpleLineCollision": true,
+    "bUseSimpleBoxCollision": true,
+    "bForceCPUSkinning": false,
+    "bUseFullPrecisionUVs": false,
+    "FaceFXAsset": null,
+    "LODBiasPC": 0,
+    "LODBiasPS3": 0,
+    "LODBiasXbox360": 0,
+    "ClothMesh": {
+      "length": 0,
+      "items": []
+    },
+    "ClothMeshScale": {
+      "length": 0,
+      "items": []
+    },
+    "ClothToGraphicsVertMap": {
+      "length": 0,
+      "items": []
+    },
+    "ClothMovementScale": {
+      "length": 0,
+      "items": []
+    },
+    "ClothMovementScaleGenMode": 0,
+    "ClothToAnimMeshMaxDist": 0.0,
+    "bLimitClothToAnimMesh": false,
+    "ClothWeldingMap": {
+      "length": 0,
+      "items": []
+    },
+    "ClothWeldingDomain": 0,
+    "ClothWeldedIndices": {
+      "length": 0,
+      "items": []
+    },
+    "bForceNoWelding": false,
+    "NumFreeClothVerts": 0,
+    "ClothIndexBuffer": {
+      "length": 0,
+      "items": []
+    },
+    "ClothBones": {
+      "length": 0,
+      "items": []
+    },
+    "ClothHierarchyLevels": 0,
+    "bEnableClothBendConstraints": false,
+    "bEnableClothDamping": false,
+    "bUseClothCOMDamping": false,
+    "ClothStretchStiffness": 1.0,
+    "ClothBendStiffness": 1.0,
+    "ClothDensity": 1.0,
+    "ClothThickness": 0.5,
+    "ClothDamping": 0.5,
+    "ClothIterations": 5,
+    "ClothHierarchicalIterations": 2,
+    "ClothFriction": 0.5,
+    "ClothRelativeGridSpacing": 1.0,
+    "ClothPressure": 1.0,
+    "ClothCollisionResponseCoefficient": 0.20000000298023224,
+    "ClothAttachmentResponseCoefficient": 0.20000000298023224,
+    "ClothAttachmentTearFactor": 1.5,
+    "ClothSleepLinearVelocity": -1.0,
+    "HardStretchLimitFactor": 1.100000023841858,
+    "bHardStretchLimit": false,
+    "bEnableClothOrthoBendConstraints": false,
+    "bEnableClothSelfCollision": false,
+    "bEnableClothPressure": false,
+    "bEnableClothTwoWayCollision": false,
+    "ClothSpecialBones": {
+      "length": 0,
+      "items": []
+    },
+    "bEnableClothLineChecks": false,
+    "bClothMetal": false,
+    "ClothMetalImpulseThreshold": 10.0,
+    "ClothMetalPenetrationDepth": 0.0,
+    "ClothMetalMaxDeformationDistance": 0.0,
+    "bEnableClothTearing": false,
+    "ClothTearFactor": 3.5,
+    "ClothTearReserve": 128,
+    "bEnableValidBounds": false,
+    "ValidBoundsMin": {
+      "X": 0.0,
+      "Y": 0.0,
+      "Z": 0.0
+    },
+    "ValidBoundsMax": {
+      "X": 0.0,
+      "Y": 0.0,
+      "Z": 0.0
+    },
+    "ClothTornTriMap": {
+      "Pairs": {
+        "Elements": {
+          "Elements": {
+            "length": 0,
+            "items": []
+          },
+          "AllocationFlags": {
+            "IndirectData": {
+              "Dummy": 0
+            },
+            "NumBits": 0,
+            "MaxBits": 0
+          },
+          "FirstFreeIndex": 0,
+          "NumFreeIndices": 0
+        },
+        "InlineHash": 0,
+        "Hash": {
+          "Dummy": 0
+        },
+        "HashSize": 0
+      }
+    },
+    "SoftBodySurfaceToGraphicsVertMap": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodySurfaceIndices": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodyTetraVertsUnscaled": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodyTetraIndices": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodyTetraLinks": {
+      "length": 0,
+      "items": []
+    },
+    "CachedSoftBodyMeshes": {
+      "length": 0,
+      "items": []
+    },
+    "CachedSoftBodyMeshScales": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodyBones": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodySpecialBones": {
+      "length": 0,
+      "items": []
+    },
+    "SoftBodyVolumeStiffness": 1.0,
+    "SoftBodyStretchingStiffness": 1.0,
+    "SoftBodyDensity": 1.0,
+    "SoftBodyParticleRadius": 0.10000000149011612,
+    "SoftBodyDamping": 0.5,
+    "SoftBodySolverIterations": 5,
+    "SoftBodyFriction": 0.5,
+    "SoftBodyRelativeGridSpacing": 1.0,
+    "SoftBodySleepLinearVelocity": -1.0,
+    "bEnableSoftBodySelfCollision": false,
+    "SoftBodyAttachmentResponse": 0.20000000298023224,
+    "SoftBodyCollisionResponse": 0.20000000298023224,
+    "SoftBodyDetailLevel": 0.5,
+    "SoftBodySubdivisionLevel": 4,
+    "bSoftBodyIsoSurface": true,
+    "bEnableSoftBodyDamping": false,
+    "bUseSoftBodyCOMDamping": false,
+    "SoftBodyAttachmentThreshold": 0.5,
+    "bEnableSoftBodyTwoWayCollision": true,
+    "SoftBodyAttachmentTearFactor": 1.5,
+    "bEnableSoftBodyLineChecks": false,
+    "bHasVertexColors": false,
+    "GraphicsIndexIsCloth": {
+      "length": 0,
+      "items": []
+    },
+    "CachedStreamingTextureFactors": {
+      "length": 4,
+      "items": [
+        115.7593994140625,
+        125.8624267578125,
+        0.0,
+        0.0
+      ]
+    },
+    "StreamingDistanceMultiplier": 1.0,
+    "ReleaseResourcesFence": 0,
+    "SkelMeshRUID": {
+      "A": 15,
+      "B": 0
+    },
+    "CachedRefBoneAtoms": {
+      "length": 0,
+      "items": []
+    },
+    "CachedAnimSetLinkupName": "Weap_Pistol.GestaltDef_Pistol_GestaltSkeletalMesh",
+    "EDebugBreakType": "<EnumType>",
+    "EAutomatedRunResult": "<EnumType>",
+    "ETickingGroup": "<EnumType>",
+    "InvAspectRatio16x9": "0.56249",
+    "InvAspectRatio5x4": "0.8",
+    "InvAspectRatio4x3": "0.75",
+    "AspectRatio16x9": "1.77778",
+    "AspectRatio5x4": "1.25",
+    "AspectRatio4x3": "1.33333",
+    "INDEX_NONE": "-1",
+    "UnrRotToDeg": "0.00549316540360483",
+    "DegToUnrRot": "182.0444",
+    "RadToUnrRot": "10430.3783504704527",
+    "UnrRotToRad": "0.00009587379924285",
+    "DegToRad": "0.017453292519943296",
+    "RadToDeg": "57.295779513082321600",
+    "Pi": "3.1415926535897932",
+    "MaxInt": "0x7fffffff",
+    "NameBasedObjectPath": "Core.Object:NameBasedObjectPath",
+    "MAX_OBJECT_PATH_COMPONENTS": "6",
+    "SmartVector": "Core.Object:SmartVector",
+    "Flag": "Core.Object:Flag",
+    "BoneAtom": "Core.Object:BoneAtom",
+    "OctreeElementId": "Core.Object:OctreeElementId",
+    "RenderCommandFence": "Core.Object:RenderCommandFence",
+    "RawDistribution": "Core.Object:RawDistribution",
+    "InterpCurveLinearColor": "Core.Object:InterpCurveLinearColor",
+    "InterpCurvePointLinearColor": "Core.Object:InterpCurvePointLinearColor",
+    "InterpCurveQuat": "Core.Object:InterpCurveQuat",
+    "InterpCurvePointQuat": "Core.Object:InterpCurvePointQuat",
+    "InterpCurveTwoVectors": "Core.Object:InterpCurveTwoVectors",
+    "InterpCurvePointTwoVectors": "Core.Object:InterpCurvePointTwoVectors",
+    "InterpCurveVector": "Core.Object:InterpCurveVector",
+    "InterpCurvePointVector": "Core.Object:InterpCurvePointVector",
+    "InterpCurveVector2D": "Core.Object:InterpCurveVector2D",
+    "InterpCurvePointVector2D": "Core.Object:InterpCurvePointVector2D",
+    "InterpCurveFloat": "Core.Object:InterpCurveFloat",
+    "InterpCurvePointFloat": "Core.Object:InterpCurvePointFloat",
+    "EInterpMethodType": "<EnumType>",
+    "EInterpCurveMode": "<EnumType>",
+    "Cylinder": "Core.Object:Cylinder",
+    "Matrix": "Core.Object:Matrix",
+    "BoxSphereBounds": "Core.Object:BoxSphereBounds",
+    "Box": "Core.Object:Box",
+    "LinearColor": "Core.Object:LinearColor",
+    "Color": "Core.Object:Color",
+    "EAspectRatioAxisConstraint": "<EnumType>",
+    "EInputEvent": "<EnumType>",
+    "EAxis": "<EnumType>",
+    "TAlphaBlend": "Core.Object:TAlphaBlend",
+    "AlphaBlendType": "<EnumType>",
+    "TPOV": "Core.Object:TPOV",
+    "SHVectorRGB": "Core.Object:SHVectorRGB",
+    "SHVector": "Core.Object:SHVector",
+    "IntPoint3D": "Core.Object:IntPoint3D",
+    "IntPoint": "Core.Object:IntPoint",
+    "PackedNormal": "Core.Object:PackedNormal",
+    "Quat": "Core.Object:Quat",
+    "Rotator": "Core.Object:Rotator",
+    "Plane2D": "Core.Object:Plane2D",
+    "Plane": "Core.Object:Plane",
+    "TwoVectors": "Core.Object:TwoVectors",
+    "Vector2D": "Core.Object:Vector2D",
+    "Vector4": "Core.Object:Vector4",
+    "Vector": "Core.Object:Vector",
+    "Guid": "Core.Object:Guid",
+    "StableArray_Mirror": "Core.Object:StableArray_Mirror",
+    "ChunkedList_Mirror": "Core.Object:ChunkedList_Mirror",
+    "InlinePointerArray_Mirror": "Core.Object:InlinePointerArray_Mirror",
+    "Array_Mirror": "Core.Object:Array_Mirror",
+    "IndirectArray_Mirror": "Core.Object:IndirectArray_Mirror",
+    "FColorVertexBuffer_Mirror": "Core.Object:FColorVertexBuffer_Mirror",
+    "RenderCommandFence_Mirror": "Core.Object:RenderCommandFence_Mirror",
+    "UntypedBulkData_Mirror": "Core.Object:UntypedBulkData_Mirror",
+    "MultiMap_Mirror": "Core.Object:MultiMap_Mirror",
+    "Map_Mirror": "Core.Object:Map_Mirror",
+    "Set_Mirror": "Core.Object:Set_Mirror",
+    "SparseArray_Mirror": "Core.Object:SparseArray_Mirror",
+    "BitArray_Mirror": "Core.Object:BitArray_Mirror",
+    "ThreadSafeCounter": "Core.Object:ThreadSafeCounter",
+    "Double": "Core.Object:Double",
+    "VfTableObject": {
+      "Dummy": 27624336
+    },
+    "HashNext": {
+      "Dummy": 354064696
+    },
+    "ObjectFlags": 1970342017908760,
+    "HashOuterNext": {
+      "Dummy": 354215896
+    },
+    "StateFrame": {
+      "Dummy": 0
+    },
+    "Linker": null,
+    "LinkerIndex": {
+      "Dummy": -1
+    },
+    "ObjectInternalInteger": 130367,
+    "NetIndex": 56,
+    "Outer": "Weap_Pistol",
+    "Name": "GestaltDef_Pistol_GestaltSkeletalMesh",
+    "Class": "Engine.SkeletalMesh",
+    "ObjectArchetype": "Engine.Default__SkeletalMesh",
+    "QWord": "Core.Object:QWord",
+    "Pointer": "Core.Object:Pointer"
+  }
+}

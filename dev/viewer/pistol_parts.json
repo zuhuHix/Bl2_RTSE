@@ -1,0 +1,356 @@
+[
+ {
+  "name": "Pistol_Barrel_Bandit",
+  "material": 0,
+  "first": 0,
+  "tris": 199
+ },
+ {
+  "name": "Pistol_Grip_Tediore",
+  "material": 0,
+  "first": 597,
+  "tris": 216
+ },
+ {
+  "name": "Pistol_Body_Dahl",
+  "material": 0,
+  "first": 1245,
+  "tris": 388
+ },
+ {
+  "name": "Pistol_Body_Bandit",
+  "material": 0,
+  "first": 2409,
+  "tris": 744
+ },
+ {
+  "name": "Pistol_Body_Bandit_Var1",
+  "material": 0,
+  "first": 4641,
+  "tris": 1144
+ },
+ {
+  "name": "Pistol_Barrel_Tediore",
+  "material": 0,
+  "first": 8073,
+  "tris": 260
+ },
+ {
+  "name": "Pistol_Barrel_Vladof",
+  "material": 0,
+  "first": 8853,
+  "tris": 262
+ },
+ {
+  "name": "Pistol_Barrel_Dahl",
+  "material": 0,
+  "first": 9639,
+  "tris": 294
+ },
+ {
+  "name": "Pistol_Barrel_Torgue",
+  "material": 0,
+  "first": 10521,
+  "tris": 308
+ },
+ {
+  "name": "Pistol_Barrel_Maliwan",
+  "material": 0,
+  "first": 11445,
+  "tris": 252
+ },
+ {
+  "name": "Pistol_Barrel_Jakobs",
+  "material": 0,
+  "first": 12201,
+  "tris": 246
+ },
+ {
+  "name": "Pistol_Barrel_Hyperion",
+  "material": 0,
+  "first": 12939,
+  "tris": 166
+ },
+ {
+  "name": "Pistol_Scope_Bandit",
+  "material": 0,
+  "first": 13437,
+  "tris": 643
+ },
+ {
+  "name": "Pistol_Scope_Tediore",
+  "material": 0,
+  "first": 15366,
+  "tris": 360
+ },
+ {
+  "name": "Pistol_Scope_Vladof",
+  "material": 0,
+  "first": 16446,
+  "tris": 480
+ },
+ {
+  "name": "Pistol_Scope_Dahl",
+  "material": 0,
+  "first": 17886,
+  "tris": 194
+ },
+ {
+  "name": "Pistol_Scope_Torgue",
+  "material": 0,
+  "first": 18468,
+  "tris": 462
+ },
+ {
+  "name": "Pistol_Scope_Maliwan",
+  "material": 0,
+  "first": 19854,
+  "tris": 440
+ },
+ {
+  "name": "Pistol_Scope_Jakobs",
+  "material": 0,
+  "first": 21174,
+  "tris": 570
+ },
+ {
+  "name": "Pistol_Scope_Hyperion",
+  "material": 0,
+  "first": 22884,
+  "tris": 190
+ },
+ {
+  "name": "Acc_Barrel_Elemental2",
+  "material": 0,
+  "first": 23454,
+  "tris": 50
+ },
+ {
+  "name": "Acc_Barrel_Elemental1",
+  "material": 0,
+  "first": 23604,
+  "tris": 176
+ },
+ {
+  "name": "Acc_Barrel_Elemental3",
+  "material": 0,
+  "first": 24132,
+  "tris": 96
+ },
+ {
+  "name": "Acc_Barrel_Blade2",
+  "material": 0,
+  "first": 24420,
+  "tris": 126
+ },
+ {
+  "name": "Acc_Barrel_Laser",
+  "material": 0,
+  "first": 24798,
+  "tris": 96
+ },
+ {
+  "name": "Acc_Grip_Stock",
+  "material": 0,
+  "first": 25086,
+  "tris": 136
+ },
+ {
+  "name": "Acc_Barrel_Tech1",
+  "material": 0,
+  "first": 25494,
+  "tris": 104
+ },
+ {
+  "name": "Acc_Barrel_Tech2",
+  "material": 0,
+  "first": 25806,
+  "tris": 88
+ },
+ {
+  "name": "Acc_Barrel_Tech3",
+  "material": 0,
+  "first": 26070,
+  "tris": 48
+ },
+ {
+  "name": "Pistol_Body_Dahl_Var1",
+  "material": 0,
+  "first": 26214,
+  "tris": 436
+ },
+ {
+  "name": "Acc_Barrel_Blade1",
+  "material": 0,
+  "first": 27522,
+  "tris": 92
+ },
+ {
+  "name": "Pistol_Body_Vladof",
+  "material": 0,
+  "first": 27798,
+  "tris": 565
+ },
+ {
+  "name": "Pistol_Body_Vladof_Var1",
+  "material": 0,
+  "first": 29493,
+  "tris": 572
+ },
+ {
+  "name": "Pistol_Body_Torgue",
+  "material": 0,
+  "first": 31209,
+  "tris": 1130
+ },
+ {
+  "name": "Pistol_Body_Torgue_Var1",
+  "material": 0,
+  "first": 34599,
+  "tris": 412
+ },
+ {
+  "name": "Pistol_Body_Maliwan",
+  "material": 0,
+  "first": 35835,
+  "tris": 1098
+ },
+ {
+  "name": "Pistol_Body_Maliwan_Var1",
+  "material": 0,
+  "first": 39129,
+  "tris": 160
+ },
+ {
+  "name": "Pistol_Body_Jakobs",
+  "material": 0,
+  "first": 39609,
+  "tris": 1592
+ },
+ {
+  "name": "Pistol_Body_Jakobs_Var1",
+  "material": 0,
+  "first": 44385,
+  "tris": 554
+ },
+ {
+  "name": "Pistol_Body_Hyperion",
+  "material": 0,
+  "first": 46047,
+  "tris": 750
+ },
+ {
+  "name": "Pistol_Body_Hyperion_Var1",
+  "material": 0,
+  "first": 48297,
+  "tris": 512
+ },
+ {
+  "name": "Pistol_Body_Tediore",
+  "material": 0,
+  "first": 49833,
+  "tris": 412
+ },
+ {
+  "name": "Pistol_Body_Tediore_Var1",
+  "material": 0,
+  "first": 51069,
+  "tris": 144
+ },
+ {
+  "name": "Pistol_Grip_Bandit",
+  "material": 0,
+  "first": 51501,
+  "tris": 174
+ },
+ {
+  "name": "Pistol_Grip_Vladof",
+  "material": 0,
+  "first": 52023,
+  "tris": 198
+ },
+ {
+  "name": "Pistol_Grip_Dahl",
+  "material": 0,
+  "first": 52617,
+  "tris": 520
+ },
+ {
+  "name": "Pistol_Grip_Torgue",
+  "material": 0,
+  "first": 54177,
+  "tris": 275
+ },
+ {
+  "name": "Pistol_Grip_Maliwan",
+  "material": 0,
+  "first": 55002,
+  "tris": 186
+ },
+ {
+  "name": "Pistol_Grip_Jakobs",
+  "material": 0,
+  "first": 55560,
+  "tris": 375
+ },
+ {
+  "name": "Pistol_Grip_Hyperion",
+  "material": 0,
+  "first": 56685,
+  "tris": 326
+ },
+ {
+  "name": "Pistol_Body_Maliwan_Var2",
+  "material": 0,
+  "first": 57663,
+  "tris": 321
+ },
+ {
+  "name": "Pistol_Body_Hyperion_Var2",
+  "material": 0,
+  "first": 58626,
+  "tris": 402
+ },
+ {
+  "name": "Pistol_Body_Jakobs_Var2",
+  "material": 0,
+  "first": 59832,
+  "tris": 277
+ },
+ {
+  "name": "Pistol_Barrel_Alien",
+  "material": 0,
+  "first": 60663,
+  "tris": 614
+ },
+ {
+  "name": "Pistol_Body_Bandit_Var2",
+  "material": 0,
+  "first": 62505,
+  "tris": 330
+ },
+ {
+  "name": "Pistol_Body_Dahl_Var2",
+  "material": 0,
+  "first": 63495,
+  "tris": 439
+ },
+ {
+  "name": "Pistol_Body_Tediore_Var2",
+  "material": 0,
+  "first": 64812,
+  "tris": 384
+ },
+ {
+  "name": "Pistol_Body_Torgue_Var2",
+  "material": 0,
+  "first": 65964,
+  "tris": 328
+ },
+ {
+  "name": "Pistol_Body_Vladof_Var2",
+  "material": 1,
+  "first": 66948,
+  "tris": 538
+ }
+]

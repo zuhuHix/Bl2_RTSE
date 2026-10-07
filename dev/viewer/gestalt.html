@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gestalt viewer (dev)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1916; overflow: hidden; }
+  #info { position: fixed; left: 10px; top: 8px; color: #f3ecd9; font: 13px Consolas, monospace; white-space: pre; text-shadow: 1px 1px 0 #000; }
+</style>
+<div id="info"></div>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three/three.module.js", "three/addons/": "../vendor/three/" } }
+</script>
+<script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+  // ?gltf=...&table=...&parts=NameA,NameB&view=side|top|front|iso
+  const q = new URLSearchParams(location.search);
+  const wanted = (q.get("parts") || "").split(",").filter(Boolean);
+  const view = q.get("view") || "iso";
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.append(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1b1916);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x554433, 1.5));
+  const key = new THREE.DirectionalLight(0xffffff, 1.6);
+  key.position.set(3, 5, 4);
+  scene.add(key);
+
+  const table = await (await fetch(q.get("table"))).json();
+  const gltf = await new GLTFLoader().loadAsync(q.get("gltf"));
+  const meshes = [];
+  gltf.scene.traverse((o) => { if (o.isMesh || o.isSkinnedMesh) meshes.push(o); });
+  const counts = meshes.map((m) => m.geometry.index.count);
+
+  const COLORS = { Body: 0xc9a25a, Grip: 0x8a5a2b, Barrel: 0xb9c0c8, Scope: 0x6fa8dc, Acc: 0x67d983 };
+  const group = new THREE.Group();
+  const log = [];
+  for (const name of wanted) {
+    const part = table.find((p) => p.name === name);
+    if (!part) { log.push(`MISSING ${name}`); continue; }
+    // Global index position -> which primitive, and the offset inside it.
+    let first = part.first, which = 0;
+    while (which < counts.length - 1 && first >= counts[which]) { first -= counts[which]; which++; }
+    const source = meshes[which].geometry;
+    const slice = source.index.array.slice(first, first + part.tris * 3);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", source.getAttribute("position"));
+    if (source.getAttribute("normal")) geo.setAttribute("normal", source.getAttribute("normal"));
+    geo.setIndex(new THREE.BufferAttribute(slice, 1));
+    const kind = Object.keys(COLORS).find((k) => name.includes(`_${k}`)) || "Body";
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: COLORS[kind], roughness: 0.5, metalness: 0.3, side: THREE.DoubleSide }));
+    group.add(mesh);
+    log.push(`${name}: ${part.tris} tris from prim ${which} @ ${first}`);
+  }
+  scene.add(group);
+
+  // Frame only the vertices the chosen parts actually use (the full position buffer holds every part).
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  group.children.forEach((m) => {
+    const pos = m.geometry.getAttribute("position");
+    for (const i of m.geometry.index.array) { v.fromBufferAttribute(pos, i); box.expandByPoint(v); }
+  });
+  const c = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const radius = size.length() * 0.9 || 10;
+  const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.01, 5000);
+  const dir = { side: [1, 0, 0], front: [0, 0, 1], top: [0, 1, 0.001], iso: [1, 0.5, 0.8] }[view];
+  camera.position.copy(c).addScaledVector(new THREE.Vector3(...dir).normalize(), radius * 2);
+  camera.lookAt(c);
+  renderer.render(scene, camera);
+  document.getElementById("info").textContent = `${view}  size ${size.toArray().map((n) => n.toFixed(2))}\n${log.join("\n")}`;
+  document.title = "ready";
+</script>

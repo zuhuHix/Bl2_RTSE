@@ -1,0 +1,10 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 7000},
+    {"eval": "'lit ' + document.querySelectorAll('.row .plate.lit').length + ' of ' + document.querySelectorAll('.row').length"},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/rows_1.png"}
+  ]
+}

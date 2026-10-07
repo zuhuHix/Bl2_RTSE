@@ -1,0 +1,16 @@
+{
+ "url": "http://127.0.0.1:8777/dev/viewer/stage_test.html?type=Pistol&view=side&hide=MoonClip,Bullet&parts=Pistol_Body_Jakobs,Pistol_Grip_Jakobs,Pistol_Barrel_Dahl,Pistol_Scope_Tediore",
+ "width": 960,
+ "height": 760,
+ "steps": [
+  {
+   "wait": 4000
+  },
+  {
+   "eval": "document.getElementById('log').textContent"
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/stage_test.png"
+  }
+ ]
+}

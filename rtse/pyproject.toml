@@ -1,0 +1,10 @@
+[project]
+name = "rtse"
+version = "0.0.1"
+authors = [{ name = "yorad" }]
+description = """\
+Real-time save editor: Gibbed-style editing while in game.
+"""
+
+[tool.sdkmod]
+name = "RTSE"

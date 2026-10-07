@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<base href="http://127.0.0.1:8777/rtse/web/">
+<title>stage test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #15130f; }
+  #host { position: absolute; left: 0; top: 0; width: 900px; height: 520px; background: #1d1a16; }
+  #log { position: absolute; left: 10px; top: 530px; color: #f3ecd9; font: 12px Consolas, monospace; white-space: pre; }
+</style>
+<div id="host"></div>
+<div id="log"></div>
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/" } }</script>
+<script type="module">
+  const log = (m) => { document.getElementById("log").textContent += m + "\n"; };
+  try {
+    const q = new URLSearchParams(location.search);
+    const type = q.get("type") || "Pistol";
+    const wanted = (q.get("parts") || "").split(",").filter(Boolean);
+    const view = q.get("view") || "angle";
+    const { createViewer } = await import("./viewer3d.js");
+    log("module loaded");
+    const viewer = createViewer(document.getElementById("host"), { onPick: (s) => log("pick " + s) });
+    log("viewer created");
+    const COLORS = ["#c9a25a", "#7a5230", "#aab2bc", "#7fb4e6", "#f3ecd9", "#ff9a1f"];
+    const pieces = wanted.map((mesh, i) => ({ slot: "S" + i, mesh, color: COLORS[i % COLORS.length] }));
+    const t0 = performance.now();
+    const rep = await viewer.setBuild(type, pieces, (q.get("hide") || "").split(",").filter(Boolean));
+    log("report " + JSON.stringify(rep));
+    log(`setBuild done in ${(performance.now() - t0).toFixed(0)} ms; canvas ${viewer.canvas.width}x${viewer.canvas.height}`);
+    viewer.setView(view);
+    await new Promise((r) => setTimeout(r, 300));
+    // does the canvas contain anything but the background?
+    const gl = viewer.canvas.getContext("webgl2") || viewer.canvas.getContext("webgl");
+    const px = new Uint8Array(4);
+    let painted = 0;
+    const w = viewer.canvas.width, h = viewer.canvas.height;
+    for (let i = 0; i < 400; i++) { gl.readPixels((Math.random() * w) | 0, (Math.random() * h) | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); if (px[3] > 0) painted++; }
+    log(`non-transparent pixels in 400 samples: ${painted}`);
+  } catch (e) {
+    log("ERROR: " + (e && e.stack || e));
+  }
+  document.title = "done";
+</script>

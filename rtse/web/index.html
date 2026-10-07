@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RTSE - Real-Time Save Editor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><b>RTSE</b><span>Real-Time Save Editor</span></div>
+    <div class="spacer"></div>
+    <div id="conn" class="pill"><i></i><span>Connecting...</span></div>
+  </header>
+  <main class="app">
+    <aside class="sidebar">
+      <div class="side-head"><h2>Loadout</h2></div>
+      <div id="pinned" class="pinned"></div>
+      <div class="search">
+        <svg class="ui-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="search" type="search" placeholder="Search gear  ( / )" autocomplete="off">
+      </div>
+      <div id="inventory" class="inventory"></div>
+    </aside>
+    <section id="workspace" class="workspace"></section>
+  </main>
+  <div id="picker-root"></div>
+  <div id="toasts"></div>
+  <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/" } }</script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+ "url": "http://127.0.0.1:8777/dev/viewer/stage_test.html?type=Pistol&view=side&parts=Pistol_Body_Dahl",
+ "width": 960,
+ "height": 560,
+ "steps": [
+  {
+   "wait": 3500
+  },
+  {
+   "eval": "document.getElementById('log').textContent.split('\n')[2]"
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/dahl_nohide.png"
+  }
+ ]
+}

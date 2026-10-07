@@ -1,0 +1,11 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 1500},
+    {"clickText": "Zer0 / Assassin"},
+    {"wait": 1200},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/face_1.png"}
+  ]
+}

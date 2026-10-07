@@ -1,0 +1,14 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 1200},
+    {"clickText": "Zer0 / Assassin"},
+    {"wait": 1000},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/pages_1_char.png"},
+    {"clickText": "Every ammo type"},
+    {"wait": 1000},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/pages_2_ammo.png"}
+  ]
+}

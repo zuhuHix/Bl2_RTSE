@@ -1,0 +1,16 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 1200},
+    {"clickText": "Zer0 / Assassin"},
+    {"wait": 800},
+    {"eval": "(() => { document.querySelectorAll('.cp').forEach(c => { c.style.flexDirection='column'; }); document.querySelectorAll('.avatar.mini').forEach(a => { a.style.width='150px'; a.style.height='150px'; }); return 'ok'; })()"},
+    {"wait": 300},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/avatars.png"},
+    {"clickText": "Every ammo type"},
+    {"wait": 1000},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/pages_2_ammo.png"}
+  ]
+}

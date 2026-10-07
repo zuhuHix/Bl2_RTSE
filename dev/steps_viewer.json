@@ -1,0 +1,10 @@
+{
+  "url": "http://127.0.0.1:8777/dev/viewer/index.html?mode=overlap&view=side&files=../../work/export/VOGChamber_Dynamic/SkeletalMesh3/Pistol_Body_Hyperion.gltf,../../work/export/VOGChamber_Dynamic/SkeletalMesh3/Pistol_Barrel_Hyperion.gltf,../../work/export/VOGChamber_Dynamic/SkeletalMesh3/Pistol_Grip_Hyperion.gltf,../../work/export/VOGChamber_Dynamic/SkeletalMesh3/Pistol_Scope_Hyperion.gltf",
+  "width": 1100,
+  "height": 700,
+  "steps": [
+    {"wait": 2500},
+    {"eval": "document.title + ' | ' + document.getElementById('info').textContent"},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/viewer_overlap_side.png"}
+  ]
+}

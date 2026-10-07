@@ -1,0 +1,16 @@
+{
+ "url": "http://127.0.0.1:8777/dev/viewer/gestalt.html?gltf=../../work/gestalt/Startup/SkeletalMesh3/GestaltDef_Pistol_GestaltSkeletalMesh.gltf&table=pistol_parts.json&parts=Pistol_Body_Jakobs,Pistol_Grip_Jakobs,Pistol_Barrel_Dahl,Pistol_Scope_Tediore&view=iso",
+ "width": 1000,
+ "height": 640,
+ "steps": [
+  {
+   "wait": 2500
+  },
+  {
+   "eval": "document.title + ' | ' + document.getElementById('info').textContent"
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/revolver_iso.png"
+  }
+ ]
+}

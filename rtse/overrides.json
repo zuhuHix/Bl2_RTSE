@@ -1,0 +1,41 @@
+{
+  "GD_Weap_Pistol.A_Weapons.WeaponType_Hyperion_Pistol|GD_Weap_Pistol.A_Weapons_Legendary.Pistol_Hyperion_5_LogansGun|GD_Manufacturers.Manufacturers.Hyperion|17|GD_Weap_Pistol.Barrel.Pistol_Barrel_Hyperion_LogansGun|GD_Weap_Pistol.Barrel.Pistol_Barrel_Vladof_Infinity|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Pistol.Barrel.Pistol_Barrel_Vladof_Infinity|GD_Weap_Pistol.Barrel.Pistol_Barrel_Vladof_Infinity|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Anemone_Weapons.Name.Prefix.Prefix_Gemstone_Rock|GD_Weap_Launchers.Name.Title_Torgue.Title_Legendary_Nukem|17": {
+    "label": "Nukem",
+    "stats": {
+      "ShotCost": 0,
+      "ClipSize": 5000,
+      "FireInterval": 0.01,
+      "ReloadTime": 0.1,
+      "Spread": 0.0,
+      "ExtraShotChance": 100.0,
+      "AdditionalRicochets": 5
+    }
+  },
+  "GD_Weap_Pistol.A_Weapons.WeaponType_Hyperion_Pistol|GD_Weap_Pistol.A_Weapons_Legendary.Pistol_Hyperion_5_LogansGun|GD_Manufacturers.Manufacturers.Hyperion|17|GD_Weap_Pistol.Barrel.Pistol_Barrel_Hyperion_LogansGun|GD_Weap_Pistol.Barrel.Pistol_Barrel_Vladof_Infinity|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Pistol.Barrel.Pistol_Barrel_Vladof_Infinity|GD_Weap_Pistol.Barrel.Pistol_Barrel_Vladof_Infinity|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Launchers.Barrel.L_Barrel_Torgue_Nukem|GD_Weap_Pistol.Name.Prefix.Prefix_Barrel_Vladof_Rapid|GD_Weap_Launchers.Name.Title_Torgue.Title_Legendary_Nukem|17": {
+    "label": "Nukem",
+    "stats": {
+      "ShotCost": 0,
+      "ProjectilesPerShot": 4,
+      "ReloadTime": 0.6,
+      "FireInterval": 0.069
+    }
+  },
+  "GD_Weap_Pistol.A_Weapons.WeaponType_Maliwan_Pistol|GD_Weap_Pistol.A_Weapons.Pistol_Maliwan_2_Uncommon|GD_Manufacturers.Manufacturers.Maliwan|16|GD_Weap_Pistol.Body.Pistol_Body_Maliwan_2|GD_Weap_Pistol.Grip.Pistol_Grip_Maliwan|GD_Weap_AssaultRifle.Barrel.AR_Barrel_Torgue_KerBlaster|GD_Weap_Pistol.Sight.Pistol_Sight_Jakobs|GD_Weap_AssaultRifle.Accessory.AR_Accessory_BanditClamp_Damage|GD_Weap_Pistol.elemental.Pistol_Elemental_Shock|GD_Weap_Pistol.Accessory.Pistol_Accessory_Tech_2_Damage|GD_Weap_AssaultRifle.Accessory.AR_Accessory_BanditClamp_Damage|GD_Weap_Pistol.ManufacturerMaterials.Mat_Bandit_1|GD_Weap_Pistol.Name.Prefix_Maliwan.Prefix_Tech2_Damage|GD_Weap_Pistol.Name.Title_Hyperion.Title_Legendary_LogansGun|16": {
+    "label": "Maliwan INVALID 16  Potent Logan's Gun",
+    "stats": {
+      "ProjectilesPerShot": 80,
+      "AdditionalRicochets": 1,
+      "ShotCost": 0
+    }
+  },
+  "GD_Weap_Pistol.A_Weapons.WeaponType_Maliwan_Pistol|GD_Weap_Pistol.A_Weapons.Pistol_Maliwan_2_Uncommon|GD_Manufacturers.Manufacturers.Maliwan|16|GD_Weap_Pistol.Body.Pistol_Body_Maliwan_2|GD_Weap_AssaultRifle.Barrel.AR_Barrel_Vladof_Minigun|GD_Weap_AssaultRifle.Barrel.AR_Barrel_Torgue_KerBlaster|GD_Weap_Pistol.Sight.Pistol_Sight_Jakobs|GD_Weap_AssaultRifle.Accessory.AR_Accessory_BanditClamp_Damage|GD_Weap_Pistol.elemental.Pistol_Elemental_Shock|GD_Weap_Pistol.Accessory.Pistol_Accessory_Tech_2_Damage|GD_Weap_AssaultRifle.Accessory.AR_Accessory_BanditClamp_Damage|GD_Weap_Pistol.ManufacturerMaterials.Mat_Bandit_1|GD_Weap_Pistol.Name.Prefix_Maliwan.Prefix_Tech2_Damage|GD_Weap_AssaultRifle.Name.Title_Torgue.Title_Legendary_KerBlaster|16": {
+    "label": "Maliwan INVALID 16  Potent Logan's Gun",
+    "stats": {
+      "ProjectilesPerShot": 2000,
+      "ExtraShotChance": 80.0,
+      "AdditionalRicochets": 50,
+      "ShotCost": 1,
+      "ClipSize": 1
+    }
+  }
+}

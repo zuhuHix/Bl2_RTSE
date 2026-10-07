@@ -1,0 +1,50 @@
+{
+ "url": "http://127.0.0.1:8766/?t=mock",
+ "width": 1440,
+ "height": 900,
+ "steps": [
+  {
+   "wait": 900
+  },
+  {
+   "clickText": "Ornery Revolver"
+  },
+  {
+   "wait": 3000
+  },
+  {
+   "mouse": [
+    880,
+    480
+   ]
+  },
+  {
+   "wait": 2500
+  },
+  {
+   "eval": "document.querySelector('.picker header h2') ? document.querySelector('.picker header h2').textContent : 'NO PICKER'"
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/3d_2_click_part.png"
+  },
+  {
+   "type": ".picker .toolbar input",
+   "text": "torgue"
+  },
+  {
+   "wait": 400
+  },
+  {
+   "hover": [
+    560,
+    470
+   ]
+  },
+  {
+   "wait": 1800
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/3d_3_preview.png"
+  }
+ ]
+}

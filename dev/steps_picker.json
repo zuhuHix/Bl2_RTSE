@@ -1,0 +1,23 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {"wait": 800},
+    {"clickText": "Earnest Logan"},
+    {"wait": 500},
+    {"clickText": "Stats editor"},
+    {"wait": 300},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/03_stats_open.png"},
+    {"click": ".slot:nth-child(3)"},
+    {"wait": 500},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/04_picker_legal.png"},
+    {"clickText": "Any gun"},
+    {"wait": 900},
+    {"type": ".picker .toolbar input", "text": "torgue"},
+    {"wait": 300},
+    {"click": ".card:nth-child(2)"},
+    {"wait": 700},
+    {"shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/05_picker_any.png"}
+  ]
+}

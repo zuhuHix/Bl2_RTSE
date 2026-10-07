@@ -1,0 +1,82 @@
+{
+ "url": "http://127.0.0.1:8766/?t=mock",
+ "width": 1440,
+ "height": 900,
+ "steps": [
+  {
+   "wait": 900
+  },
+  {
+   "clickText": "Earnest Logan"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_0.png"
+  },
+  {
+   "clickText": "Ornery Revolver"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_1.png"
+  },
+  {
+   "clickText": "Nukem Launcher"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_2.png"
+  },
+  {
+   "clickText": "Rapid Shield"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_3.png"
+  },
+  {
+   "clickText": "Slag Storm"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_4.png"
+  },
+  {
+   "clickText": "Bunny Gun"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_5.png"
+  },
+  {
+   "clickText": "Scoped Sniper"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_6.png"
+  },
+  {
+   "clickText": "Sweeper"
+  },
+  {
+   "wait": 2600
+  },
+  {
+   "shot": "C:/Users/yorad/Documents/Bl2_RTSE/dev/out/gal_7.png"
+  }
+ ]
+}
