@@ -212,7 +212,7 @@ function challengesTab(after) {
           h("span", { text: row.progress == null ? "progress unknown" : `${row.progress.toLocaleString()}${row.goal ? ` / ${row.goal.toLocaleString()}` : ""}` }))),
       h("div", { class: "wl-btns" },
         state !== "done" && h("button", { class: "btn sm", onclick: () => changeChallenges([row], "complete") }, icon("check", 13), "Complete"),
-        state !== "none" && ask(`c:${row.id}:reset`, [icon("refresh", 13), "Reset"], () => changeChallenges([row], "reset"), { cls: "btn sm danger" })));
+        c.can_reset !== false && state !== "none" && ask(`c:${row.id}:reset`, [icon("refresh", 13), "Reset"], () => changeChallenges([row], "reset"), { cls: "btn sm danger" })));
   };
   return listPanel({
     key: "challenges", scrollKey: "challenges", rows: c.rows, filters: CHALLENGE_FILTERS, noun: "challenge", after, rowEl,
@@ -226,7 +226,7 @@ function challengesTab(after) {
       const todo = list.filter((row) => challengeState(row) !== "done");
       return [
         h("button", { class: "btn sm primary", disabled: todo.length === 0 || null, onclick: () => changeChallenges(todo, "complete") }, icon("check", 13), `Complete all shown (${todo.length})`),
-        ask("c:bulk:reset", [icon("refresh", 13), "Reset all shown"], () => changeChallenges(list, "reset"), { cls: "btn sm danger", disabled: list.length === 0 }),
+        c.can_reset !== false && ask("c:bulk:reset", [icon("refresh", 13), "Reset all shown"], () => changeChallenges(list, "reset"), { cls: "btn sm danger", disabled: list.length === 0 }),
       ];
     },
   });
@@ -255,7 +255,7 @@ function stationsTab(after) {
       h("div", { class: "wl-btns" },
         h("span", { class: "wl-stamp", text: state === "unlocked" ? "Unlocked" : state === "locked" ? "Locked" : "Unknown" }),
         state !== "unlocked" && h("button", { class: "btn sm primary", onclick: () => changeStations({ ids: [row.id] }, row.name) }, icon("check", 13), "Unlock"),
-        state === "unlocked" && ask(`s:${row.id}:lock`, "Lock", () => changeStations({ ids: [row.id], visited: false, confirm: true }, row.name), { cls: "btn sm ghost", title: "Mark as not yet visited" })));
+        s.can_lock !== false && state === "unlocked" && ask(`s:${row.id}:lock`, "Lock", () => changeStations({ ids: [row.id], visited: false, confirm: true }, row.name), { cls: "btn sm ghost", title: "Mark as not yet visited" })));
   };
   return h("div", {},
     s.warning && h("div", { class: "warn-banner" }, icon("alert", 18), `${s.warning}.`),

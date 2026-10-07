@@ -1,9 +1,20 @@
 """World progress: missions, challenges, fast-travel stations and the playthrough (Normal / TVHM / UVHM).
 
-None of the game-side names here have been confirmed in a running game. Every value lists the places it
-might live (candidates), they are tried in order, and the result of each write is read back and reported.
-Each of the four sections is independent: if the game doesn't expose one, only that section reports
-"unavailable" and the others still work. Run the world dump from the web UI to find the real names.
+The game-side names here were checked against the class definitions extracted from the installed game (run
+dev/audit_names.py): every field, function and parameter name below EXISTS with the type used. What that does
+not prove is behaviour - nobody has run this in a live game. Still guesses:
+  - whether the playthrough number counts from 0 or from 1 (FIRST_RAW; the raw number is reported so it can be checked)
+  - how GRI.SetCurrentPlaythrough behaves for a client (it may be server-only or may not persist to the save)
+  - whether writing a mission's Status (directly, or through MissionTracker.SetMissionStatus) re-triggers the game's
+    mission logic (rewards, objectives, the HUD) or only changes the stored value
+  - that challenge levels are numbered from 0, and that ServerCompleteChallenge works from the client
+  - which arguments RegisterStationForPlayer wants (DiscoveredBy, bFromLoad) and what Behavior_RegisterStationDefinition
+    shows on screen
+  - that pc.LocalChallengeDataCache holds every challenge the character has (not only a recent subset)
+Functions are called with keyword arguments named like the real parameters first, then positionally. The result of
+every write is read back and reported, and each of the four sections is independent: if the game doesn't expose one,
+only that section reports "unavailable". Writes the game has no function for (resetting a challenge, locking a
+station again) answer 501 instead of guessing. Run the world dump from the web UI to see the real values.
 """
 
 from __future__ import annotations
@@ -23,28 +34,29 @@ MAX_BULK = 1000  # most missions / challenges / stations one request may touch
 # ---------- playthrough ----------
 
 PLAYTHROUGHS = (("Normal", "Normal"), ("TVHM", "True Vault Hunter Mode"), ("UVHM", "Ultimate Vault Hunter Mode"))
-FIRST_RAW = 0  # the game's own number for playthrough 1 (guess: it counts from zero)
-PLAYTHROUGH_READERS = (("pc", "GetCurrentPlaythrough"), ("game", "GetCurrentPlaythrough"))  # called functions
-PLAYTHROUGH_FIELDS = (("pc", "PlayThroughNumber"), ("game", "PlayThroughNumber"), ("pc", "PlaythroughNumber"), ("pc", "CurrentPlaythrough"))
-PLAYTHROUGH_SETTERS = (("pc", "SetCurrentPlaythrough"), ("game", "SetCurrentPlaythrough"), ("pc", "SetPlaythrough"))
+FIRST_RAW = 0  # the game's own number for playthrough 1 (guess: it counts from zero; the dump shows the raw numbers)
+PLAYTHROUGH_READERS = (("pc", "GetCurrentPlaythrough"), ("gri", "GetCurrPlaythrough"))  # called functions, no arguments
+PLAYTHROUGH_FIELDS = (("gri", "CurrentPlaythrough"),)  # read if no function answers; written (then NotifyPlaythroughChanged) if the setters don't take
+PLAYTHROUGH_SETTERS = (("gri", "SetCurrentPlaythrough"),)  # (PrimaryWPC, InCurrPlaythrough)
 
-# Objects hanging off the player controller that might own the data, tried in order. Keys are owner names.
+# Objects reached from the player controller, tried in order. Keys are owner names: pc is the controller itself,
+# gri the WillowGameReplicationInfo, missions its MissionTracker. WorldInfo.Game is server-side only (often None).
 OWNER_PATHS: dict[str, tuple[str, ...]] = {
+    "gri": ("WorldInfo.GRI",),
+    "missions": ("WorldInfo.GRI.MissionTracker",),
     "game": ("WorldInfo.Game",),
-    "missions": ("MissionTracker", "MissionPlaylist"),
-    "challenges": ("ChallengeTracker", "ChallengeHandler"),
 }
 
 # ---------- missions ----------
 
-# EMissionStatus in the order the game numbers it (guess), and what we call each state.
+# EMissionStatus in the game's order (MS_NotStarted .. MS_Failed), and what we call each state.
 STATUS_ORDER = ("not_started", "active", "objectives_done", "ready", "complete", "failed")
 STATUS_ENUM_NAMES = {
     "not_started": ("MS_NotStarted",),
     "active": ("MS_Active",),
     "objectives_done": ("MS_RequiredObjectivesComplete",),
     "ready": ("MS_ReadyToTurnIn",),
-    "complete": ("MS_Complete", "MS_Completed"),
+    "complete": ("MS_Complete",),
     "failed": ("MS_Failed",),
 }
 STATUS_LABELS = {
@@ -52,15 +64,17 @@ STATUS_LABELS = {
     "ready": "Ready to turn in", "complete": "Complete", "failed": "Failed", "unknown": "Unknown",
 }
 WRITABLE_STATUSES = ("not_started", "active", "ready", "complete")
-MISSION_PLAYTHROUGH_LISTS = (("pc", "MissionPlaythroughs"), ("missions", "MissionPlaythroughs"))  # one group per playthrough
-MISSION_FLAT_LISTS = (("missions", "MissionList"), ("pc", "MissionList"), ("missions", "Missions"), ("missions", "MissionStatusList"))
-MISSION_GROUP_ENTRIES = ("MissionList", "Missions")  # the entries inside one playthrough group
-MISSION_PT_NUMBER = ("PlayThroughNumber", "PlaythroughNumber")
-MISSION_DEF = ("MissionDef", "MissionDefinition", "Mission", "Def")
-MISSION_STATUS = ("Status", "MissionStatus", "State")
-MISSION_NAME = ("MissionName", "Title", "DisplayName", "MissionTitle")
-MISSION_PLOT_FLAG = ("bPlotCritical", "bIsPlotMission")
-MISSION_SETTERS = (("missions", "SetMissionStatus"), ("pc", "SetMissionStatus"))  # (definition, status), tried after a direct write
+# pc.MissionPlaythroughs: one MissionPlaythroughData {PlayThroughNumber, MissionList, ...} per playthrough, whose
+# MissionList holds IMission.MissionData {MissionDef, Status, ...}. The tracker's own MissionList is the fallback.
+MISSION_PLAYTHROUGH_LISTS = (("pc", "MissionPlaythroughs"),)
+MISSION_FLAT_LISTS = (("missions", "MissionList"),)
+MISSION_GROUP_ENTRIES = ("MissionList",)  # the entries inside one playthrough group
+MISSION_PT_NUMBER = ("PlayThroughNumber",)
+MISSION_DEF = ("MissionDef",)
+MISSION_STATUS = ("Status",)
+MISSION_NAME = ("MissionName",)  # on the MissionDefinition
+MISSION_PLOT_FLAG = ("bPlotCritical",)
+MISSION_SETTERS = (("missions", "SetMissionStatus"),)  # (InMission, MissionStatus, WillowPC), current playthrough only
 # Package prefixes of DLC missions (guesses from memory of the game's package names).
 DLC_PACKAGES = (
     ("gd_aster", "Tiny Tina's Assault on Dragon Keep"), ("gd_sage", "Hammerlock's Big Game Hunt"),
@@ -70,36 +84,25 @@ DLC_PACKAGES = (
 
 # ---------- challenges ----------
 
-CHALLENGE_LISTS = (
-    ("challenges", "ChallengeList"), ("pc", "ChallengeList"), ("challenges", "Challenges"), ("pc", "Challenges"),
-    ("challenges", "ChallengeData"), ("pc", "ChallengeDataList"),
-)
-CHALLENGE_DEF = ("ChallengeDef", "ChallengeDefinition", "Challenge", "Def")
-CHALLENGE_PROGRESS = ("Progress", "CurrentValue", "Value", "Count")
-CHALLENGE_DONE = ("bCompleted", "bIsComplete", "bComplete", "Completed", "bDone")
-CHALLENGE_ENTRY_GOAL = ("Goal", "GoalValue", "Target")
-CHALLENGE_NAME = ("ChallengeName", "DisplayName", "Title")
-CHALLENGE_DESC = ("ChallengeDescription", "Description")
-CHALLENGE_DEF_GOAL = ("Goal", "GoalValue", "TargetValue")
-CHALLENGE_LEVELS = ("Levels", "ChallengeLevels")  # the last level's goal is the challenge's goal
-CHALLENGE_LEVEL_GOAL = ("Goal", "GoalValue", "LevelGoal", "TargetValue")
-CHALLENGE_CATEGORY = ("Category", "ChallengeCategory")
+# pc.LocalChallengeDataCache holds ChallengeDefinition.ChallengeData {ChallengeDefinition, PCOwner}; the progress is
+# not in the struct, it is read through pc functions (IsChallengeComplete, GetChallengeTotalProgress, ...).
+CHALLENGE_LISTS = (("pc", "LocalChallengeDataCache"),)
+CHALLENGE_DEF = ("ChallengeDefinition",)
+CHALLENGE_NAME = ("ChallengeName",)  # on the ChallengeDefinition
+CHALLENGE_DESC = ("Description",)
+CHALLENGE_DEF_GOAL = ("GoalValue",)
+CHALLENGE_LEVELS = ("Levels",)  # ConditionLevel entries; completing a challenge completes each level
+CHALLENGE_CATEGORY = ("ChallengeCategoryDef",)  # object with .CategoryName
+CHALLENGE_CATEGORY_NAME = ("CategoryName",)
 
 # ---------- fast travel ----------
 
 STATION_CLASSES = ("FastTravelStationDefinition",)
-STATION_LISTS = (  # lists of visited stations (strings, objects, or structs holding both)
-    ("pc", "VisitedTeleporters"), ("pc", "VisitedFastTravelStations"), ("pc", "FastTravelStationsVisited"),
-    ("pc", "ActiveFastTravelStations"), ("pc", "FastTravelStations"),
-)
-STATION_NAME = ("StationDisplayName", "DisplayName", "StationName", "LevelDisplayName")
-STATION_LEVEL = ("LevelName", "StationLevelName", "LevelPackageName")
-STATION_FLAGS = ("bHasBeenVisited", "bVisited")  # on the definition itself
-STATION_GETTER = ("pc", "GetFastTravelStationVisited")
-STATION_SETTER = ("pc", "SetFastTravelStationVisited")
-STATION_ENTRY_DEF = ("StationDef", "Station", "FastTravelStation", "Def")
-STATION_ENTRY_FLAG = ("bVisited", "bHasBeenVisited", "Visited")
-
+STATION_LISTS: tuple[tuple[str, str], ...] = ()  # the game keeps no readable visited-list on the controller
+STATION_NAME = ("StationDisplayName",)  # on the definition (TravelStationDefinition)
+STATION_LEVEL = ("StationLevelName",)
+STATION_GETTER = ("pc", "IsStationDiscovered")  # (StationDefinition) -> Bool
+STATION_SETTERS = (("pc", "Behavior_RegisterStationDefinition"), ("pc", "RegisterStationForPlayer"))  # tried in order
 
 class WorldError(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -171,16 +174,16 @@ def _items(array: Any) -> list[Any]:
         return []
 
 
-def _set_first(obj: Any, names: tuple[str, ...], value: Any) -> str | None:
-    """Writes the first of these attributes that exists. Returns its name, or None if none exists."""
-    for name in names:
+def _call(target: Any, name: str, kwargs: dict[str, Any] | None = None, args: tuple[Any, ...] = ()) -> Any:
+    """Calls a game function by name with keyword arguments (immune to parameter order), falling back to positional ones."""
+    function = getattr(target, name)
+    if kwargs:
         try:
-            getattr(obj, name)  # does it exist?
-        except Exception:  # noqa: BLE001, S112
-            continue
-        setattr(obj, name, value)
-        return name
-    return None
+            return function(**kwargs)
+        except Exception:  # noqa: BLE001
+            if not args:
+                raise
+    return function(*args)
 
 
 def _path(obj: Any) -> str:
@@ -253,7 +256,7 @@ def _read_playthrough(owners: dict[str, Any]) -> tuple[int | None, str | None]:
         if target is None:
             continue
         try:
-            return int(getattr(target, function)()), f"{owner}.{function}()"
+            return int(_call(target, function)), f"{owner}.{function}()"
         except Exception:  # noqa: BLE001, S112
             continue
     for owner, attribute in PLAYTHROUGH_FIELDS:
@@ -295,32 +298,38 @@ def set_playthrough(params: dict[str, Any]) -> dict[str, Any]:
     if raw_before is None:
         raise WorldError(501, "this game build can't read the playthrough - run the world dump")
     raw_target = target - 1 + FIRST_RAW
+    pc = owners["pc"]
     via = None
-    for owner, attribute in PLAYTHROUGH_FIELDS:
+    for owner, function in PLAYTHROUGH_SETTERS:
         obj = owners.get(owner)
-        if obj is None or _first(obj, (attribute,))[1] is None:
+        if obj is None:
             continue
         try:
-            setattr(obj, attribute, raw_target)
+            _call(obj, function, {"PrimaryWPC": pc, "InCurrPlaythrough": raw_target}, (pc, raw_target))
         except Exception:  # noqa: BLE001, S112
             continue
-        via = f"{owner}.{attribute}"
+        via = f"{owner}.{function}()"
         if _read_playthrough(owners)[0] == raw_target:
             break
-    else:
-        for owner, function in PLAYTHROUGH_SETTERS:
+    if _read_playthrough(owners)[0] != raw_target:  # the setter didn't take (or wasn't there): write the field, then tell the game
+        for owner, attribute in PLAYTHROUGH_FIELDS:
             obj = owners.get(owner)
-            if obj is None:
+            if obj is None or _first(obj, (attribute,))[1] is None:
                 continue
             try:
-                getattr(obj, function)(raw_target)
+                setattr(obj, attribute, raw_target)
             except Exception:  # noqa: BLE001, S112
                 continue
-            via = f"{owner}.{function}()"
+            via = f"{owner}.{attribute}"
+            try:
+                _call(obj, "NotifyPlaythroughChanged")
+                via += " + NotifyPlaythroughChanged()"
+            except Exception:  # noqa: BLE001, S110
+                pass
             if _read_playthrough(owners)[0] == raw_target:
                 break
     if via is None:
-        raise WorldError(501, "this game build has no writable playthrough field - run the world dump")
+        raise WorldError(501, "this game build has no usable playthrough setter - run the world dump")
     section = _section(_playthrough_section, owners)
     applied = {
         "what": "playthrough", "requested": target, "via": via, "read_from": source,
@@ -395,7 +404,7 @@ def _mission_refs(owners: dict[str, Any]) -> tuple[list[_Mission], str]:
             if entries is None:
                 continue
             number, _name = _first(group, MISSION_PT_NUMBER)
-            pt = number + 1 if isinstance(number, int) and 0 <= number < len(PLAYTHROUGHS) else position + 1
+            pt = number - FIRST_RAW + 1 if isinstance(number, int) and 0 <= number - FIRST_RAW < len(PLAYTHROUGHS) else position + 1
             refs += [ref for entry in _items(entries) if (ref := _mission_entry(entry, pt))]
         if refs:
             return refs, source
@@ -445,24 +454,40 @@ def _mission_status(ref: _Mission) -> str:
         return "unknown"
 
 
-def _write_mission(owners: dict[str, Any], ref: _Mission, key: str) -> str | None:
-    """Sets one mission's status; returns how it was done, or None if the readback never matched."""
+def _write_mission(owners: dict[str, Any], ref: _Mission, key: str, current: int | None) -> str | None:
+    """Sets one mission's status; returns how it was done, or None if the readback never matched.
+
+    The tracker is the world's own (current playthrough) state, so for the current playthrough it is asked first;
+    whatever it leaves behind in the stored entry is then checked, and the entry is written directly if it differs.
+    """
+    pc = owners.get("pc")
+    sample = getattr(ref.entry, ref.status_field)
+    values = [_status_value(sample, key)]
+    if STATUS_ORDER.index(key) not in values:
+        values.append(STATUS_ORDER.index(key))  # a plain number, if the enum member isn't accepted
+    called = None
+    if current is None or ref.pt == current:
+        for owner, function in MISSION_SETTERS:
+            target = owners.get(owner)
+            if target is None:
+                continue
+            for value in values:
+                try:
+                    _call(target, function, {"InMission": ref.definition, "MissionStatus": value, "WillowPC": pc}, (ref.definition, value, pc))
+                except Exception:  # noqa: BLE001, S112
+                    continue
+                called = f"{owner}.{function}()"
+                break
+            if called:
+                break
+        if called and _mission_status(ref) == key:
+            return called
     try:
-        setattr(ref.entry, ref.status_field, _status_value(getattr(ref.entry, ref.status_field), key))
+        setattr(ref.entry, ref.status_field, values[0])
         if _mission_status(ref) == key:
-            return f"entry.{ref.status_field}"
+            return f"{called} + entry.{ref.status_field}" if called else f"entry.{ref.status_field}"
     except Exception:  # noqa: BLE001, S110
         pass
-    for owner, function in MISSION_SETTERS:
-        target = owners.get(owner)
-        if target is None:
-            continue
-        try:
-            getattr(target, function)(ref.definition, _status_value(getattr(ref.entry, ref.status_field), key))
-        except Exception:  # noqa: BLE001, S112
-            continue
-        if _mission_status(ref) == key:
-            return f"{owner}.{function}()"
     return None
 
 
@@ -499,13 +524,14 @@ def _mission_targets(owners: dict[str, Any], params: dict[str, Any], wanted: lis
 def _apply_missions(owners: dict[str, Any], targets: list[_Mission], pt: int, key: str) -> dict[str, Any]:
     before = _counts(targets)
     single_before = _mission_status(targets[0]) if len(targets) == 1 else None
+    current = _current_playthrough(owners)
     vias: set[str] = set()
     failed: list[str] = []
     changed = 0
     for ref in targets:
         if _mission_status(ref) == key:
             continue
-        via = _write_mission(owners, ref, key)
+        via = _write_mission(owners, ref, key, current)
         if via:
             vias.add(via)
             changed += 1
@@ -568,29 +594,38 @@ def _challenge_refs(owners: dict[str, Any]) -> tuple[list[_Challenge], str]:
     raise _Unavailable("this game build doesn't expose the challenge list")
 
 
-def _challenge_goal(ref: _Challenge) -> float | None:
-    for obj, names in ((ref.entry, CHALLENGE_ENTRY_GOAL), (ref.definition, CHALLENGE_DEF_GOAL)):
-        value, _name = _first(obj, names)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return value
-    levels, _name = _first(ref.definition, CHALLENGE_LEVELS)
-    last = (_items(levels) or [None])[-1]
-    value, _name = _first(last, CHALLENGE_LEVEL_GOAL)
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+def _whole_number(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _challenge_row(ref: _Challenge) -> dict[str, Any]:
+def _challenge_progress(owners: dict[str, Any], definition: Any) -> tuple[int | None, int | None]:
+    """(current, target) over all levels from pc.GetChallengeTotalProgress; the out values follow the return value."""
+    try:
+        result = _call(owners["pc"], "GetChallengeTotalProgress", {"ChalDef": definition}, (definition,))
+    except Exception:  # noqa: BLE001
+        return None, None
+    numbers = [v for v in (result if isinstance(result, tuple) else (result,)) if _whole_number(v)]
+    return (numbers[-2], numbers[-1]) if len(numbers) >= 2 else (None, None)
+
+
+def _challenge_done(owners: dict[str, Any], definition: Any) -> bool | None:
+    try:
+        return bool(_call(owners["pc"], "IsChallengeComplete", {"ChalDef": definition}, (definition,)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _challenge_row(owners: dict[str, Any], ref: _Challenge) -> dict[str, Any]:
     name, _field = _first(ref.definition, CHALLENGE_NAME)
     desc, _field = _first(ref.definition, CHALLENGE_DESC)
-    category, _field = _first(ref.definition, CHALLENGE_CATEGORY)
-    progress, _field = _first(ref.entry, CHALLENGE_PROGRESS)
-    flag, _field = _first(ref.entry, CHALLENGE_DONE)
-    goal = _challenge_goal(ref)
-    progress = progress if isinstance(progress, (int, float)) and not isinstance(progress, bool) else None
-    if isinstance(flag, bool):
-        done = flag
-    else:
-        done = None if progress is None or not goal else progress >= goal
+    category, _field = _first(_first(ref.definition, CHALLENGE_CATEGORY)[0], CHALLENGE_CATEGORY_NAME)
+    progress, goal = _challenge_progress(owners, ref.definition)
+    if goal is None:
+        value, _field = _first(ref.definition, CHALLENGE_DEF_GOAL)
+        goal = value if _whole_number(value) else None
+    done = _challenge_done(owners, ref.definition)
+    if done is None and progress is not None and goal:
+        done = progress >= goal
     package = _clean(ref.id.split(".")[0].removeprefix("GD_")) if "." in ref.id else ""
     group = _text(category) or package or "Challenges"
     return {
@@ -601,21 +636,24 @@ def _challenge_row(ref: _Challenge) -> dict[str, Any]:
 
 def _challenges_section(owners: dict[str, Any]) -> dict[str, Any]:
     refs, source = _challenge_refs(owners)
-    return {"rows": [_challenge_row(ref) for ref in refs], "source": source}
+    # can_reset: the game has no per-challenge reset (only PrestigeResetChallenges, which resets everything)
+    return {"rows": [_challenge_row(owners, ref) for ref in refs], "source": source, "can_reset": False}
 
 
-def _write_challenge(ref: _Challenge, complete: bool) -> list[str]:
-    """Marks a challenge done (or not). Returns the fields written; empty if it has none we know."""
-    written: list[str] = []
-    if name := _set_first(ref.entry, CHALLENGE_DONE, complete):
-        written.append(name)
-    progress, name = _first(ref.entry, CHALLENGE_PROGRESS)
-    goal = _challenge_goal(ref)
-    if name and isinstance(progress, (int, float)) and (goal is not None or not complete):
-        value = goal if complete else 0
-        setattr(ref.entry, name, type(progress)(value))
-        written.append(name)
-    return written
+def _complete_challenge(owners: dict[str, Any], ref: _Challenge) -> list[str]:
+    """Completes each level of a challenge that isn't done yet through pc.ServerCompleteChallenge. Returns the calls made."""
+    pc = owners["pc"]
+    levels, _field = _first(ref.definition, CHALLENGE_LEVELS)
+    calls: list[str] = []
+    for level in range(max(1, len(_items(levels)))):  # levels are assumed to count from 0
+        try:
+            if _call(pc, "IsChallengeLevelComplete", {"ChalDef": ref.definition, "LevelIdx": level}, (ref.definition, level)) is True:
+                continue
+        except Exception:  # noqa: BLE001, S110
+            pass  # can't tell: complete it anyway, the readback decides
+        _call(pc, "ServerCompleteChallenge", {"ChalDef": ref.definition, "LevelIdx": level}, (ref.definition, level))
+        calls.append("pc.ServerCompleteChallenge()")
+    return calls
 
 
 def set_challenge(params: dict[str, Any]) -> dict[str, Any]:
@@ -623,7 +661,7 @@ def set_challenge(params: dict[str, Any]) -> dict[str, Any]:
     if action not in ("complete", "reset"):
         raise WorldError(400, "action must be 'complete' or 'reset'")
     if action == "reset":
-        _require_confirm(params, "resetting challenges")
+        raise WorldError(501, "resetting challenges isn't supported: the game has no function to reset a single challenge (only a full prestige reset)")
     wanted = _ids(params)
     owners = _owners()
     try:
@@ -634,26 +672,25 @@ def set_challenge(params: dict[str, Any]) -> dict[str, Any]:
     missing = [i for i in wanted if i not in known]
     if missing:
         raise WorldError(404, f"unknown challenge: {missing[0]}")
-    want_done = action == "complete"
-    before = [_challenge_row(known[i]) for i in wanted]
-    fields: set[str] = set()
+    before = [_challenge_row(owners, known[i]) for i in wanted]
+    vias: set[str] = set()
     failed: list[str] = []
     for challenge_id in wanted:
         ref = known[challenge_id]
+        if _challenge_done(owners, ref.definition) is True:
+            continue
         try:
-            written = _write_challenge(ref, want_done)
+            vias.update(_complete_challenge(owners, ref))
         except Exception:  # noqa: BLE001
-            written = []
-        fields.update(written)
-        row = _challenge_row(ref)
-        ok = row["done"] is True if want_done else (row["done"] is False or row["progress"] == 0)
-        if not written or not ok:
             failed.append(challenge_id)
-    after = [_challenge_row(known[i]) for i in wanted]
+            continue
+        if _challenge_done(owners, ref.definition) is not True:
+            failed.append(challenge_id)
+    after = [_challenge_row(owners, known[i]) for i in wanted]
     one = len(wanted) == 1
     applied = {
         "what": "challenge" if one else "challenges", "requested": action, "count": len(wanted), "failed": failed[:20],
-        "via": sorted(f"entry.{f}" for f in fields),
+        "via": sorted(vias),
         "before": (before[0]["done"], before[0]["progress"]) if one else sum(1 for r in before if r["done"]),
         "after": (after[0]["done"], after[0]["progress"]) if one else sum(1 for r in after if r["done"]),
     }
@@ -683,57 +720,16 @@ def _station_defs() -> list[Any]:
     return defs
 
 
-def _station_keys(definition: Any) -> set[str]:
-    """Every string the game might use to refer to this station in a list of visited ones."""
-    keys = {_path(definition).lower()}
-    for names in (("Name",), STATION_NAME, STATION_LEVEL):
-        value, _name = _first(definition, names)
-        if value is not None:
-            keys.add(str(value).lower())
-    return keys
-
-
-def _entry_matches(entry: Any, keys: set[str]) -> bool:
-    if isinstance(entry, str):
-        return entry.lower() in keys
-    if isinstance(entry, unreal.UObject):
-        return _path(entry).lower() in keys
-    target, _name = _first(entry, STATION_ENTRY_DEF)
-    return target is not None and _path(target).lower() in keys
-
-
-def _list_state(array: Any, definition: Any) -> bool | None:
-    keys = _station_keys(definition)
-    try:
-        for entry in _items(array):
-            if _entry_matches(entry, keys):
-                flag, _name = _first(entry, STATION_ENTRY_FLAG)
-                return flag if isinstance(flag, bool) else True
-        return False
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _station_state(owners: dict[str, Any], definition: Any) -> bool | None:
-    """Whether the station is unlocked, asking every way we know. True if any says so; None if none can answer."""
-    answers: list[bool] = []
+    """Whether pc.IsStationDiscovered says the station is unlocked; None if it can't answer."""
     owner, function = STATION_GETTER
     target = owners.get(owner)
-    if target is not None:
-        try:
-            answers.append(bool(getattr(target, function)(definition)))
-        except Exception:  # noqa: BLE001, S110
-            pass
-    value, _name = _first(definition, STATION_FLAGS)
-    if isinstance(value, bool):
-        answers.append(value)
-    for _source, array in _candidates(owners, STATION_LISTS):
-        state = _list_state(array, definition)
-        if state is not None:
-            answers.append(state)
-    if not answers:
+    if target is None:
         return None
-    return any(answers)
+    try:
+        return bool(_call(target, function, {"StationDefinition": definition}, (definition,)))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _station_row(owners: dict[str, Any], definition: Any) -> dict[str, Any]:
@@ -751,74 +747,46 @@ def _stations_section(owners: dict[str, Any]) -> dict[str, Any]:
     warning = None
     if all(r["visited"] is None for r in rows):
         warning = "stations were found but whether they are unlocked can't be read, so they show as unknown"
-    return {"rows": rows, "warning": warning}
+    return {"rows": rows, "warning": warning, "can_lock": False}  # the game has no function to un-discover a station
 
 
-def _list_write(array: Any, definition: Any, visited: bool) -> bool:
-    keys = _station_keys(definition)
-    items = _items(array)
-    matches = [i for i, entry in enumerate(items) if _entry_matches(entry, keys)]
-    if visited:
-        if matches:  # already listed; if it carries a visited flag, set it (the readback decides if that was enough)
-            for i in matches:
-                _set_first(items[i], STATION_ENTRY_FLAG, True)
-            return True
-        sample = items[0] if items else None
-        if isinstance(sample, str):
-            array.append(_path(definition) if "." in sample else str(getattr(definition, "Name", _path(definition))))
-            return True
-        if sample is None or isinstance(sample, unreal.UObject):
-            try:
-                array.append(definition)
-                return True
-            except Exception:  # noqa: BLE001
-                array.append(str(getattr(definition, "Name", _path(definition))))
-                return True
-        return False  # a list of structs we can't build
-    for i in reversed(matches):
-        flag = _set_first(items[i], STATION_ENTRY_FLAG, False)
-        if flag is None:
-            try:
-                array.pop(i)
-            except Exception:  # noqa: BLE001
-                del array[i]
-    return True
+def _station_calls(function: str, pc: Any, definition: Any) -> list[tuple[dict[str, Any], tuple[Any, ...]]]:
+    """(keyword, positional) argument sets to try for one registering function."""
+    if function == "Behavior_RegisterStationDefinition":
+        return [({"TravelDefinition": definition, "bSetAsLastVisited": False}, (definition, False))]
+    if function == "RegisterStationForPlayer":  # DiscoveredBy is a guess: the replication info, else the controller
+        who = [w for w in (_first(pc, ("PlayerReplicationInfo",))[0], pc) if w is not None]
+        return [
+            ({"ActivatedStationDefinition": definition, "ActivatedStation": None, "DiscoveredBy": w, "bFromLoad": True, "bSetAsLastVisited": False},
+             (definition, None, w, True, False))
+            for w in who
+        ]
+    return []
 
 
-def _write_station(owners: dict[str, Any], definition: Any, visited: bool) -> str | None:
-    """Unlocks (or re-locks) one station, trying each way in turn until the readback agrees. Returns how, or None."""
-    owner, function = STATION_SETTER
-    target = owners.get(owner)
-    if target is not None:
-        try:
-            getattr(target, function)(definition, visited)
-            if _station_state(owners, definition) == visited:
-                return f"{owner}.{function}()"
-        except Exception:  # noqa: BLE001, S110
-            pass
-    if _first(definition, STATION_FLAGS)[1]:
-        try:
-            _set_first(definition, STATION_FLAGS, visited)
-            if _station_state(owners, definition) == visited:
-                return f"definition.{_first(definition, STATION_FLAGS)[1]}"
-        except Exception:  # noqa: BLE001, S110
-            pass
-    for source, array in _candidates(owners, STATION_LISTS):
-        try:
-            if _list_write(array, definition, visited) and _station_state(owners, definition) == visited:
-                return source
-        except Exception:  # noqa: BLE001, S112
+def _write_station(owners: dict[str, Any], definition: Any) -> str | None:
+    """Unlocks one station, trying each registering function in turn until the readback agrees. Returns how, or None."""
+    for owner, function in STATION_SETTERS:
+        target = owners.get(owner)
+        if target is None:
             continue
+        for kwargs, args in _station_calls(function, owners.get("pc"), definition):
+            try:
+                _call(target, function, kwargs, args)
+            except Exception:  # noqa: BLE001, S112
+                continue
+            if _station_state(owners, definition) is True:
+                return f"{owner}.{function}()"
     return None
 
 
 def unlock_stations(params: dict[str, Any]) -> dict[str, Any]:
-    """Unlocks fast-travel stations: {"id": ...}, {"ids": [...]} or {"all": true}. {"visited": false} locks them again."""
+    """Unlocks fast-travel stations: {"id": ...}, {"ids": [...]} or {"all": true}. Locking again isn't supported."""
     visited = params.get("visited", True)
     if not isinstance(visited, bool):
         raise WorldError(400, "'visited' must be true or false")
     if not visited:
-        _require_confirm(params, "locking stations again")
+        raise WorldError(501, "locking stations again isn't supported: the game has no function to un-discover a station")
     owners = _owners()
     defs = _station_defs()
     if not defs:
@@ -836,16 +804,16 @@ def unlock_stations(params: dict[str, Any]) -> dict[str, Any]:
     failed: list[str] = []
     for station_id in wanted:
         definition = by_id[station_id]
-        if _station_state(owners, definition) == visited:
+        if _station_state(owners, definition) is True:
             continue
-        via = _write_station(owners, definition, visited)
+        via = _write_station(owners, definition)
         if via:
             vias.add(via)
         else:
             failed.append(station_id)
     after = sum(1 for i in wanted if _station_state(owners, by_id[i]) is True)
     applied = {
-        "what": "stations", "requested": "unlock" if visited else "lock", "count": len(wanted), "failed": failed[:20],
+        "what": "stations", "requested": "unlock", "count": len(wanted), "failed": failed[:20],
         "via": sorted(vias), "before": before, "after": after,
     }
     if len(wanted) == 1:
@@ -888,6 +856,8 @@ def _scalar(value: Any) -> Any:
         return value
     if isinstance(value, unreal.UObject):
         return _path(value)
+    if isinstance(value, tuple):  # a call with out parameters: (return value, *outs)
+        return [_scalar(v) for v in value]
     if hasattr(value, "name") and isinstance(getattr(value, "name"), str):  # an enum member
         return f"{type(value).__name__}.{value.name} ({int(value) if hasattr(value, '__int__') else '?'})"
     try:
@@ -915,22 +885,6 @@ def _describe(obj: Any, keywords: tuple[str, ...] | None = None) -> dict[str, An
     return {"class": cls or type(obj).__name__, "path": _path(obj) if isinstance(obj, unreal.UObject) else None, "fields": out}
 
 
-def _sample(items: list[Any], count: int = 4) -> list[dict[str, Any]]:
-    out = []
-    for entry in items[:count]:
-        described = _describe(entry)
-        for field, value in list(described["fields"].items()):
-            nested = None
-            try:
-                nested = getattr(entry, field)
-            except Exception:  # noqa: BLE001, S112
-                continue
-            if isinstance(nested, unreal.UObject) and field in {*MISSION_DEF, *CHALLENGE_DEF, *STATION_ENTRY_DEF}:
-                value["object"] = _describe(nested)
-        out.append(described)
-    return out
-
-
 def _guard(build: Callable[[], Any]) -> Any:
     try:
         return build()
@@ -939,44 +893,97 @@ def _guard(build: Callable[[], Any]) -> Any:
 
 
 def debug_dump() -> dict[str, Any]:
-    """Saves the real field names behind every section, with sample entries, to rtse/debug_world.json."""
+    """Saves the real values behind every section, with samples, to rtse/debug_world.json."""
     owners = _owners()
-    words = ("mission", "challenge", "travel", "station", "teleport", "playthrough", "visited")
-    out: dict[str, Any] = {"owners": {key: _path(obj) for key, obj in owners.items()}}
-    out["matching_fields"] = {key: _guard(lambda o=obj: _describe(o, words)) for key, obj in owners.items() if key in ("pc", "game")}
-    out["trackers"] = {key: _guard(lambda o=owners[key]: _describe(o)) for key in ("missions", "challenges") if key in owners}
+    pc = owners["pc"]
+    out: dict[str, Any] = {
+        "owners": {key: _path(obj) for key, obj in owners.items()},
+        "missing_owners": [key for key in OWNER_PATHS if key not in owners],
+        "first_raw_assumed": FIRST_RAW,
+    }
+    out["gri_fields"] = _guard(lambda: _describe(owners.get("gri"), ("playthrough", "missiontracker")))
+    out["pc_matching_fields"] = _guard(lambda: _describe(pc, ("mission", "challenge", "station", "teleport", "playthrough")))
 
     def playthrough() -> dict[str, Any]:
         reads: dict[str, Any] = {}
         for owner, function in PLAYTHROUGH_READERS:
-            reads[f"{owner}.{function}()"] = _guard(lambda o=owner, f=function: _scalar(getattr(owners[o], f)()))
+            reads[f"{owner}.{function}()"] = _guard(lambda o=owner, f=function: _scalar(_call(owners[o], f)))
         for owner, attribute in PLAYTHROUGH_FIELDS:
             reads[f"{owner}.{attribute}"] = _guard(lambda o=owner, a=attribute: _scalar(getattr(owners[o], a)))
+        reads["gri.PlaythroughOverride"] = _guard(lambda: _scalar(owners["gri"].PlaythroughOverride))
+        reads["pc.IsPlaythroughComplete(0, 1, 2)"] = _guard(
+            lambda: [_scalar(_call(pc, "IsPlaythroughComplete", {"PlayThroughNumber": n}, (n,))) for n in range(3)])
         return {"candidates": reads, "chosen": _read_playthrough(owners), "first_raw_assumed": FIRST_RAW}
 
     def missions() -> dict[str, Any]:
-        refs, source = _mission_refs(owners)
-        return {
-            "source": source, "count": len(refs), "per_playthrough": {str(pt): sum(1 for r in refs if r.pt == pt) for pt in {r.pt for r in refs}},
-            "status_counts": _counts(refs), "sample": _sample([r.entry for r in refs]),
-            "sample_rows": [_mission_row(r) for r in refs[:8]],
+        tracker = owners.get("missions")
+        groups = _items(getattr(pc, "MissionPlaythroughs", None))
+        data: dict[str, Any] = {
+            "tracker_found": tracker is not None,
+            "tracker_mission_count": _guard(lambda: len(_items(tracker.MissionList))) if tracker is not None else None,
+            "tracker_active_mission": _guard(lambda: _scalar(tracker.ActiveMission)) if tracker is not None else None,
+            "playthrough_groups": len(groups),
         }
+        samples = []
+        for group in groups[:4]:
+            entries = _items(getattr(group, "MissionList", None))
+            samples.append({
+                "PlayThroughNumber": _guard(lambda g=group: _scalar(g.PlayThroughNumber)),
+                "ActiveMission": _guard(lambda g=group: _scalar(g.ActiveMission)),
+                "FilteredMissions": _guard(lambda g=group: _scalar(g.FilteredMissions)),
+                "MissionList": f"{len(entries)} entries",
+                "first_entries": [_guard(lambda e=e: {
+                    "MissionDef": _scalar(e.MissionDef), "Status": _scalar(e.Status), "bFiltered": _scalar(e.bFiltered),
+                    "bInitialized": _scalar(e.bInitialized),
+                    "tracker.GetMissionStatus": _scalar(_call(tracker, "GetMissionStatus", {"InMission": e.MissionDef}, (e.MissionDef,))) if tracker is not None else None,
+                }) for e in entries[:5]],
+            })
+        data["groups"] = samples
+        try:
+            refs, source = _mission_refs(owners)
+            data.update({
+                "source": source, "count": len(refs),
+                "per_playthrough": {str(pt): sum(1 for r in refs if r.pt == pt) for pt in sorted({r.pt for r in refs})},
+                "status_counts": _counts(refs), "sample_rows": [_mission_row(r) for r in refs[:8]],
+            })
+        except _Unavailable as ex:
+            data["source"] = str(ex)
+        return data
 
     def challenges() -> dict[str, Any]:
-        refs, source = _challenge_refs(owners)
-        return {"source": source, "count": len(refs), "sample": _sample([r.entry for r in refs]), "sample_rows": [_challenge_row(r) for r in refs[:8]]}
+        cache = _items(getattr(pc, "LocalChallengeDataCache", None))
+        sample = []
+        for entry in cache[:8]:
+            definition = _first(entry, CHALLENGE_DEF)[0]
+            if definition is None:
+                sample.append({"entry": _guard(lambda e=entry: _describe(e))})
+                continue
+            sample.append({
+                "id": _path(definition),
+                "name": _guard(lambda d=definition: _scalar(d.ChallengeName)),
+                "GoalValue": _guard(lambda d=definition: _scalar(d.GoalValue)),
+                "levels": _guard(lambda d=definition: len(_items(d.Levels))),
+                "IsChallengeComplete": _guard(lambda d=definition: _scalar(_call(pc, "IsChallengeComplete", {"ChalDef": d}, (d,)))),
+                "GetChallengeTotalProgress (return, current, target)": _guard(lambda d=definition: _scalar(_call(pc, "GetChallengeTotalProgress", {"ChalDef": d}, (d,)))),
+                "GetCurrentChallengeLevel": _guard(lambda d=definition: _scalar(_call(pc, "GetCurrentChallengeLevel", {"ChallengeDef": d}, (d,)))),
+                "GetHighestChallengeLevelComplete": _guard(lambda d=definition: _scalar(_call(pc, "GetHighestChallengeLevelComplete", {"ChalDef": d}, (d,)))),
+                "PlayerHasChallenge": _guard(lambda d=definition: _scalar(_call(pc, "PlayerHasChallenge", {"ChalDef": d}, (d,)))),
+            })
+        return {
+            "LocalChallengeDataCache": len(cache), "TrackedChallenges": _guard(lambda: len(_items(pc.TrackedChallenges))),
+            "sample": sample, "sample_rows": [_challenge_row(owners, r) for r in _challenge_refs(owners)[0][:8]],
+        }
 
     def stations() -> dict[str, Any]:
         defs = _station_defs()
-        lists = {}
-        for source, array in _candidates(owners, STATION_LISTS):
-            items = _items(array)
-            lists[source] = {"length": len(items), "sample": [_scalar(i) if not _fields(i) or isinstance(i, unreal.UObject) else _describe(i) for i in items[:6]]}
         counts = {}
-        for class_name in (*STATION_CLASSES, "LevelTravelStationDefinition", "TeleporterDefinition"):
+        for class_name in (*STATION_CLASSES, "TravelStationDefinition", "LevelTravelStationDefinition"):
             counts[class_name] = _guard(lambda c=class_name: sum(1 for _ in find_all(c)))
         return {
-            "class_counts": counts, "visited_lists": lists, "defs_found": len(defs), "sample_defs": [_describe(d) for d in defs[:3]],
+            "class_counts": counts, "defs_found": len(defs), "sample_defs": [_describe(d) for d in defs[:3]],
+            "IsStationDiscovered (first 8)": [
+                {"id": _path(d), "raw": _guard(lambda d=d: _scalar(_call(pc, "IsStationDiscovered", {"StationDefinition": d}, (d,))))} for d in defs[:8]],
+            "LastVisitedTeleporter": _guard(lambda: _scalar(pc.LastVisitedTeleporter)),
             "sample_rows": [_station_row(owners, d) for d in defs[:8]],
         }
 
