@@ -13,13 +13,101 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **Ammo:** see and set every ammo type.
 - **Upgrades:** backpack, bank and ammo SDU levels, like the Gibbed editor has.
 - **Skills:** your real skill tree for your class. Set any skill to any rank (even locked ones), change unspent points, or reset the whole tree.
-- **World:** missions, challenges, fast travel stations and playthrough (Normal / TVHM / UVHM).
+- **World:** missions (including how far through each objective you are), challenges, fast travel stations and playthrough (Normal / TVHM / UVHM).
+- **Inspector:** browse the game's own live data and change plain numbers, switches and text in it, for the things that don't have a page of their own.
+
+## A tour of the editor
+
+The screenshots below were taken with the demo data from `dev/mock_server.py` (see [For tinkerers](#for-tinkerers)), not from a live game, so the names and numbers are placeholders. In the real thing they come from your character.
+
+The left side is always your **Loadout**: six pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector), then a search box and everything you have equipped or in your backpack.
+
+![The editor with nothing selected](docs/screenshots/01-home.png)
+
+### Gear
+
+Click any weapon, shield, grenade mod, relic or class mod in the list.
+
+![A pistol open in the gear page, with the 3D view and part slots](docs/screenshots/02-gear.png)
+
+- **3D view.** Drag to orbit, or use **Side / Angle / Top / Blueprint**. Click a part on the model to swap it. Colours show which manufacturer made each part.
+- **Level.** Change the item's level with the stepper and hit **Set**.
+- **Part slots.** One tile for each slot (body, grip, barrel, sight, stock, element, accessories, material). Empty slots are dashed. Click a tile to swap that part.
+
+![The part picker for a pistol barrel](docs/screenshots/03-part-picker.png)
+
+- **Part picker.** **Legal** shows only parts this gun could roll in the game. **Any gun** shows parts from other guns of the same type. **Everything** shows every part in the game. You can search by name, maker or element, filter by manufacturer, and see a preview of the gun with the part on it. Double-click a part to bolt it on, or **Remove current part**.
+
+![The stats bench with damage, ammo and accuracy numbers](docs/screenshots/04-stats-bench.png)
+
+- **Stats bench.** The gun's real numbers (damage, magazine size, reload time, spread, range and so on) with the game's base value next to each one. Type a number and **Set**, or use **/2, x2, x10**. Your tuned values are saved in `rtse/overrides.json` and re-applied whenever the game rebuilds that weapon.
+- **Item info & dev tools** (below the stats) has the item's id, class, level requirement and game stage, plus the **Save ... dump** buttons for bug reports.
+
+### Character
+
+![The character page](docs/screenshots/05-character.png)
+
+Your level and XP, plus unspent **skill points**, **cash**, **eridium**, **seraph crystals** and **torgue tokens**. Each one has a box to type an exact value and **Set**, quick **+** buttons, and **Max** where it makes sense. The game caps cash and tokens at two billion.
+
+### Ammo
+
+![The ammo page](docs/screenshots/06-ammo.png)
+
+One card per ammo type with how much you have, your capacity and how full that is. **Set** an exact amount, **Fill** to capacity, **Empty** it, change the capacity directly, or change the ammo SDU level. **Fill everything** tops up all types at once.
+
+### Upgrades
+
+![The upgrades page](docs/screenshots/07-upgrades.png)
+
+Your SDU (Storage Deck Upgrade) levels, the same idea as the Gibbed editor. **Backpack** and **Bank** slots, and **Ammo capacity** for every ammo type. Step the level up or down, **Set** it, or **Max** it. **Max everything** does the lot. Each card says where the game's number came from.
+
+### Skills
+
+![The skill tree page, with Allow above max ticked and one skill set past its maximum](docs/screenshots/08-skills.png)
+
+The real skill tree for your class (Zer0 in this picture), straight from the game's own data. Your action skill is at the top. Click any skill to read what it does and set it to an exact rank with the stepper, **Max** or **Zero**. This ignores tier locks, so you can put points into locked skills. It doesn't spend skill points. You can also set your **Unspent** points, or **Reset tree**.
+
+Tick **Allow above max** to go past a skill's normal maximum rank (up to 255). The game never offers ranks like that, so it might cap the number, ignore it, or act strangely. Each change still reports what the game says afterwards, and this hasn't been tried in a live game yet, so back up your saves.
+
+### World
+
+The **World** page has four tabs.
+
+![World page, missions tab](docs/screenshots/09-world-missions.png)
+
+- **Missions.** Every mission, grouped by storyline, with its state. Pick the playthrough (PT1 Normal, PT2 TVHM, PT3 UVHM) and filter by Active, Ready, Not started, Complete or Failed. Search by name. **Reset** one mission, or **Complete all shown / Reset all shown** for whatever the filters currently show.
+
+![World page, challenges tab](docs/screenshots/10-world-challenges.png)
+
+- **Challenges.** Each challenge with a progress bar. **Complete** or **Reset** one at a time, or everything shown.
+
+![World page, fast travel tab](docs/screenshots/11-world-fast-travel.png)
+
+- **Fast travel.** Every fast travel station, locked or unlocked. **Unlock** or **Lock** one, or **Unlock all shown**.
+
+![World page, playthrough tab](docs/screenshots/12-world-playthrough.png)
+
+![A mission's objectives panel, with progress numbers per objective](docs/screenshots/13-world-objectives.png)
+
+- **Objectives (on each mission).** Click **Objectives** on a mission to see its objectives and how far along each one is, like "2 / 4". Type a number and **Set**, or use **Max** and **Zero**. If a mission has several stages, the **Stage** buttons move it between them, and **Track on HUD** makes it your tracked mission. Objectives that aren't part of the current stage are dimmed.
+
+- **Playthrough.** Shows which playthrough you're in and lets you switch between Normal, TVHM and UVHM. Read the note on that page first: save and reload afterwards, since switching mid-playthrough can leave your mission log out of step.
+
+### Inspector
+
+![The inspector showing one mission's raw fields](docs/screenshots/14-inspector.png)
+
+The closest thing to the raw tab in the Gibbed editor, except it shows the live game instead of a save file. Start from your player controller, your character's body, the skill tree, the mission tracker and a few other objects, and click through into their fields, lists and sub-objects (the trail at the top shows where you are). Every field shows the game's real name, its type and its current value.
+
+- You can change whole numbers, decimals, true/false, text and enum values (type the enum's number). References, structs and lists are read-only here, and nothing in the game is ever called.
+- This skips every check, so a wrong value can confuse the game or crash it, and some fields will do nothing. Back up your saves first.
+- It's also the quickest way to find out what the game really holds when one of the other pages says "unavailable".
 
 ## Heads up before you start
 
 - **Back up your saves first.** They're in `Documents\My Games\Borderlands 2\WillowGame\SaveData`. Copy that folder somewhere. It takes ten seconds and saves you if you break something.
 - **Play solo.** Don't use this in public online games.
-- **This is early.** Gear is the page that's had the most real use. Character, Ammo, Upgrades, Skills and World were built from the game's own data files, so the names they use are real, but nobody has confirmed every button does what it says in a live game yet. If something shows "unavailable" or does nothing, see [When something doesn't work](#when-something-doesnt-work).
+- **This is early.** Gear is the page that's had the most real use. Character, Ammo, Upgrades, Skills, World (including objectives) and Inspector were built from the game's own data files, so the names they use are real, but nobody has confirmed every button does what it says in a live game yet. If something shows "unavailable" or does nothing, see [When something doesn't work](#when-something-doesnt-work).
 
 ## Easiest way to install: let Claude do it
 
@@ -48,7 +136,7 @@ If F8 does nothing, open the mod menu and check RTSE is enabled. You can also re
 
 ## Using it
 
-- Click a page on the left (Character, Ammo, Upgrades, Skills, World) or pick a gun or item from the list.
+- Click a page on the left (Character, Ammo, Upgrades, Skills, World, Inspector) or pick a gun or item from the list.
 - Changes happen in your live game. **Save in game afterwards** (quit to the menu or use a save point) or they're gone when you leave.
 - Each change tells you what the game reports back. If you ask for 500 and the game says 300, it'll tell you, since the game sometimes caps things.
 - The editor only listens on your own computer, and the link has a random key in it. Nobody else on your network can use it.

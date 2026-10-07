@@ -12,6 +12,7 @@ const state = {
   busy: false, // a write is in flight; clicks are ignored until it lands
   confirmReset: false, // the inline "Really reset?" step is showing
   selected: null, // id of the skill shown in the detail card
+  overMax: false, // "Allow above max" is on: ranks past a skill's own maximum are accepted (and sent with over_max)
 };
 
 /** Fetches the tree, then redraws. A failed fetch shows as an unavailable tree rather than an empty page. */
@@ -38,9 +39,12 @@ async function write(path, body) {
   return result;
 }
 
+const OVER_MAX_LIMIT = 255; // matches rtse/skills.py
+const limitFor = (skill) => (state.overMax ? OVER_MAX_LIMIT : skill.max ?? 5);
+
 async function setLevel(skill, level) {
   if (level === skill.level) return;
-  const result = await write("/api/skills/set", { id: skill.id, level });
+  const result = await write("/api/skills/set", { id: skill.id, level, ...(state.overMax && { over_max: true }) });
   if (!result) return;
   const { before, after, requested } = result.applied;
   if (after === requested) ctx.toast(`${skill.name}: ${before ?? 0} to ${after}`);
@@ -98,7 +102,7 @@ function tile(skill) {
       pips(skill),
       h("div", { class: "sk-btns" },
         h("button", { class: "btn sm", title: "One point less", "aria-label": `${skill.name} down`, disabled: !known || skill.level <= 0 || null, onclick: () => setLevel(skill, skill.level - 1) }, icon("minus", 13)),
-        h("button", { class: "btn sm", title: "One point more", "aria-label": `${skill.name} up`, disabled: !known || skill.level >= top || null, onclick: () => setLevel(skill, skill.level + 1) }, icon("plus", 13)),
+        h("button", { class: "btn sm", title: "One point more", "aria-label": `${skill.name} up`, disabled: !known || skill.level >= limitFor(skill) || null, onclick: () => setLevel(skill, skill.level + 1) }, icon("plus", 13)),
         h("button", { class: "btn sm primary", title: "Set to its maximum", disabled: !known || maxed || null, onclick: () => setLevel(skill, top) }, "Max"))));
 }
 
@@ -144,21 +148,23 @@ function actionCard(skill) {
 function detailCard(data) {
   const skill = data.skills.find((s) => s.id === state.selected);
   if (!skill) return h("div", { class: "sk-detail hint", text: "Click a skill to read what it does and set it to an exact rank." });
-  const top = skill.max ?? 5;
+  const top = skill.max ?? 5; // what the Max button sets
+  const limit = limitFor(skill); // the most the box accepts
   const known = skill.level != null;
-  const box = h("input", { type: "number", min: 0, max: top, value: skill.level ?? 0, "aria-label": `${skill.name} points`, onkeydown: (e) => e.key === "Enter" && commit() });
+  const box = h("input", { type: "number", min: 0, max: limit, value: skill.level ?? 0, "aria-label": `${skill.name} points`, onkeydown: (e) => e.key === "Enter" && commit() });
   const commit = () => {
     const value = parseInt(box.value, 10);
-    if (Number.isInteger(value) && value >= 0 && value <= top) setLevel(skill, value);
-    else ctx.toast(`${skill.name} must be 0-${top}`, true);
+    if (Number.isInteger(value) && value >= 0 && value <= limit) setLevel(skill, value);
+    else ctx.toast(`${skill.name} must be 0-${limit}${state.overMax ? "" : ", or turn on Allow above max"}`, true);
   };
-  const nudge = (by) => () => { box.value = Math.max(0, Math.min(top, (parseInt(box.value, 10) || 0) + by)); };
+  const nudge = (by) => () => { box.value = Math.max(0, Math.min(limit, (parseInt(box.value, 10) || 0) + by)); };
   return h("div", { class: "sk-detail" },
     h("div", { class: "sk-detail-text" },
       h("h3", { text: skill.name }),
       h("div", { class: "sk-meta" },
         skill.branch_label && h("span", { text: skill.row == null ? skill.branch_label : `${skill.branch_label} / tier ${skill.row + 1}` }),
         h("span", { text: `max rank ${top}${skill.max_from ? " (from game files)" : ""}` }),
+        skill.level > top && h("em", { text: "above its normal maximum" }),
         skill.locked && h("em", { text: "locked in the game's menu" })),
       h("p", { text: plainText(skill.description) || "No description." })),
     known && h("div", { class: "level" },
@@ -211,8 +217,10 @@ function resetBar(data) {
     h("span", { text: `All ${data.spent} spent points go back to your unspent total.` }),
     h("button", { class: "btn sm danger", onclick: resetTree }, "Yes"),
     h("button", { class: "btn sm", onclick: () => { state.confirmReset = false; ctx.rerender(); } }, "Cancel"));
+  const overBox = h("input", { type: "checkbox", checked: state.overMax || null, onchange: (e) => { state.overMax = e.target.checked; ctx.rerender(); } });
   return h("div", { class: "sk-bar" },
     h("span", { class: "note", text: "Setting a skill ignores tier locks and does not spend skill points. Save in game afterwards to keep changes." }),
+    h("label", { class: "sk-over", title: `Lets you set a skill past its normal maximum rank (up to ${OVER_MAX_LIMIT}). The game never does this itself, so it may cap it, ignore it, or misbehave. Back up your save.` }, overBox, "Allow above max"),
     state.confirmReset
       ? ask
       : h("button", { class: "btn danger", disabled: !any || null, title: "Zero every skill and refund the points", onclick: () => { state.confirmReset = true; ctx.rerender(); } }, icon("trash", 15), "Reset tree"));

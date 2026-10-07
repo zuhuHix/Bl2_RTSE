@@ -8,6 +8,7 @@ import { emblemSvg, itemClassSvg, letterSvg, plateEl, ui } from "./icons.js";
 import * as sduPage from "./page_sdu.js";
 import * as skillsPage from "./page_skills.js";
 import * as worldPage from "./page_world.js";
+import * as inspectPage from "./page_inspect.js";
 
 const token = new URLSearchParams(location.search).get("t") || "";
 const MODES = [
@@ -374,6 +375,7 @@ function renderWorkspace() {
   if (state.page === "sdu") return sduPage.render(root, pageCtx);
   if (state.page === "skills") return skillsPage.render(root, pageCtx);
   if (state.page === "world") return worldPage.render(root, pageCtx);
+  if (state.page === "inspect") return inspectPage.render(root, pageCtx);
   const detail = state.detail;
   if (!detail) {
     fill(root, h("div", { class: "empty" }, state.selected
@@ -665,7 +667,8 @@ function renderPinned() {
     pin("ammo", openAmmo, icon("crosshair", 20), "Ammo", "Every ammo type", null),
     pin("sdu", openSdu, icon("backpack", 20), "Upgrades", "Backpack, bank, ammo SDUs", null),
     pin("skills", openSkills, icon("sliders", 20), "Skills", "Skill tree", null),
-    pin("world", openWorld, icon("swap", 20), "World", "Missions, challenges, travel", null));
+    pin("world", openWorld, icon("swap", 20), "World", "Missions, challenges, travel", null),
+    pin("inspect", openInspect, icon("search", 20), "Inspector", "Raw live game data", null));
 }
 
 async function openCharacter() {
@@ -685,7 +688,7 @@ async function loadCharacter() {
   if (state.page === "character") renderWorkspace();
 }
 
-// ---------- feature pages (own modules: page_sdu.js, page_skills.js, page_world.js) ----------
+// ---------- feature pages (own modules: page_sdu.js, page_skills.js, page_world.js, page_inspect.js) ----------
 
 const pageCtx = { h, fill, icon, api, toast, guarded, dump, dropdown, rerender: () => renderWorkspace() };
 
@@ -701,6 +704,7 @@ async function openPage(page, module) {
 const openSdu = () => openPage("sdu", sduPage);
 const openSkills = () => openPage("skills", skillsPage);
 const openWorld = () => openPage("world", worldPage);
+const openInspect = () => openPage("inspect", inspectPage);
 
 // ---------- ammo ----------
 
