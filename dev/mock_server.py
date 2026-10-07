@@ -9,6 +9,7 @@ API shapes as rtse/api.py. Parts come from rtse/web/models/parts.json, so the 3D
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -232,6 +233,18 @@ def ammo() -> dict:
     return {"pools": [{"id": i, "key": v[0].lower(), "label": v[0], "value": v[1], "max": v[2]} for i, (k, v) in enumerate(AMMO.items())], "limit": 100000}
 
 
+# Feature mocks: dev/mock_<feature>.py, each exporting handle(path, params, shared) -> dict | None
+# (None = not my route). Raise LookupError for 404, ValueError for 400. Loaded by path because -I drops dev/ from sys.path.
+FEATURE_MOCKS = []
+for _name in ("sdu", "skills", "world"):
+    _file = Path(__file__).resolve().parent / f"mock_{_name}.py"
+    if _file.is_file():
+        _spec = importlib.util.spec_from_file_location(f"mock_{_name}", _file)
+        _module = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_module)
+        FEATURE_MOCKS.append(_module)
+
+
 def detail(item: Item, mode: str) -> dict:
     stats = []
     if item.kind == "weapon":
@@ -286,6 +299,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def route(self, path: str, params: dict) -> None:
         try:
+            for feature in FEATURE_MOCKS:
+                if (reply := feature.handle(path, params, {"CHAR": CHAR, "AMMO": AMMO})) is not None:
+                    return self.send_json(200, reply)
             if path == "/api/ping":
                 return self.send_json(200, {"ok": True, "in_game": True})
             if path == "/api/items":
@@ -343,6 +359,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(404, {"error": str(ex)})
         except KeyError as ex:
             return self.send_json(400, {"error": f"missing {ex}"})
+        except ValueError as ex:
+            return self.send_json(400, {"error": str(ex)})
 
     def do_GET(self) -> None:  # noqa: N802
         split = urlsplit(self.path)
