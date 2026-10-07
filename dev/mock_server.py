@@ -236,7 +236,7 @@ def ammo() -> dict:
 # Feature mocks: dev/mock_<feature>.py, each exporting handle(path, params, shared) -> dict | None
 # (None = not my route). Raise LookupError for 404, ValueError for 400. Loaded by path because -I drops dev/ from sys.path.
 FEATURE_MOCKS = []
-for _name in ("sdu", "skills", "world"):
+for _name in ("sdu", "skills", "world", "inspect"):
     _file = Path(__file__).resolve().parent / f"mock_{_name}.py"
     if _file.is_file():
         _spec = importlib.util.spec_from_file_location(f"mock_{_name}", _file)

@@ -15,7 +15,7 @@ from typing import Any, Callable, NamedTuple
 from mods_base import get_pc
 from unrealsdk import find_all, find_object, logging, unreal
 
-from . import ammo, character, sdu, skills, stats, world
+from . import ammo, character, inspector, sdu, skills, stats, world
 
 Params = dict[str, Any]
 
@@ -961,7 +961,7 @@ def _module_route(action: Callable[[Params], dict[str, Any]]) -> Callable[[Param
     def route(params: Params) -> dict[str, Any]:
         try:
             return action(params)
-        except (character.CharacterError, ammo.AmmoError, sdu.SduError, skills.SkillsError, world.WorldError) as ex:
+        except (character.CharacterError, ammo.AmmoError, sdu.SduError, skills.SkillsError, world.WorldError, inspector.InspectError) as ex:
             raise ApiError(ex.status, str(ex)) from None
 
     return route
@@ -993,6 +993,7 @@ GET_ROUTES: dict[str, Route] = {
     "/api/world": _module_route(world.read),
     "/api/debug/world": _module_route(lambda _params: world.debug_dump()),
     "/api/world/objectives": _module_route(world.mission_objectives),
+    "/api/inspect": _module_route(inspector.look),
 }
 POST_ROUTES: dict[str, Route] = {
     "/api/item/set_part": set_part,
@@ -1013,4 +1014,5 @@ POST_ROUTES: dict[str, Route] = {
     "/api/world/challenge": _module_route(world.set_challenge),
     "/api/world/stations": _module_route(world.unlock_stations),
     "/api/world/playthrough": _module_route(world.set_playthrough),
+    "/api/inspect/set": _module_route(inspector.set_value),
 }
