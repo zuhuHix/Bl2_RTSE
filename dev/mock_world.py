@@ -206,6 +206,7 @@ def apply_missions(params: dict, wanted: list[str] | None, key: str) -> dict:
         if row["status"] != key:
             row["status"] = key
             changed += 1
+            OBJECTIVES.pop((pt, row["id"]), None)  # the objectives follow the new state
     one = len(targets) == 1
     applied = {
         "what": "mission" if one else "missions", "playthrough": pt, "requested": key, "count": len(targets), "changed": changed, "failed": [],
@@ -214,6 +215,66 @@ def apply_missions(params: dict, wanted: list[str] | None, key: str) -> dict:
     if one:
         applied["name"] = targets[0]["name"]
     return {"missions": missions_section(), "applied": applied}
+
+
+
+OBJECTIVE_NAMES = [
+    ("Kill the bandits", (6, 12)), ("Collect the parts", (3, 8)), ("Find the key", (1, 1)), ("Destroy the generators", (2, 4)),
+    ("Reach the vault door", (1, 1)), ("Loot the chests", (2, 5)), ("Return to the quest giver", (1, 1)),
+]
+OBJECTIVES: dict[tuple[int, str], dict] = {}
+TRACKED: dict[int, str] = {}
+
+
+def objective_state(pt: int, row: dict) -> dict:
+    key = (pt, row["id"])
+    if key not in OBJECTIVES:
+        seed = sum(ord(c) for c in row["id"])
+        count = 3 + seed % 2
+        defs = []
+        for i in range(count):
+            name, (low, high) = OBJECTIVE_NAMES[(seed + i * 3) % len(OBJECTIVE_NAMES)]
+            defs.append({"id": f"{row['id']}.Obj{i + 1}", "name": name, "target": low + (seed + i) % (high - low + 1), "optional": i == count - 1 and seed % 3 == 0})
+        split = (count + 1) // 2
+        sets = [
+            {"id": f"{row['id']}.Set1", "name": "Set1", "objectives": list(range(split))},
+            {"id": f"{row['id']}.Set2", "name": "Set2", "objectives": list(range(split, count))},
+        ]
+        status = row["status"]
+        if status in ("complete", "ready", "objectives_done"):
+            progress = [d["target"] for d in defs]
+            active = sets[-1]["id"]
+        elif status == "active":
+            progress = [d["target"] if i < split - 1 else d["target"] // 2 for i, d in enumerate(defs)]
+            active = sets[0]["id"]
+        else:
+            progress = [0] * count
+            active = None
+        OBJECTIVES[key] = {"defs": defs, "sets": sets, "progress": progress, "active": active}
+    return OBJECTIVES[key]
+
+
+def objectives_view(pt: int, row: dict) -> dict:
+    state = objective_state(pt, row)
+    return {
+        "mission": {"id": row["id"], "name": row["name"], "playthrough": pt, "status": row["status"]},
+        "objectives": [{"index": i, **d, "progress": state["progress"][i]} for i, d in enumerate(state["defs"])],
+        "sets": [{**st, "active": st["id"] == state["active"]} for st in state["sets"]],
+        "active_set": state["active"], "tracked": TRACKED.get(pt) == row["id"], "progress_len": len(state["progress"]), "note": None,
+    }
+
+
+def find_row(params: dict) -> tuple[int, dict]:
+    if "missions" in FAIL:
+        raise ValueError("this game build doesn't expose the mission list - run the world dump")
+    pt = params.get("playthrough", PLAYTHROUGH["current"])
+    pt = int(pt) if isinstance(pt, str) and pt.isdigit() else pt
+    if not isinstance(pt, int) or not 1 <= pt <= 3:
+        raise ValueError("playthrough must be 1-3")
+    row = next((r for r in MISSIONS[pt] if r["id"] == params.get("id")), None)
+    if row is None:
+        raise LookupError(f"unknown mission: {params.get('id')}")
+    return pt, row
 
 
 def handle(path: str, params: dict, shared: dict) -> dict | None:
@@ -225,6 +286,39 @@ def handle(path: str, params: dict, shared: dict) -> dict | None:
         return {n: section(n) for n in names if only in (None, n)}
     if path == "/api/debug/world":
         return {"saved_to": "(mock) rtse/debug_world.json", "sections": {n: n not in FAIL for n in ("playthrough", "missions", "challenges", "stations")}}
+
+    if path == "/api/world/objectives":
+        pt, row = find_row(params)
+        return objectives_view(pt, row)
+    if path == "/api/world/objective":
+        pt, row = find_row(params)
+        state = objective_state(pt, row)
+        index, value = params.get("index"), params.get("progress")
+        if not isinstance(index, int) or not 0 <= index < len(state["defs"]):
+            raise LookupError(f"this mission has {len(state['defs'])} objectives")
+        if not isinstance(value, int) or not 0 <= value <= 9999:
+            raise ValueError("progress must be 0-9999")
+        before = state["progress"][index]
+        state["progress"][index] = value
+        applied = {"what": "objective", "mission": row["name"], "objective": state["defs"][index]["name"], "index": index, "requested": value,
+                   "before": before, "after": value, "via": f"entry.ObjectivesProgress[{index}]"}
+        return {**objectives_view(pt, row), "applied": applied}
+    if path == "/api/world/objective_set":
+        pt, row = find_row(params)
+        state = objective_state(pt, row)
+        if params.get("set") not in {st["id"] for st in state["sets"]}:
+            raise LookupError("this mission has no objective set like that")
+        before, state["active"] = state["active"], params["set"]
+        applied = {"what": "objective set", "mission": row["name"], "requested": params["set"], "before": before, "after": params["set"], "via": "entry.ActiveObjectiveSet"}
+        return {**objectives_view(pt, row), "applied": applied}
+    if path == "/api/world/track":
+        pt, row = find_row(params)
+        if pt != PLAYTHROUGH["current"]:
+            raise ValueError("only a mission of the playthrough you're in can be tracked")
+        before = TRACKED.get(pt) == row["id"]
+        TRACKED[pt] = row["id"]
+        applied = {"what": "tracked mission", "mission": row["name"], "requested": True, "before": before, "after": True, "via": "missions.SetActiveMission()"}
+        return {**objectives_view(pt, row), "applied": applied}
 
     if path == "/api/world/mission":
         need_confirm(params, "changing mission state")

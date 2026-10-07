@@ -20,6 +20,8 @@ const S = {
   filter: { missions: "all", challenges: "all", stations: "all" },
   confirm: null, // key of the risky button currently asking "Really?"
   scroll: {}, // list key -> scrollTop, so a redraw keeps your place
+  open: null, // "pt:id" of the mission whose objectives panel is showing
+  objectives: {}, // "pt:id" -> the last /api/world/objectives reply, { loading } or { error }
 };
 let C = null; // ctx from the latest render()
 
@@ -156,14 +158,19 @@ function missionsTab(after) {
       { cls: `btn sm${target === "complete" ? " primary" : " danger"}`, disabled: todo.length === 0, title: `${verb} every mission in the list below that isn't already ${statusLabel(target).toLowerCase()}` });
   };
 
-  const rowEl = (row) => h("div", { class: "wl-row", vars: { "--st": `var(--st-${statusClass(row.status)})` } },
-    h("i", { class: "wl-dot", title: statusLabel(row.status) }),
-    h("div", { class: "wl-main" },
-      h("div", { class: "wl-name", text: row.name, title: row.id }),
-      h("div", { class: "wl-sub" }, h("span", { class: "wl-st", text: statusLabel(row.status) }), h("span", { class: "wl-id", text: row.id }))),
-    h("div", { class: "wl-btns" },
-      row.status !== "complete" && ask(`m:${pt}:${row.id}:complete`, [icon("check", 13), "Complete"], () => changeMissions(pt, [row], "complete")),
-      row.status !== "not_started" && ask(`m:${pt}:${row.id}:reset`, [icon("refresh", 13), "Reset"], () => changeMissions(pt, [row], "not_started"), { cls: "btn sm danger" })));
+  const rowEl = (row) => {
+    const key = `${pt}:${row.id}`;
+    const line = h("div", { class: "wl-row", vars: { "--st": `var(--st-${statusClass(row.status)})` } },
+      h("i", { class: "wl-dot", title: statusLabel(row.status) }),
+      h("div", { class: "wl-main" },
+        h("div", { class: "wl-name", text: row.name, title: row.id }),
+        h("div", { class: "wl-sub" }, h("span", { class: "wl-st", text: statusLabel(row.status) }), h("span", { class: "wl-id", text: row.id }))),
+      h("div", { class: "wl-btns" },
+        h("button", { class: `btn sm${S.open === key ? " primary" : ""}`, title: "See and change how far you are through this mission", onclick: () => toggleObjectives(pt, row) }, icon("sliders", 13), "Objectives"),
+        row.status !== "complete" && ask(`m:${pt}:${row.id}:complete`, [icon("check", 13), "Complete"], () => changeMissions(pt, [row], "complete")),
+        row.status !== "not_started" && ask(`m:${pt}:${row.id}:reset`, [icon("refresh", 13), "Reset"], () => changeMissions(pt, [row], "not_started"), { cls: "btn sm danger" })));
+    return S.open === key ? h("div", { class: "wl-rowwrap" }, line, objectivesPanel(pt, row, m.current === pt)) : line;
+  };
 
   return h("div", {},
     ptBar,
@@ -186,6 +193,81 @@ function changeMissions(pt, rows, status) {
     if (a.count === 1) return [`${a.name}: ${statusLabel(a.before)} to ${statusLabel(a.after)}`, a.after !== a.requested];
     return [`${a.changed} of ${count(a.count, "mission")} set to ${statusLabel(a.requested).toLowerCase()} (playthrough ${a.playthrough})`, false];
   });
+}
+
+// ---------- mission objectives ----------
+
+async function toggleObjectives(pt, row) {
+  const key = `${pt}:${row.id}`;
+  if (S.open === key) {
+    S.open = null;
+    return C.rerender();
+  }
+  S.open = key;
+  S.confirm = null;
+  S.objectives[key] = { loading: true };
+  C.rerender();
+  try {
+    S.objectives[key] = await C.api("GET", `/api/world/objectives?id=${encodeURIComponent(row.id)}&playthrough=${pt}`);
+  } catch (error) {
+    S.objectives[key] = { error: error.message };
+  }
+  C.rerender();
+}
+
+async function changeObjective(pt, row, path, body, summarize) {
+  const key = `${pt}:${row.id}`;
+  const result = await C.guarded(() => C.api("POST", path, { id: row.id, playthrough: pt, ...body }));
+  if (result) {
+    S.objectives[key] = result;
+    const [text, bad] = summarize(result.applied);
+    C.toast(text, bad);
+  }
+  C.rerender();
+}
+
+function objectivesPanel(pt, row, isCurrent) {
+  const { h, icon } = C;
+  const key = `${pt}:${row.id}`;
+  const data = S.objectives[key] || { loading: true };
+  const wrap = (...kids) => h("div", { class: "wl-obj" }, kids);
+  if (data.loading) return wrap(h("div", { class: "note", text: "Loading objectives..." }));
+  if (data.error) return wrap(h("div", { class: "warn-banner" }, icon("alert", 18), `${data.error}. Save the world dump below and send it over.`));
+  const inSet = new Set((data.sets.find((st) => st.active) || { objectives: data.objectives.map((o) => o.index) }).objectives);
+
+  const objectiveRow = (o) => {
+    const box = h("input", { class: "field wl-num", type: "number", min: 0, max: 9999, value: o.progress ?? 0, "aria-label": `${o.name} progress`, disabled: o.progress == null || null });
+    const commit = () => {
+      const value = parseInt(box.value, 10);
+      if (!Number.isInteger(value) || value < 0 || value > 9999) return C.toast("Enter a whole number from 0 to 9999", true);
+      return changeObjective(pt, row, "/api/world/objective", { index: o.index, progress: value }, (a) => (
+        a.after === a.requested ? [`${a.objective}: ${a.before ?? 0} to ${a.after}`, false] : [`${a.objective}: asked for ${a.requested} but the game reports ${a.after ?? "nothing"}`, true]));
+    };
+    box.addEventListener("keydown", (e) => e.key === "Enter" && commit());
+    const done = o.target != null && o.progress != null && o.progress >= o.target;
+    return h("div", { class: `wl-objrow${inSet.has(o.index) ? "" : " off"}${done ? " done" : ""}` },
+      h("div", { class: "wl-main" },
+        h("div", { class: "wl-name" }, o.name, o.optional && h("em", { class: "wl-tag", text: "optional" }), !inSet.has(o.index) && h("em", { class: "wl-tag", text: "not in the current set" })),
+        h("div", { class: "wl-sub" }, h("span", { class: "wl-st", text: o.progress == null ? "no number held" : `${o.progress} / ${o.target ?? "?"}` }))),
+      h("div", { class: "wl-btns" }, box,
+        h("button", { class: "btn sm primary", onclick: commit }, "Set"),
+        o.target != null && h("button", { class: "btn sm", disabled: done || null, title: `Set to ${o.target}`, onclick: () => { box.value = o.target; commit(); } }, "Max"),
+        h("button", { class: "btn sm", disabled: !o.progress || null, onclick: () => { box.value = 0; commit(); } }, "Zero")));
+  };
+
+  return wrap(
+    data.note && h("div", { class: "warn-banner" }, icon("alert", 18), data.note),
+    h("div", { class: "wl-objhead" },
+      data.sets.length > 1 && h("div", { class: "wl-sets" }, h("span", { class: "wl-lbl", text: "Stage" }), data.sets.map((st, i) =>
+        h("button", {
+          class: `btn sm${st.active ? " primary" : ""}`, title: `Move the mission to ${st.name}`,
+          onclick: () => !st.active && changeObjective(pt, row, "/api/world/objective_set", { set: st.id }, (a) => [`${a.mission}: stage changed (read back: ${a.after === a.requested ? "matches" : "differs"})`, a.after !== a.requested]),
+        }, `${i + 1}`))),
+      isCurrent && h("button", { class: "btn sm", disabled: data.tracked || null, title: "Show this mission on your HUD", onclick: () => changeObjective(pt, row, "/api/world/track", {}, (a) => (a.after ? [`${a.mission} is now your tracked mission`, false] : [`The game didn't switch the tracked mission`, true])) }, data.tracked ? "Tracked" : "Track on HUD")),
+    data.objectives.length === 0
+      ? h("div", { class: "note", text: "The game lists no objectives for this mission." })
+      : data.objectives.map(objectiveRow),
+    h("p", { class: "note", text: "Each number is how far along an objective is. Setting one changes the stored value; the game's mission log may only notice after you change area or reload. Save in game afterwards." }));
 }
 
 // ---------- challenges ----------

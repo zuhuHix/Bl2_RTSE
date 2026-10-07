@@ -992,6 +992,7 @@ GET_ROUTES: dict[str, Route] = {
     "/api/debug/skills": _module_route(lambda _params: skills.debug_dump()),
     "/api/world": _module_route(world.read),
     "/api/debug/world": _module_route(lambda _params: world.debug_dump()),
+    "/api/world/objectives": _module_route(world.mission_objectives),
 }
 POST_ROUTES: dict[str, Route] = {
     "/api/item/set_part": set_part,
@@ -1006,6 +1007,9 @@ POST_ROUTES: dict[str, Route] = {
     "/api/skills/reset": _module_route(skills.reset),
     "/api/world/mission": _module_route(world.set_mission),
     "/api/world/missions/reset": _module_route(world.reset_missions),
+    "/api/world/objective": _module_route(world.set_objective),
+    "/api/world/objective_set": _module_route(world.set_objective_set),
+    "/api/world/track": _module_route(world.track_mission),
     "/api/world/challenge": _module_route(world.set_challenge),
     "/api/world/stations": _module_route(world.unlock_stations),
     "/api/world/playthrough": _module_route(world.set_playthrough),

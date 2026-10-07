@@ -75,12 +75,185 @@ MISSION_STATUS = ("Status",)
 MISSION_NAME = ("MissionName",)  # on the MissionDefinition
 MISSION_PLOT_FLAG = ("bPlotCritical",)
 MISSION_SETTERS = (("missions", "SetMissionStatus"),)  # (InMission, MissionStatus, WillowPC), current playthrough only
+# Objectives. Real: MissionDefinition.ObjectiveDefs (every MissionObjectiveDefinition of a mission, each with ObjectiveCount),
+# .ObjectiveSetDefs (the sets, each with ObjectiveDefinitions) and the stored entry's ObjectivesProgress (an array of numbers) and
+# ActiveObjectiveSet. A GUESS: that ObjectivesProgress[i] belongs to ObjectiveDefs[i]. Each answer says how many numbers the game
+# holds against how many objectives the mission has, so a mismatch is visible. Whether writing a number makes the mission log / HUD
+# notice is also unknown; the number is read back after every write.
+OBJECTIVE_DEFS = ("ObjectiveDefs",)
+OBJECTIVE_SET_DEFS = ("ObjectiveSetDefs",)
+OBJECTIVE_SET_OBJECTIVES = ("ObjectiveDefinitions",)
+OBJECTIVE_PROGRESS = ("ObjectivesProgress",)
+OBJECTIVE_ACTIVE_SET = ("ActiveObjectiveSet",)
+OBJECTIVE_COUNT = ("ObjectiveCount",)
+OBJECTIVE_OPTIONAL = ("bObjectiveIsOptional",)
+OBJECTIVE_NAME_CALL = "GetObjectiveName"
+MAX_OBJECTIVE_PROGRESS = 9999
+TRACK_SETTERS = (("missions", "SetActiveMission"),)  # (InMission, bFromActivation, WillowPC)
+
 # Package prefixes of DLC missions (guesses from memory of the game's package names).
 DLC_PACKAGES = (
     ("gd_aster", "Tiny Tina's Assault on Dragon Keep"), ("gd_sage", "Hammerlock's Big Game Hunt"),
     ("gd_iris", "Mr. Torgue's Campaign of Carnage"), ("gd_orchid", "Captain Scarlett's Pirate Booty"),
     ("gd_anemone", "Headhunter Pack"), ("gd_lilac", "Psycho Pack"), ("gd_dandelion", "Other DLC"),
 )
+
+# ---------- mission objectives ----------
+
+
+def _find_mission(owners: dict[str, Any], params: dict[str, Any]) -> _Mission:
+    target = params.get("id")
+    if not isinstance(target, str) or not target:
+        raise WorldError(400, "send 'id' (the mission's id)")
+    targets, _pt = _mission_targets(owners, params, [target])
+    return targets[0]
+
+
+def _objective_label(definition: Any, index: int) -> str:
+    try:
+        text = getattr(definition, OBJECTIVE_NAME_CALL)()
+        if isinstance(text, tuple):
+            text = text[0]
+        text = _text(text)
+        if text:
+            return text
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return _clean(_path(definition)) or f"Objective {index + 1}"
+
+
+def _progress_list(ref: _Mission) -> list[int] | None:
+    raw, _name = _first(ref.entry, OBJECTIVE_PROGRESS)
+    if raw is None:
+        return None
+    try:
+        return [int(v) for v in raw]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _objectives_view(owners: dict[str, Any], ref: _Mission) -> dict[str, Any]:
+    defs, _name = _first(ref.definition, OBJECTIVE_DEFS)
+    objectives = _items(defs)
+    progress = _progress_list(ref)
+    index_of = {_path(o): i for i, o in enumerate(objectives)}
+    active, _name = _first(ref.entry, OBJECTIVE_ACTIVE_SET)
+    active_id = _path(active) if active is not None else None
+    sets = []
+    set_defs, _name = _first(ref.definition, OBJECTIVE_SET_DEFS)
+    for set_def in _items(set_defs):
+        members, _name = _first(set_def, OBJECTIVE_SET_OBJECTIVES)
+        sets.append({
+            "id": _path(set_def), "name": _clean(_path(set_def)), "active": _path(set_def) == active_id,
+            "objectives": [index_of[_path(m)] for m in _items(members) if _path(m) in index_of],
+        })
+    rows = []
+    for i, definition in enumerate(objectives):
+        target, _name = _first(definition, OBJECTIVE_COUNT)
+        optional, _name = _first(definition, OBJECTIVE_OPTIONAL)
+        rows.append({
+            "index": i, "id": _path(definition), "name": _objective_label(definition, i),
+            "target": int(target) if isinstance(target, int) else None, "optional": optional is True,
+            "progress": progress[i] if progress is not None and i < len(progress) else None,
+        })
+    tracker = owners.get("missions")
+    tracked = None
+    if tracker is not None:
+        active_mission, _name = _first(tracker, ("ActiveMission",))
+        tracked = active_mission is not None and _path(active_mission) == ref.id
+    row = _mission_row(ref)
+    note = None
+    if progress is not None and len(progress) != len(rows):
+        note = f"The game holds {len(progress)} progress numbers for {len(rows)} objectives, so the pairing below is a guess."
+    return {
+        "mission": {"id": ref.id, "name": row["name"], "playthrough": ref.pt, "status": row["status"]},
+        "objectives": rows, "sets": sets, "active_set": active_id, "tracked": tracked,
+        "progress_len": None if progress is None else len(progress), "note": note,
+    }
+
+
+def mission_objectives(params: dict[str, Any]) -> dict[str, Any]:
+    owners = _owners()
+    return _objectives_view(owners, _find_mission(owners, params))
+
+
+def set_objective(params: dict[str, Any]) -> dict[str, Any]:
+    """Sets one objective's progress number (for example 2 of a 4-part objective)."""
+    owners = _owners()
+    ref = _find_mission(owners, params)
+    before = _objectives_view(owners, ref)
+    index = _whole(params.get("index"), 0, 10_000, "index")
+    value = _whole(params.get("progress"), 0, MAX_OBJECTIVE_PROGRESS, "progress")
+    if index >= len(before["objectives"]):
+        raise WorldError(404, f"this mission has {len(before['objectives'])} objectives")
+    array, _name = _first(ref.entry, OBJECTIVE_PROGRESS)
+    if array is None:
+        raise WorldError(501, "this game build keeps no objective progress for this mission - run the world dump")
+    try:
+        while len(array) <= index:  # a mission that never started may hold fewer numbers than it has objectives
+            array.append(0)
+        array[index] = value
+    except Exception as ex:  # noqa: BLE001
+        raise WorldError(501, f"the game refused the write ({type(ex).__name__}: {ex}) - run the world dump") from None
+    after = _objectives_view(owners, ref)
+    applied = {
+        "what": "objective", "mission": before["mission"]["name"], "objective": before["objectives"][index]["name"],
+        "index": index, "requested": value, "before": before["objectives"][index]["progress"],
+        "after": after["objectives"][index]["progress"], "via": f"entry.{OBJECTIVE_PROGRESS[0]}[{index}]",
+    }
+    logging.info(f"RTSE: world {applied}")
+    return {**after, "applied": applied}
+
+
+def set_objective_set(params: dict[str, Any]) -> dict[str, Any]:
+    """Moves a mission to another of its objective sets (a later or earlier stage of the mission)."""
+    owners = _owners()
+    ref = _find_mission(owners, params)
+    before = _objectives_view(owners, ref)
+    wanted = params.get("set")
+    set_defs, _name = _first(ref.definition, OBJECTIVE_SET_DEFS)
+    match = next((d for d in _items(set_defs) if _path(d) == wanted), None)
+    if match is None:
+        raise WorldError(404, "this mission has no objective set like that")
+    try:
+        setattr(ref.entry, OBJECTIVE_ACTIVE_SET[0], match)
+    except Exception as ex:  # noqa: BLE001
+        raise WorldError(501, f"the game refused the write ({type(ex).__name__}: {ex}) - run the world dump") from None
+    after = _objectives_view(owners, ref)
+    applied = {
+        "what": "objective set", "mission": before["mission"]["name"], "requested": wanted, "before": before["active_set"],
+        "after": after["active_set"], "via": f"entry.{OBJECTIVE_ACTIVE_SET[0]}",
+    }
+    logging.info(f"RTSE: world {applied}")
+    return {**after, "applied": applied}
+
+
+def track_mission(params: dict[str, Any]) -> dict[str, Any]:
+    """Makes this the mission shown on the HUD (the active mission) - current playthrough only."""
+    owners = _owners()
+    ref = _find_mission(owners, params)
+    current = _current_playthrough(owners)
+    if current is not None and ref.pt != current:
+        raise WorldError(400, "only a mission of the playthrough you're in can be tracked")
+    before = _objectives_view(owners, ref)
+    called = None
+    for owner, function in TRACK_SETTERS:
+        target = owners.get(owner)
+        if target is None:
+            continue
+        try:
+            _call(target, function, {"InMission": ref.definition, "bFromActivation": False, "WillowPC": owners["pc"]}, (ref.definition, False, owners["pc"]))
+            called = f"{owner}.{function}()"
+            break
+        except Exception:  # noqa: BLE001, S112
+            continue
+    if called is None:
+        raise WorldError(501, "this game build has no way to change the tracked mission - run the world dump")
+    after = _objectives_view(owners, ref)
+    applied = {"what": "tracked mission", "mission": before["mission"]["name"], "requested": True, "before": before["tracked"], "after": after["tracked"], "via": called}
+    logging.info(f"RTSE: world {applied}")
+    return {**after, "applied": applied}
+
 
 # ---------- challenges ----------
 
