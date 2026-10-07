@@ -63,7 +63,7 @@ Your SDU (Storage Deck Upgrade) levels, the same idea as the Gibbed editor. **Ba
 
 ### Skills
 
-![The skill tree page, with one skill selected](docs/screenshots/08-skills.png)
+![The skill tree page, with Allow above max ticked and one skill set past its maximum](docs/screenshots/08-skills.png)
 
 The real skill tree for your class (Zer0 in this picture), straight from the game's own data. Your action skill is at the top. Click any skill to read what it does and set it to an exact rank with the stepper, **Max** or **Zero**. This ignores tier locks, so you can put points into locked skills. It doesn't spend skill points. You can also set your **Unspent** points, or **Reset tree**.
 
