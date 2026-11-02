@@ -36,8 +36,37 @@ def test_transaction_context_manager_commits_and_aborts():
         assert tx.label == "/api/ammo/set"
     assert journal._current is None  # noqa: SLF001
 
-    with pytest.raises(ValueError, match="nope"), journal.transaction("/api/ammo/set"):
+    assert tx.outcome == "committed" and not tx.failed
+
+    with pytest.raises(ValueError, match="nope"), journal.transaction("/api/ammo/set") as failed:
         raise ValueError("nope")
+    assert journal._current is None  # noqa: SLF001
+    assert failed.outcome == "aborted" and isinstance(failed.error, ValueError)
+
+
+def test_nested_abort_that_the_caller_catches_still_discards_the_whole_transaction():
+    """All or nothing: the outer commit() of a transaction whose nested level aborted discards it."""
+    with journal.transaction("/api/item/set_part") as outer:
+        outer.records.append({"kind": "gear.part"})  # as the real journal would, before the nested failure
+        try:
+            with journal.transaction("/api/item/set_level"):
+                outer.records.append({"kind": "gear.level"})
+                raise RuntimeError("the nested write failed")
+        except RuntimeError:
+            pass  # the caller carries on...
+        assert outer.failed and outer.outcome is None  # ...but the shared transaction is already marked failed
+    assert outer.outcome == "aborted"
+    assert outer.records == []
+    assert str(outer.error) == "the nested write failed"
+
+
+def test_explicit_nested_abort_then_outer_commit_is_aborted():
+    outer = journal.begin("/api/world/mission")
+    inner = journal.begin("/api/world/objective")
+    journal.abort(inner, ValueError("first"))
+    journal.abort(journal.begin("again"), ValueError("second"))  # a later error doesn't replace the first
+    journal.commit(outer)
+    assert outer.outcome == "aborted" and str(outer.error) == "first"
     assert journal._current is None  # noqa: SLF001
 
 
