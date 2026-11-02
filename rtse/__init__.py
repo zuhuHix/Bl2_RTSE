@@ -8,6 +8,7 @@ from unrealsdk import logging, unreal
 
 from . import gamethread, gear_inventory, server, stats
 from . import damage
+from . import farmguard
 
 # How often (in game ticks) equipped weapons are checked against their stat overrides. This is the
 # safety net for anything that recomputes stats without going through a hooked function.
@@ -26,12 +27,14 @@ def _enable() -> None:
     stats.load()
     stats.install_hooks()
     damage.install_hooks()
+    farmguard.install_hooks()
     _announce()
 
 
 def _disable() -> None:
     stats.remove_hooks()
     damage.remove_hooks()
+    farmguard.remove_hooks()
     server.stop()
 
 

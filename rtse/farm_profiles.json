@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "_about": "Farm guard profiles, read by rtse/farmguard.py. Object names were read from the game's own files (localization .int/.deu sections and GUID caches). What each step does to the farm comes from community farm notes and has NOT been checked in a live game.",
+  "profiles": [
+    {
+      "id": "wep_loot_midgets",
+      "name": "Wildlife Exploitation Preserve loot midgets",
+      "area": "Wildlife Exploitation Preserve",
+      "map": "PandoraPark_P",
+      "dlc": null,
+      "mission": "GD_Z2_DoctorsOrders.M_DoctorsOrders",
+      "mission_name": "Doctor's Orders",
+      "description": "During Doctor's Orders, each slag-experiment recorder you pick up lowers the number of the best loot midget spawns. Leave the recorders where they are and reload the map to farm.",
+      "guard": {
+        "objectives": ["GD_Z2_DoctorsOrders.M_DoctorsOrders:CollectNotes"],
+        "status": true,
+        "complete": true
+      },
+      "consequence": {
+        "objective": "Picking up this recorder would reduce the midget spawns.",
+        "status": "Changing the state of Doctor's Orders can end the loot midget farm.",
+        "complete": "Turning in Doctor's Orders ends the loot midget farm.",
+        "pickup": "Picking up this recorder would reduce the midget spawns."
+      },
+      "pickups": ["GD_Z2_DoctorsOrdersData."],
+      "drops": {"kinds": ["weapon", "item"], "min_rarity": 3},
+      "unverified": [
+        "How many recorders there are, and how many midgets each one costs.",
+        "That putting the objective count back brings the midgets back after a reload."
+      ]
+    },
+    {
+      "id": "ffs_space_cowboy_potty",
+      "name": "Space Cowboy porta-potty loot midget",
+      "area": "Commander Lilith & the Fight for Sanctuary",
+      "map": null,
+      "dlc": "Commander Lilith & the Fight for Sanctuary",
+      "mission": "GD_Anemone_Side_SpaceCowboy.M_Anemone_SpaceCowboy",
+      "mission_name": "Space Cowboy",
+      "description": "Space Cowboy has a loot midget hiding in a porta-potty (IO_ToiletMidget). It only shows up while the mission is at the right step. RTSE guards every step, because which one ends the farm hasn't been checked in game.",
+      "guard": {
+        "objectives": null,
+        "status": true,
+        "complete": true
+      },
+      "consequence": {
+        "objective": "Advancing Space Cowboy could stop the porta-potty loot midget from appearing.",
+        "status": "Changing the state of Space Cowboy could stop the porta-potty loot midget from appearing.",
+        "complete": "Turning in Space Cowboy ends the porta-potty loot midget farm.",
+        "pickup": "Picking this up advances Space Cowboy and could stop the porta-potty loot midget from appearing."
+      },
+      "pickups": [],
+      "drops": {"kinds": ["weapon", "item"], "min_rarity": 3},
+      "unverified": [
+        "Which step of Space Cowboy ends the porta-potty midget (every step is guarded until that's known).",
+        "Which map the porta-potty is on."
+      ]
+    }
+  ]
+}

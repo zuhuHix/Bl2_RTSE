@@ -1192,6 +1192,231 @@ def debug_dump() -> dict[str, Any]:
     }
 
 
+# ---------- mission snapshots (used by farmguard.py) ----------
+#
+# A mission's stored state lives in two places for the playthrough you're in: the MissionTracker's MissionList (the
+# live world state) and pc.MissionPlaythroughs[current].MissionList (the copy the save is written from). Both hold
+# IMission.MissionData {MissionDef, Status, ObjectivesProgress, ActiveObjectiveSet, SubObjectiveSets, ...} (names
+# checked with dev/class_index.py). A snapshot reads both; a restore writes both. UNVERIFIED: that writing these
+# fields is enough for the game to forget the progress (rather than only the HUD), and that the save picks up the
+# restored tracker values. Every restore reads the values back and reports any field that didn't take.
+
+SNAPSHOT_SOURCES = ("tracker", "saved")
+SNAPSHOT_SET_CLASSES = ("MissionObjectiveSetDefinition", "MissionObjectiveSetCollectionDefinition", "MissionObjectiveSetBranchingDefinition")
+
+
+def _snapshot_entries(owners: dict[str, Any], mission_id: str) -> dict[str, Any]:
+    """{"tracker": entry, "saved": entry} for mission_id in the current playthrough (a source is missing if not found)."""
+    found: dict[str, Any] = {}
+    tracker = owners.get("missions")
+    for entry in _items(_first(tracker, MISSION_FLAT_LISTS[0][1:])[0]) if tracker is not None else []:
+        definition, _name = _first(entry, MISSION_DEF)
+        if definition is not None and _path(definition) == mission_id:
+            found["tracker"] = entry
+            break
+    current = _current_playthrough(owners)
+    groups = _items(_first(owners.get("pc"), (MISSION_PLAYTHROUGH_LISTS[0][1],))[0])
+    for position, group in enumerate(groups):
+        number, _name = _first(group, MISSION_PT_NUMBER)
+        pt = number - FIRST_RAW + 1 if isinstance(number, int) else position + 1
+        if current is not None and pt != current:
+            continue
+        for entry in _items(_first(group, MISSION_GROUP_ENTRIES)[0]):
+            definition, _name = _first(entry, MISSION_DEF)
+            if definition is not None and _path(definition) == mission_id:
+                found["saved"] = entry
+                break
+        if "saved" in found or current is not None:
+            break
+    return found
+
+
+def _entry_state(entry: Any) -> dict[str, Any]:
+    """One MissionData entry as plain JSON: status, objective numbers, active set and sub-sets (paths)."""
+    state: dict[str, Any] = {"status": "unknown", "status_raw": None, "progress": None, "active_set": None, "sub_sets": None}
+    try:
+        raw = getattr(entry, MISSION_STATUS[0])
+        state["status"] = _status_key(raw)
+        state["status_raw"] = int(raw)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    raw_progress, _name = _first(entry, OBJECTIVE_PROGRESS)
+    if raw_progress is not None:
+        try:
+            state["progress"] = [int(v) for v in raw_progress]
+        except Exception:  # noqa: BLE001, S110
+            pass
+    active, _name = _first(entry, OBJECTIVE_ACTIVE_SET)
+    state["active_set"] = _path(active) if active is not None else None
+    subs, name = _first(entry, ("SubObjectiveSets",))
+    if name is not None:
+        state["sub_sets"] = [_path(s) for s in _items(subs)]
+    return state
+
+
+def mission_snapshot(mission_id: str) -> dict[str, Any]:
+    """The mission's full stored state in the current playthrough, as JSON (see the section comment).
+
+    {"mission", "name", "playthrough", "character", "entries": {"tracker": state | None, "saved": state | None},
+     "set_classes": {set path: class name}}. Raises WorldError 404 when the mission isn't in this playthrough.
+    """
+    owners = _owners()
+    entries = _snapshot_entries(owners, mission_id)
+    if not entries:
+        raise WorldError(404, "that mission isn't in this playthrough's mission list (is its DLC installed?)")
+    return _build_snapshot(owners, mission_id, entries)
+
+
+def _build_snapshot(owners: dict[str, Any], mission_id: str, entries: dict[str, Any]) -> dict[str, Any]:
+    entry = entries.get("tracker", entries.get("saved"))
+    definition, _name = _first(entry, MISSION_DEF)
+    name, _field = _first(definition, MISSION_NAME)
+    set_classes: dict[str, str] = {}
+    for source_entry in entries.values():
+        objects = [_first(source_entry, OBJECTIVE_ACTIVE_SET)[0], *_items(_first(source_entry, ("SubObjectiveSets",))[0])]
+        for obj in objects:
+            if obj is not None:
+                set_classes[_path(obj)] = getattr(getattr(obj, "Class", None), "Name", None) or type(obj).__name__
+    pri, _name = _first(owners["pc"], ("PlayerReplicationInfo",))
+    character, _name = _first(pri, ("PlayerName",))
+    return {
+        "mission": mission_id, "name": _text(name) or _clean(mission_id), "playthrough": _current_playthrough(owners),
+        "character": _text(character), "entries": {source: _entry_state(entries[source]) if source in entries else None for source in SNAPSHOT_SOURCES},
+        "set_classes": set_classes,
+    }
+
+
+def mission_state(mission_id: str) -> dict[str, Any] | None:
+    """The live state (the tracker's entry, else the saved one) in the same shape as a snapshot entry, or None."""
+    try:
+        entries = _snapshot_entries(_owners(), mission_id)
+    except WorldError:
+        return None
+    entry = entries.get("tracker", entries.get("saved"))
+    return _entry_state(entry) if entry is not None else None
+
+
+def _resolve_set(definition: Any, path: str | None, classes: dict[str, str]) -> Any:
+    """The objective-set object behind a snapshot path: one of the mission's own sets, else found by class and path."""
+    if path is None:
+        return None
+    for set_def in _items(_first(definition, OBJECTIVE_SET_DEFS)[0]):
+        if _path(set_def) == path:
+            return set_def
+    for class_name in dict.fromkeys((classes.get(path), *SNAPSHOT_SET_CLASSES)):
+        if not class_name:
+            continue
+        try:
+            from unrealsdk import find_object  # noqa: PLC0415
+
+            found = find_object(class_name, path)
+        except Exception:  # noqa: BLE001
+            found = None
+        if found is not None:
+            return found
+    raise WorldError(409, f"the objective set {path} can't be found in the game any more - take a new snapshot")
+
+
+def _write_progress(entry: Any, values: list[int]) -> None:
+    try:
+        setattr(entry, OBJECTIVE_PROGRESS[0], list(values))
+        return
+    except Exception:  # noqa: BLE001, S110
+        pass
+    array = getattr(entry, OBJECTIVE_PROGRESS[0])  # element by element, if the whole array can't be assigned
+    while len(array) > len(values):
+        array.pop()
+    for i, value in enumerate(values):
+        if i < len(array):
+            array[i] = value
+        else:
+            array.append(value)
+
+
+def _restore_entry(owners: dict[str, Any], source: str, entry: Any, want: dict[str, Any], definition: Any, classes: dict[str, str]) -> list[str]:
+    """Writes one entry back to `want`; returns how each field was written."""
+    via: list[str] = []
+    if want.get("progress") is not None:
+        _write_progress(entry, want["progress"])
+        via.append(f"{source}.{OBJECTIVE_PROGRESS[0]}")
+    if "active_set" in want:
+        setattr(entry, OBJECTIVE_ACTIVE_SET[0], _resolve_set(definition, want["active_set"], classes))
+        via.append(f"{source}.{OBJECTIVE_ACTIVE_SET[0]}")
+    if want.get("sub_sets") is not None:
+        setattr(entry, "SubObjectiveSets", [_resolve_set(definition, p, classes) for p in want["sub_sets"]])
+        via.append(f"{source}.SubObjectiveSets")
+    key = want.get("status")
+    if key in STATUS_ORDER and _status_key(getattr(entry, MISSION_STATUS[0])) != key:
+        sample = getattr(entry, MISSION_STATUS[0])
+        tracker = owners.get("missions")
+        if source == "tracker" and tracker is not None:
+            try:
+                value = _status_value(sample, key)
+                _call(tracker, MISSION_SETTERS[0][1], {"InMission": definition, "MissionStatus": value, "WillowPC": owners["pc"]}, (definition, value, owners["pc"]))
+                via.append(f"missions.{MISSION_SETTERS[0][1]}()")
+            except Exception:  # noqa: BLE001, S110
+                pass
+        if _status_key(getattr(entry, MISSION_STATUS[0])) != key:
+            setattr(entry, MISSION_STATUS[0], _status_value(sample, key))
+            via.append(f"{source}.{MISSION_STATUS[0]}")
+    return via
+
+
+def restore_mission_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Puts a mission back to a snapshot taken by mission_snapshot(); reads everything back.
+
+    Same character and playthrough only (409 otherwise). Returns {"mission", "name", "before": {source: state},
+    "after": {source: state}, "matches": bool, "mismatch": [field, ...], "via": [...]}. Journals one world.restore record.
+    """
+    owners = _owners()
+    mission_id = snapshot["mission"]
+    current = _current_playthrough(owners)
+    if snapshot.get("playthrough") is not None and current is not None and snapshot["playthrough"] != current:
+        raise WorldError(409, f"the snapshot is from playthrough {snapshot['playthrough']} but you're in playthrough {current}")
+    pri, _name = _first(owners["pc"], ("PlayerReplicationInfo",))
+    character = _text(_first(pri, ("PlayerName",))[0])
+    if snapshot.get("character") and character and snapshot["character"] != character:
+        raise WorldError(409, f"the snapshot belongs to {snapshot['character']}, not {character} - take a new one")
+    entries = _snapshot_entries(owners, mission_id)
+    if not entries:
+        raise WorldError(404, "that mission isn't in this playthrough's mission list any more")
+    definition, _name = _first(entries.get("tracker", entries.get("saved")), MISSION_DEF)
+    classes = snapshot.get("set_classes") or {}
+    wanted = snapshot.get("entries") or {}
+    prior = _build_snapshot(owners, mission_id, entries)  # what an undo of this restore puts back
+    before = {source: _entry_state(entry) for source, entry in entries.items()}
+    via: list[str] = []
+    for source, entry in entries.items():
+        want = wanted.get(source) or wanted.get("tracker") or wanted.get("saved")
+        if not want:
+            continue
+        try:
+            via += _restore_entry(owners, source, entry, want, definition, classes)
+        except WorldError:
+            raise
+        except Exception as ex:  # noqa: BLE001
+            raise WorldError(501, f"the game refused the restore of {source} ({type(ex).__name__}: {ex}) - run the farm dump") from None
+    tracker = owners.get("missions")
+    if tracker is not None:
+        try:
+            _call(tracker, "OnMissionObjectivesChanged", {"MissionThatChanged": definition}, (definition,))  # HUD / log refresh
+            via.append("missions.OnMissionObjectivesChanged()")
+        except Exception:  # noqa: BLE001, S110
+            pass
+    after = {source: _entry_state(entry) for source, entry in entries.items()}
+    mismatch = []
+    for source, state in after.items():
+        want = wanted.get(source) or wanted.get("tracker") or wanted.get("saved") or {}
+        for field in ("status", "progress", "active_set", "sub_sets"):
+            if want.get(field) is not None and state.get(field) != want.get(field):
+                mismatch.append(f"{source}.{field}")
+    name = snapshot.get("name") or _clean(mission_id)
+    applied = {"mission": mission_id, "name": name, "before": before, "after": after, "matches": not mismatch, "mismatch": mismatch, "via": via}
+    logging.info(f"RTSE: world restore {applied}")
+    journal.record("world.restore", target=mission_id, before=before, after=after, undo=lambda: restore_mission_snapshot(prior))
+    return applied
+
+
 # --- Routes (paths are the API; api.py collects these) ---
 
 ROUTE_ERROR = WorldError
