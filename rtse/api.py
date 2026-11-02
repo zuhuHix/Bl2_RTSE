@@ -725,6 +725,8 @@ def set_level(params: Params) -> dict[str, Any]:
             return f"ExpLevel is {item.ExpLevel}, not {level}"
         if item.DefinitionData.GameStage != level:
             return f"GameStage is {item.DefinitionData.GameStage}, not {level}"
+        if item.DefinitionData.ManufacturerGradeIndex != level:
+            return f"ManufacturerGradeIndex is {item.DefinitionData.ManufacturerGradeIndex}, not {level}"
         return None
 
     old_identity = stats.identity(item)

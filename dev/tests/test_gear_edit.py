@@ -299,6 +299,27 @@ def test_set_level_readback_mismatch_is_restored(game, monkeypatch):
     assert item.ExpLevel == 5
 
 
+def test_set_level_grade_reset_by_the_rebuild_is_caught_and_restored(game, monkeypatch):
+    """The game shows and saves the level from the manufacturer grade, so a rebuild that resets only the grade must
+    fail verification and roll every field back."""
+    game.pc = gear_pc()
+
+    def reset_grade(data: SimpleNamespace) -> None:
+        data.ManufacturerGradeIndex = 5  # The game rebuilds the gun at its old grade
+
+    item = make_gun(stage=5, on_init=reset_grade)
+    use(monkeypatch, item)
+    before = state_of(item)
+
+    with pytest.raises(ApiError) as caught:
+        api.set_level({"id": "x", "level": 90})
+
+    assert caught.value.status == 409
+    assert "ManufacturerGradeIndex is 5, not 90" in str(caught.value)
+    assert state_of(item) == before
+    assert item.ExpLevel == 5
+
+
 def test_set_level_rebuild_error_restores_everything(game, monkeypatch):
     game.pc = gear_pc()
     calls = []
