@@ -1,0 +1,633 @@
+"""BL2 item codes: read pasted codes into cards, import codes as new items, and export an item as a code.
+
+Public API (other streams call these; the routes at the bottom are the HTTP side):
+
+  decode(text: str) -> list[dict]
+      One entry per BL2 code in `text`: {index, code, ok, error, kind ("weapon" | "item" | None), unique_id, card,
+      uid_clash, warning}. More than MAX_CODES (200) codes raises ApiError 400.
+      ok is False when the code is malformed or its checksum fails. That check is offline and verified on real codes.
+      The card comes from the GAME's UnpackSerialNumber (UNVERIFIED). When the game cannot decode a code that is
+      otherwise fine, ok stays True, card is None and warning says why.
+
+  import_items(codes: list[str], destination: str = "backpack") -> dict
+  import_pairs(pairs: list[tuple[str, str]]) -> dict      (one destination per code)
+      {results: [{code, ok, error, id, name, unique_id}], imported, failed, path: "unpack" | "create" | "mixed"}.
+      Every imported item gets a FRESH UniqueId: not held by any backpack, equipped or bank item, nor by an earlier
+      code in the same batch. A bad code fails on its own and the rest of the batch still imports. More than
+      MAX_CODES codes, or a destination other than "backpack" / "bank", raises ApiError 400.
+
+  export_code(source) -> (code, header | None, warnings)
+      source is an item (its CreateSerialNumber()) or a bank ChestData entry with no Inventory (its
+      InventorySerialNumber). header is item_serial.read_header's dict, or None when its version is not 7.
+
+Other modules use the helpers below (gear_inventory.py, bank.py): serial_struct, serial_bytes,
+definition_of_code_bytes, definition_from_serial, copy_definition, card_for_bytes, card_from_definition,
+fresh_unique_id, place_definition, find_added, undo_add, restore_code, check_codes.
+
+Verified offline: the code layer (rtse/item_serial.py, tested on real published codes in dev/tests/test_item_serial.py).
+NOT verified in a live game: every game call in this module and in bank.py / gear_inventory.py. Each is marked
+UNVERIFIED where it is called. A failed call becomes a message (an ApiError or a per-code error), never a crash.
+LAST_PATHS records which alternative last worked (serial struct build, decode path). /api/debug/codes dumps it.
+
+Game calls (all UNVERIFIED): unrealsdk.find_class(...).ClassDefaultObject, unrealsdk.make_struct(...),
+WillowInventory.CreateSerialNumber / GetSerialNumberString, WillowWeapon|WillowItem.UnpackSerialNumber,
+Create(Weapon|Item)FromSerialNumber, WillowInventoryManager.GetEmptyBackpackSlots / ClientAdd(Weapon|Item)ToBackpack.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import random
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import unrealsdk
+from unrealsdk import logging
+
+from . import bank, gear_inventory, item_serial, journal, stats
+from .gear_parts import ITEM_SLOTS, WEAPON_SLOTS, _balance_label, _humanize, _title_name
+from .routing import ApiError, Params, Route
+
+MAX_CODES = 200
+MARK_STANDARD = 1
+DESTINATIONS = ("backpack", "bank")
+DEFAULT_BUFFER = 40  # serial buffer size when there is no live serial to copy it from (UNVERIFIED)
+CHECKSUM_ERROR = "checksum does not match: the code was copied wrong, or it is not a Gibbed BL2 code"
+CHECKSUM_WARNING = "the game's serial does not match the Gibbed format; this code may not paste into other tools"
+UNVERIFIED = "Reading codes, importing them and exporting items use game calls nobody has tested in a live game yet"
+DEBUG_CODES_FILE = Path(__file__).parent / "debug_codes.json"
+DEBUG_ITEMS = 3
+DEBUG_BANK_ENTRIES = 3
+
+# Which alternative worked last: "serial" is make_struct or elementwise, "decode" is unpack or create (UNVERIFIED).
+LAST_PATHS: dict[str, str] = {}
+
+_RNG = random.SystemRandom()
+
+WEAPON_DEFINITION_FIELDS = (
+    "UniqueId", "GameStage", "TitlePartDefinition", "PrefixPartDefinition",
+    *(f"{s}PartDefinition" for s in WEAPON_SLOTS),
+    "ManufacturerGradeIndex", "ManufacturerDefinition", "BalanceDefinition", "WeaponTypeDefinition",
+)  # fmt: skip
+ITEM_DEFINITION_FIELDS = (
+    "UniqueId", "GameStage", "TitleItemNamePartDefinition", "PrefixItemNamePartDefinition",
+    *(f"{s}ItemPartDefinition" for s in ITEM_SLOTS),
+    "ManufacturerGradeIndex", "ManufacturerDefinition", "BalanceDefinition", "ItemDefinition",
+)  # fmt: skip
+CLASS_BY_DEFINITION = {  # an item's ItemDefinition class -> the class the card shows
+    "ShieldDefinition": "WillowShield",
+    "GrenadeModDefinition": "WillowGrenadeMod",
+    "ArtifactDefinition": "WillowArtifact",
+    "ClassModDefinition": "WillowClassMod",
+}
+
+
+class DecodeError(Exception):
+    """The game could not turn a serial into a definition, by any path."""
+
+
+# --- Game access (UNVERIFIED; tests replace these) --------------------------------------------------
+
+
+def _cdo(class_name: str) -> Any:
+    return unrealsdk.find_class(class_name).ClassDefaultObject  # UNVERIFIED
+
+
+def _make_struct(struct_name: str, **fields: Any) -> Any:
+    return unrealsdk.make_struct(struct_name, **fields)  # UNVERIFIED
+
+
+def _safe(read: Callable[[], Any], default: Any = None) -> Any:
+    try:
+        return read()
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _path(obj: Any) -> str | None:
+    return None if obj is None else obj._path_name()  # noqa: SLF001
+
+
+def _template() -> Any | None:
+    """A live serial to copy the State, RunningCounter and buffer size from. None when there is no item."""
+    try:
+        found, _warnings = gear_inventory._inventory(gear_inventory._manager())  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+    for item, _location in found:
+        serial = _safe(item.CreateSerialNumber)  # UNVERIFIED
+        if serial is not None:
+            return serial
+    return None
+
+
+def serial_bytes(serial: Any) -> bytes:
+    """The bytes of a game serial: its Buffer, cut to EncryptedLength. Accepts any iterable of ints (UNVERIFIED shape)."""
+    length = int(serial.EncryptedLength)  # UNVERIFIED field
+    values = [int(value) & 0xFF for value in serial.Buffer]  # UNVERIFIED field (static array)
+    if not 0 < length <= len(values):
+        raise item_serial.SerialError(f"the game's serial claims {length} bytes, its buffer holds {len(values)}")
+    return bytes(values[:length])
+
+
+def _buffer_size(template: Any) -> int:
+    try:
+        return max(len(list(template.Buffer)), 1)
+    except Exception:  # noqa: BLE001
+        return DEFAULT_BUFFER
+
+
+def serial_struct(data: bytes, template: Any | None = None) -> Any:
+    """An InventorySerialNumber holding `data`. Tries make_struct with the Buffer first, then writes the buffer element by element."""
+    length = len(data)
+    state, counter, size = 0, 0, DEFAULT_BUFFER
+    if template is not None:
+        state = _safe(lambda: int(template.State), 0)
+        counter = _safe(lambda: int(template.RunningCounter), 0)
+        size = _buffer_size(template)
+    size = max(size, length)
+    padded = [*data, *([0] * (size - length))]
+    try:
+        serial = _make_struct(  # UNVERIFIED: a static array field given as a list
+            "InventorySerialNumber", EncryptedLength=length, RunningCounter=counter, State=state, Buffer=padded,
+        )
+        if serial_bytes(serial) == bytes(data):
+            LAST_PATHS["serial"] = "make_struct"
+            return serial
+        problem = "make_struct kept a different Buffer"
+    except Exception as ex:  # noqa: BLE001
+        problem = f"make_struct raised {ex!r}"
+    serial = _make_struct("InventorySerialNumber", EncryptedLength=length, RunningCounter=counter, State=state)
+    for index, value in enumerate(padded):  # UNVERIFIED: element assignment into a struct's static array
+        serial.Buffer[index] = value
+    if serial_bytes(serial) != bytes(data):
+        raise item_serial.SerialError(f"could not write the serial buffer ({problem}; element-wise write failed too)")
+    LAST_PATHS["serial"] = "elementwise"
+    return serial
+
+
+def definition_from_serial(serial: Any, is_weapon: bool) -> tuple[Any, str]:
+    """The game's definition for a serial, and which path gave it: "unpack" (UnpackSerialNumber on the class default
+    object) or "create" (a temporary actor from Create*FromSerialNumber, whose copy of its definition is kept and whose
+    actor is destroyed). Raises DecodeError when both fail. All UNVERIFIED."""
+    cls = "WillowWeapon" if is_weapon else "WillowItem"
+    try:
+        found, definition = _cdo(cls).UnpackSerialNumber(serial)  # UNVERIFIED: out param comes back as a tuple
+        if found and definition is not None:
+            LAST_PATHS["decode"] = "unpack"
+            return definition, "unpack"
+        unpack_problem = "UnpackSerialNumber returned False"
+    except Exception as ex:  # noqa: BLE001
+        unpack_problem = f"UnpackSerialNumber raised {ex!r}"
+    create = "CreateWeaponFromSerialNumber" if is_weapon else "CreateItemFromSerialNumber"
+    actor = None
+    try:
+        actor = getattr(_cdo(cls), create)(serial, None)  # UNVERIFIED
+        if actor is None:
+            raise DecodeError("no actor was created")
+        definition = copy_definition(actor.DefinitionData, is_weapon)
+    except Exception as ex:  # noqa: BLE001
+        raise DecodeError(f"{unpack_problem}; {create} also failed ({ex!r})") from None
+    finally:
+        if actor is not None:
+            with contextlib.suppress(Exception):
+                actor.Destroy()  # UNVERIFIED: the temporary actor must not stay in the level
+    LAST_PATHS["decode"] = "create"
+    return definition, "create"
+
+
+def definition_of_code_bytes(data: bytes, template: Any | None = None) -> tuple[Any, bool, str]:
+    """(definition, is_weapon, path) for code bytes. Raises SerialError for a bad header, DecodeError when the game cannot decode it."""
+    header = item_serial.read_header(data)
+    if template is None:
+        template = _template()
+    definition, path = definition_from_serial(serial_struct(data, template), header["is_weapon"])
+    return definition, header["is_weapon"], path
+
+
+def copy_definition(source: Any, is_weapon: bool) -> Any:
+    """A new definition struct with the same fields as `source` (UNVERIFIED: make_struct with every field).
+    Fields this game build does not have are left out."""
+    name, fields = ("WeaponDefinitionData", WEAPON_DEFINITION_FIELDS) if is_weapon else ("ItemDefinitionData", ITEM_DEFINITION_FIELDS)
+    values: dict[str, Any] = {}
+    for field in fields:
+        try:
+            values[field] = getattr(source, field)
+        except AttributeError:
+            continue
+    return _make_struct(name, **values)
+
+
+# --- Cards (the gear card shape from gear_inventory.card_of, built from a definition) ---------------------
+
+
+def _name_of(definition: Any, is_weapon: bool) -> str:
+    """Best-effort name (the game's text is UNVERIFIED): a unique gun's title, else "<make> <balance>"."""
+    title = _safe(lambda: definition.TitlePartDefinition if is_weapon else definition.TitleItemNamePartDefinition)
+    if title is not None:
+        return _title_name(title)
+    maker = _safe(lambda: definition.ManufacturerDefinition)
+    balance = _safe(lambda: definition.BalanceDefinition)
+    words = [
+        _humanize(maker.Name) if maker is not None else "",  # UNVERIFIED: object names
+        _balance_label(balance, weapon=is_weapon) if balance is not None else "",
+    ]
+    return " ".join(word for word in words if word) or "Unknown item"
+
+
+def card_from_definition(definition: Any, is_weapon: bool, *, card_id: str, location: str, unique_id: int) -> dict[str, Any]:
+    """The gear card for a definition: name, class, level (GameStage), type, parts and hidden bones. Not rarity (None)."""
+    weapon_type = _safe(lambda: definition.WeaponTypeDefinition) if is_weapon else None
+    item_definition = None if is_weapon else _safe(lambda: definition.ItemDefinition)
+    if is_weapon:
+        cls = "WillowWeapon"
+    else:
+        cls = CLASS_BY_DEFINITION.get(_safe(lambda: item_definition.Class.Name, ""), "WillowItem")
+    return {
+        "id": card_id,
+        "class": cls,
+        "name": _name_of(definition, is_weapon),
+        "location": location,
+        "level": _safe(lambda: int(definition.GameStage)),
+        "rarity": None,
+        "type_path": _path(weapon_type),
+        "build": gear_inventory.build_of(definition, is_weapon),
+        "hide_bones": gear_inventory.hidden_bones_of(weapon_type),
+        "unique_id": unique_id,
+    }
+
+
+def card_for_bytes(
+    data: bytes, *, card_id: str, location: str, unique_id: int, template: Any | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """(card, warning). The card is None and the warning says why when the game cannot decode the code."""
+    try:
+        definition, is_weapon, _path_used = definition_of_code_bytes(data, template)
+        return card_from_definition(definition, is_weapon, card_id=card_id, location=location, unique_id=unique_id), None
+    except Exception as ex:  # noqa: BLE001
+        logging.warning(f"RTSE: could not decode {card_id}: {ex!r}")
+        return None, f"the game could not decode this code ({ex})"
+
+
+# --- Export ----------------------------------------------------------------------------------------------
+
+
+def export_code(source: Any) -> tuple[str, dict[str, Any] | None, list[str]]:
+    """The item code for an item (its CreateSerialNumber) or a chest entry (its InventorySerialNumber).
+
+    Raises SerialError when the game's serial cannot be read as bytes. A serial whose header cannot be read, or whose
+    checksum fails, is still exported, with a warning. UNVERIFIED: CreateSerialNumber / InventorySerialNumber.
+    """
+    create = getattr(source, "CreateSerialNumber", None)
+    serial = create() if callable(create) else source.InventorySerialNumber  # UNVERIFIED
+    data = serial_bytes(serial)
+    warnings: list[str] = []
+    try:
+        header: dict[str, Any] | None = item_serial.read_header(data)
+    except item_serial.SerialError as ex:
+        header = None
+        warnings.append(f"the header could not be read ({ex}); the code is exported anyway")
+    else:
+        if not header["checksum_ok"]:
+            warnings.append(CHECKSUM_WARNING)
+    return item_serial.bytes_to_code(data), header, warnings
+
+
+# --- Decode (preview) ------------------------------------------------------------------------------------
+
+
+def _kind(header: dict[str, Any]) -> str:
+    return "weapon" if header["is_weapon"] else "item"
+
+
+def _entry(index: int, code: str) -> dict[str, Any]:
+    return {
+        "index": index, "code": code, "ok": False, "error": None, "kind": None, "unique_id": None,
+        "card": None, "uid_clash": False, "warning": None,
+    }  # fmt: skip
+
+
+def decode(text: str) -> list[dict[str, Any]]:
+    """The preview entries for the codes in `text` (see the module docstring). More than MAX_CODES codes: ApiError 400."""
+    found = item_serial.extract_codes(text or "")
+    if len(found) > MAX_CODES:
+        raise ApiError(400, f"at most {MAX_CODES} codes at a time ({len(found)} found)")
+    used = gear_inventory.used_unique_ids()
+    template = _template()
+    entries: list[dict[str, Any]] = []
+    for index, code in enumerate(found):
+        entry = _entry(index, code)
+        try:
+            data = item_serial.code_to_bytes(code)
+            header = item_serial.read_header(data)
+        except item_serial.SerialError as ex:
+            entry["error"] = str(ex)
+            entries.append(entry)
+            continue
+        entry.update(kind=_kind(header), unique_id=header["unique_id"], uid_clash=header["unique_id"] in used)
+        if not header["checksum_ok"]:
+            entry["error"] = CHECKSUM_ERROR
+        else:
+            entry["ok"] = True
+            entry["card"], entry["warning"] = card_for_bytes(
+                data, card_id=f"preview:{index}", location="Preview", unique_id=header["unique_id"], template=template,
+            )
+        entries.append(entry)
+    return entries
+
+
+# --- Import ----------------------------------------------------------------------------------------------
+
+
+def fresh_unique_id(used: set[int]) -> int:
+    """A random nonzero signed 32-bit UniqueId that is not in `used`."""
+    while True:
+        candidate = _RNG.randint(1, (1 << 31) - 1)
+        if candidate not in used:
+            return candidate
+
+
+def place_definition(definition: Any, is_weapon: bool, destination: str, mark: int = MARK_STANDARD) -> str | None:
+    """Adds a definition to the backpack (ClientAdd...ToBackpack) or the bank. None on success, else why not.
+    UNVERIFIED calls. Success is confirmed by find_added, not by the return value."""
+    try:
+        if destination == "bank":
+            return None if bank.add_def_to_bank(definition, is_weapon) else "the bank refused it (it may be full)"
+        manager = gear_inventory._manager()  # noqa: SLF001
+        if manager.GetEmptyBackpackSlots() <= 0:  # UNVERIFIED call
+            return "the backpack is full"
+        if is_weapon:
+            manager.ClientAddWeaponToBackpack(definition, mark, False)  # UNVERIFIED call
+        else:
+            manager.ClientAddItemToBackpack(definition, 1, mark, False)  # UNVERIFIED call
+        return None
+    except ApiError as ex:
+        return str(ex)
+    except Exception as ex:  # noqa: BLE001
+        return f"the game refused to add it ({ex})"
+
+
+def find_added(destination: str, unique_id: int) -> dict[str, Any] | None:
+    """{id, name} of the item with this UniqueId in the destination, or None when it is not there."""
+    if destination == "bank":
+        found = bank.find_by_unique_id(unique_id)
+        if found is None:
+            return None
+        index, entry = found
+        return {"id": bank.bank_id(index, unique_id), "name": bank.entry_card(index, entry)[0]["name"]}
+    item = gear_inventory.backpack_item(unique_id)
+    if item is None:
+        return None
+    return {"id": gear_inventory._item_id(item), "name": item.GetHumanReadableName()}  # noqa: SLF001
+
+
+def undo_add(destination: str, unique_id: int) -> None:
+    """Removes the item with this UniqueId from the destination (undo of an add)."""
+    if destination == "bank":
+        found = bank.find_by_unique_id(unique_id)
+        if found is not None:
+            bank.remove_bank_entry(*found)
+        return
+    item = gear_inventory.backpack_item(unique_id)
+    if item is not None:
+        gear_inventory.remove_from_backpack(gear_inventory._manager(), item)  # noqa: SLF001
+
+
+def restore_code(code: str, destination: str) -> dict[str, Any]:
+    """Imports a code again (undo of a delete). A failure is logged, not raised: undo must not break the game."""
+    result = import_items([code], destination)
+    if not result["imported"]:
+        logging.error(f"RTSE: could not restore a deleted item: {result['results'][0]['error']}")
+    return result
+
+
+def check_codes(code_list: list[str]) -> None:
+    """ApiError 400 for the first code that is not a valid BL2 code or fails its checksum (used before a replace)."""
+    for number, code in enumerate(code_list, start=1):
+        try:
+            header = item_serial.read_header(item_serial.code_to_bytes(code))
+        except item_serial.SerialError as ex:
+            raise ApiError(400, f"code {number} is not a valid BL2 code ({ex}); nothing was removed") from None
+        if not header["checksum_ok"]:
+            raise ApiError(400, f"code {number} fails its checksum; nothing was removed")
+
+
+def _result(code: str) -> dict[str, Any]:
+    return {"code": code, "ok": False, "error": None, "id": None, "name": None, "unique_id": None}
+
+
+def _import_one(code: str, destination: str, used: set[int], template: Any | None) -> tuple[dict[str, Any], str | None]:
+    """Imports one code. Returns (result, decode path or None when the code never reached the game)."""
+    result = _result(code)
+    try:
+        data = item_serial.code_to_bytes(code)
+        header = item_serial.read_header(data)
+    except item_serial.SerialError as ex:
+        result["error"] = str(ex)
+        return result, None
+    if not header["checksum_ok"]:
+        result["error"] = CHECKSUM_ERROR
+        return result, None
+    unique_id = fresh_unique_id(used)
+    used.add(unique_id)
+    try:
+        fresh = item_serial.with_unique_id(data, unique_id)
+    except item_serial.SerialError as ex:
+        result["error"] = str(ex)
+        return result, None
+    try:
+        definition, is_weapon, path = definition_of_code_bytes(fresh, template)
+    except Exception as ex:  # noqa: BLE001
+        result["error"] = f"the game could not decode this code ({ex})"
+        return result, None
+    definition.UniqueId = unique_id  # belt and braces: the serial already carries it (UNVERIFIED struct write)
+    problem = place_definition(definition, is_weapon, destination, MARK_STANDARD)
+    if problem:
+        result["error"] = problem
+        return result, path
+    added = find_added(destination, unique_id)
+    if added is None:
+        result["error"] = "the item was not found right after adding it; check the backpack/bank in game before trying again"
+        return result, path
+    journal.record(
+        "inventory.add", target=added["id"], before=None, after={"code": code, "unique_id": unique_id},
+        undo=lambda: undo_add(destination, unique_id),
+    )  # fmt: skip
+    result.update(ok=True, id=added["id"], name=added["name"], unique_id=unique_id)
+    return result, path
+
+
+def import_pairs(pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    """Imports each (code, destination). See the module docstring for the result shape and the errors."""
+    if len(pairs) > MAX_CODES:
+        raise ApiError(400, f"at most {MAX_CODES} codes at a time")
+    if any(destination not in DESTINATIONS for _code, destination in pairs):
+        raise ApiError(400, "destination must be backpack or bank")
+    used = gear_inventory.used_unique_ids()
+    template = _template()
+    results: list[dict[str, Any]] = []
+    paths: set[str] = set()
+    for code, destination in pairs:
+        result, path = _import_one(code, destination, used, template)
+        results.append(result)
+        if path is not None:
+            paths.add(path)
+    imported = sum(1 for result in results if result["ok"])
+    path_name = "mixed" if len(paths) > 1 else (next(iter(paths)) if paths else "unpack")
+    return {"results": results, "imported": imported, "failed": len(results) - imported, "path": path_name}
+
+
+def import_items(codes: list[str], destination: str = "backpack") -> dict[str, Any]:
+    """Imports every code into one destination. See import_pairs."""
+    return import_pairs([(code, destination) for code in codes])
+
+
+# --- Routes ----------------------------------------------------------------------------------------------
+
+
+def export_route(params: Params) -> dict[str, Any]:
+    item_id = params.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        raise ApiError(400, "'id' is required")
+    if item_id.startswith("bank:"):
+        index, entry = bank.find_bank_entry(item_id)
+        name = bank.entry_card(index, entry)[0]["name"]
+        source, unique_id = bank.export_source(entry), bank.entry_unique_id(entry)
+    else:
+        item, _location = gear_inventory._find_item(params)  # noqa: SLF001
+        name, source, unique_id = item.GetHumanReadableName(), item, stats.unique_id(item)
+    try:
+        code, header, warnings = export_code(source)
+    except item_serial.SerialError as ex:
+        raise ApiError(409, f"the game's serial for {name} could not be read ({ex})") from None
+    if header is None:
+        view = {"kind": None, "unique_id": unique_id, "checksum_ok": False}
+    else:
+        view = {"kind": _kind(header), "unique_id": header["unique_id"], "checksum_ok": header["checksum_ok"]}
+    return {"id": item_id, "name": name, "code": code, "header": view, "warnings": warnings}
+
+
+def preview_route(params: Params) -> dict[str, Any]:
+    text = params.get("text", "")
+    if not isinstance(text, str):
+        raise ApiError(400, "'text' must be text")
+    entries = decode(text)
+    return {"entries": entries, "found": len(entries)}
+
+
+def import_route(body: Params) -> dict[str, Any]:
+    code_list = body.get("codes")
+    destination = body.get("destination", "backpack")
+    if not isinstance(code_list, list) or not all(isinstance(code, str) for code in code_list):
+        raise ApiError(400, "'codes' must be a list of text codes")
+    return import_items(code_list, destination)
+
+
+def _record(report: dict[str, Any], key: str, read: Callable[[], Any]) -> None:
+    try:
+        report[key] = read()
+    except Exception as ex:  # noqa: BLE001
+        report[key] = f"<error {ex!r}>"
+
+
+def _plain(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "_path_name"):
+        return value._path_name()  # noqa: SLF001
+    return f"<{type(value).__name__}>"
+
+
+def _serial_fields(serial: Any) -> dict[str, Any]:
+    return {
+        "EncryptedLength": int(serial.EncryptedLength), "RunningCounter": int(serial.RunningCounter),
+        "State": int(serial.State), "Buffer": [int(v) & 0xFF for v in serial.Buffer],
+    }  # fmt: skip
+
+
+def _round_trip(item: Any, template: Any | None) -> dict[str, Any]:
+    """Exports the item, decodes the bytes again, and compares every definition field with the live item."""
+    weapon = gear_inventory._is_weapon(item)  # noqa: SLF001
+    data = serial_bytes(item.CreateSerialNumber())
+    definition, _is_weapon, path = definition_of_code_bytes(data, template)
+    fields = WEAPON_DEFINITION_FIELDS if weapon else ITEM_DEFINITION_FIELDS
+    mismatches = []
+    for field in fields:
+        original, decoded = _plain(getattr(item.DefinitionData, field, None)), _plain(getattr(definition, field, None))
+        if original != decoded:
+            mismatches.append({"field": field, "item": original, "decoded": decoded})
+    return {"path": path, "fields_checked": len(fields), "mismatches": mismatches}
+
+
+def _debug_item(item: Any, template: Any | None) -> dict[str, Any]:
+    row: dict[str, Any] = {"name": _safe(item.GetHumanReadableName), "unique_id": stats.unique_id(item)}
+    _record(row, "serial", lambda: _serial_fields(item.CreateSerialNumber()))  # UNVERIFIED
+    _record(row, "serial_string", item.GetSerialNumberString)  # UNVERIFIED
+    _record(row, "export", lambda: _export_summary(item))
+    _record(row, "round_trip", lambda: _round_trip(item, template))
+    return row
+
+
+def _export_summary(item: Any) -> dict[str, Any]:
+    code, header, warnings = export_code(item)
+    return {"code": code, "header": header, "warnings": warnings}
+
+
+def _debug_bank(manager: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    bank_obj = _safe(lambda: manager.TheBank)
+    out["path"] = _safe(lambda: _path(bank_obj)) if bank_obj is not None else None
+    if bank_obj is None:
+        out["note"] = "TheBank is None"
+        return out
+    for name in ("ChestSlots", "MaxSlots"):
+        _record(out, name, lambda n=name: _plain(getattr(bank_obj, n)))  # UNVERIFIED fields
+    for name in ("GetSize", "GetMaxSize"):
+        _record(out, name, lambda n=name: getattr(bank_obj, n)())  # UNVERIFIED calls
+    _record(out, "chest_length", lambda: len(bank_obj.TheChest))
+    entries = []
+    for index, entry in list(enumerate(bank_obj.TheChest))[:DEBUG_BANK_ENTRIES]:
+        row: dict[str, Any] = {"index": index}
+        _record(row, "inventory", lambda e=entry: _plain(e.Inventory))
+        _record(row, "inventory_class", lambda e=entry: e.InventoryClass.Name)
+        _record(row, "header", lambda e=entry: item_serial.read_header(serial_bytes(e.InventorySerialNumber)))
+        entries.append(row)
+    out["first_entries"] = entries
+    out["content_entries"] = len(bank.bank_entries()) if out.get("path") else 0
+    return out
+
+
+def debug_codes(_params: Params) -> dict[str, Any]:
+    """Writes rtse/debug_codes.json: a few backpack items' serials, codes and round trips, and the bank's shape."""
+    report: dict[str, Any] = {"unverified": UNVERIFIED, "last_paths": LAST_PATHS, "items": [], "bank": {}}
+    counts = {"items": 0, "bank": 0}
+    try:
+        manager = gear_inventory._manager()  # noqa: SLF001
+    except ApiError as ex:
+        report["error"] = str(ex)
+        manager = None
+    if manager is not None:
+        try:
+            found, report["inventory_warnings"] = gear_inventory._inventory(manager)  # noqa: SLF001
+        except Exception as ex:  # noqa: BLE001
+            found, report["inventory_warnings"] = [], [repr(ex)]
+        counts["items"] = len(found)
+        template = _template()
+        for item, location in [pair for pair in found if pair[1] == gear_inventory.BACKPACK][:DEBUG_ITEMS]:
+            report["items"].append(_debug_item(item, template))
+        report["bank"] = _debug_bank(manager)
+        counts["bank"] = report["bank"].get("content_entries", 0) if isinstance(report["bank"], dict) else 0
+    DEBUG_CODES_FILE.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    return {"saved_to": str(DEBUG_CODES_FILE), "items": counts["items"], "bank": counts["bank"]}
+
+
+ROUTE_ERROR = ApiError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/codes/export": export_route,
+    "/api/codes/preview": preview_route,
+    "/api/debug/codes": debug_codes,
+}
+POST_ROUTES: dict[str, Route] = {"/api/codes/import": import_route}

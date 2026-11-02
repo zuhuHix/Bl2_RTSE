@@ -16,6 +16,7 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **World:** missions (including how far through each objective you are), challenges, fast travel stations and playthrough (Normal / TVHM / UVHM).
 - **Inspector:** browse the game's own live data and change plain numbers, switches and text in it, for the things that don't have a page of their own.
 - **Weapon lab:** snapshot a gun, swap a part, and see every stat that changed side by side. Then record the damage you actually deal (hits, crits, DPS, per-pellet) and chart it.
+- **Bank & codes:** copy any item as a `BL2(...)` code (the format the Gibbed editor uses), paste codes to add items, look through your bank, move items between backpack and bank, duplicate or delete them, and save or load your whole inventory as a JSON file.
 
 ## A tour of the editor
 
@@ -131,6 +132,19 @@ Which gun a hit belongs to comes from the game's `DamageCauser` on `TakeDamage`:
 10. Press **Save lab dump** and send `rtse/debug_lab.json` (it holds the raw damage summary fields of the first 20 hits).
 11. Press F8 twice and toggle the mod off and on in the mod menu, then record again. Hits must not be counted twice.
 
+### Bank & codes
+
+![The bank tab of the Bank & codes page](docs/screenshots/16-bank.png)
+
+Four tabs, all marked **unverified** until someone tries them in game:
+
+- **Bank.** Everything in your bank as gear cards, with **To backpack**, **Copy code**, **Duplicate** and **Delete** on each.
+- **Backpack.** Your backpack (and, read only, what you have equipped) with **To bank**, **Copy code**, **Duplicate** and **Delete**. Equipped gear can't be deleted or moved; unequip it first.
+- **Import codes.** Paste one or many `BL2(...)` codes. Labels, bullet points, markdown and line breaks inside a code are ignored. **Preview** shows what each code is before anything is added, and flags codes that were copied wrong (their checksum fails). Pick **Backpack** or **Bank** and **Import**. Every imported item gets a fresh UniqueId, so importing the same code twice gives two separate items (two items sharing a UniqueId cause trouble, see Gibbed issue #154).
+- **Export / JSON.** **Download inventory JSON** saves every equipped, backpack and bank item as a code in `rtse-inventory.json`. **Copy all codes** puts them on the clipboard, one per line. **Import JSON file** reads such a file back, with a preview, into the backpack, the bank or each item's original place. Tick **Replace** to empty the backpack and/or bank first (never equipped gear).
+
+Delete and Replace ask for a second click. Every delete keeps the item's code under **Deleted this session** on the Import tab, so **Restore** brings it back.
+
 ## Heads up before you start
 
 - **Back up your saves first.** They're in `Documents\My Games\Borderlands 2\WillowGame\SaveData`. Copy that folder somewhere. It takes ten seconds and saves you if you break something.
@@ -232,3 +246,17 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
 The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
 
 RTSE isn't affiliated with Gearbox or 2K. Skill names and descriptions in `rtse/skilltrees.json` come from the game's own files.
+- **Item codes, bank and inventory** (the Bank & codes page). The code format itself (base64, the encryption, the checksum, the UniqueId) is checked offline against real published codes (`dev/tests/test_item_serial.py`, built from the Gibbed editor's source). Everything that talks to the game is unverified: reading an item's serial (`CreateSerialNumber`), turning a code into an item (`UnpackSerialNumber` on the class default object, falling back to `CreateWeaponFromSerialNumber` / `CreateItemFromSerialNumber`), building the serial struct (`make_struct`), adding to the backpack (`ClientAddWeaponToBackpack` / `ClientAddItemToBackpack`), removing (`RemoveFromInventory`), and the bank (`TheBank.TheChest`, `AddWeaponFromDef` / `AddItemFromDef`, `RemoveWeaponsByDef` / `RemoveItemsByDef`). Card names and levels for bank items and previews are built from the game's object names, so they may read differently from the in-game names, and rarity is not shown. Creating an item from nothing (no code, no existing item) isn't offered.
+
+#### In-game test checklist: Bank & codes
+
+Back up your saves first. Do these in order and save a `debug_codes.json` (Bank & codes, **Dev tools**, **Save codes dump**) if anything looks wrong.
+
+1. Open **Bank & codes**. Save the codes dump straight away and attach it to the report either way. Its `round_trip` entries say whether an exported code decodes back to the same item.
+2. **Backpack** tab: **Copy code** on a gun. Paste it into the Gibbed editor (or a site that reads BL2 codes) and check it's the same gun.
+3. **Import codes**: paste that code plus a few lines of junk, **Preview** (the gun should show with its parts), then **Import** into the backpack. Check the copy appears in your backpack in game, with the same parts and level.
+4. Import the same code again. Both copies should stay separate: equip one, then the other, and check the stats bench treats them as different guns.
+5. **Duplicate** a shield and a relic. **Delete** the copies (second click to confirm). Check they're gone in game, then **Restore** one from **Deleted this session**.
+6. **Bank** tab: is your bank listed? **To bank** an item from the backpack, then open the bank at a real bank in game and check it's there. Move it back with **To backpack**.
+7. **Export / JSON**: **Download inventory JSON**, then **Import JSON file** with that file into the bank (without Replace) and check the count.
+8. Save, quit to the menu, load again. Check the imported, moved and duplicated items are all still there and none disappeared.

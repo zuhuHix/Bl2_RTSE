@@ -1,5 +1,5 @@
 // Bank & codes: the bank, the backpack (and equipped gear, read only), importing item codes, and inventory JSON.
-// Backed by rtse/bank.py, rtse/codes.py and rtse/inventory.py (dev: dev/mock_inventory.py). Not yet tested in a live game.
+// Backed by rtse/bank.py, rtse/codes.py and rtse/gear_inventory.py (dev: dev/mock_inventory.py). Not yet tested in a live game.
 import { classLabel, cleanItemName, rarityColor } from "./meta.js";
 import { weaponTypeFrom } from "./gear_model.js";
 import { gearPlate, pollInventory } from "./gear_list.js";
@@ -25,6 +25,7 @@ const state = {
   json: null, // { name, items, preview } once an inventory JSON file has been read
   jsonDest: "original", jsonReplace: false,
   jsonResults: null,
+  deleted: [], // [{ name, code }] deleted this session, newest first, so a delete can be undone by re-importing
 };
 let current = null; // the last ctx we were rendered with, for load() calls without one
 
@@ -139,7 +140,8 @@ function deleteButton(ctx, item) {
   return confirmButton(ctx, `del:${item.id}`, {
     idle: "Delete", armed: `Click again to delete ${cleanItemName(item.name)}`, cls: "sm danger",
   }, () => write(ctx, "/api/inventory/delete", { id: item.id }, (r) => {
-    ctx.toast(`Deleted ${r.deleted.name}. Restore code: ${r.deleted.code}`);
+    if (r.deleted.code) state.deleted.unshift({ name: r.deleted.name, code: r.deleted.code });
+    ctx.toast(`Deleted ${r.deleted.name}. Its code is kept under Import codes, in case you want it back.`);
   }));
 }
 
@@ -241,7 +243,21 @@ function importTab(ctx) {
     h("div", { class: "bk-row" }, button("Preview", () => preview(ctx, area.value), "primary")),
     state.preview && codePreview(ctx),
     state.results && resultBlock("Last import", state.results),
+    state.deleted.length > 0 && deletedBlock(ctx, area),
   ];
+}
+
+/** Items deleted this session, with their codes: "Restore" puts the code in the import box for a normal preview. */
+function deletedBlock(ctx, area) {
+  return h("div", { class: "bk-deleted" },
+    h("h3", { text: "Deleted this session" }),
+    state.deleted.map((entry) => h("div", { class: "bk-row" },
+      h("span", { text: cleanItemName(entry.name) }),
+      h("code", { class: "bk-code", text: entry.code }),
+      button("Restore", () => {
+        area.value = state.text = entry.code;
+        return preview(ctx, entry.code);
+      }))));
 }
 
 async function preview(ctx, text) {

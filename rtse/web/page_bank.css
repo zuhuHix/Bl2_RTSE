@@ -54,3 +54,7 @@
   .bk-grid { grid-template-columns: 1fr; }
   .bk-text { min-height: 110px; }
 }
+
+.bk-deleted { margin-top: 18px; }
+.bk-deleted .bk-row { align-items: center; gap: 10px; flex-wrap: wrap; }
+.bk-code { font-size: 11px; opacity: .75; word-break: break-all; flex: 1 1 260px; }
