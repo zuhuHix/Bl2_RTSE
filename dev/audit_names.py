@@ -9,7 +9,6 @@ as hoped at runtime. Candidate lists are read straight from the modules, so this
 from __future__ import annotations
 
 import sys
-import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,20 +16,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def _stub(name: str, **attrs) -> None:
-    module = types.ModuleType(name)
-    module.__dict__.update(attrs)
-    sys.modules[name] = module
+import unreal_stub  # noqa: E402
 
-
-class _Anything:
-    pass
-
-
-_stub("unrealsdk", logging=types.SimpleNamespace(info=lambda *_: None, error=print),
-      unreal=types.SimpleNamespace(UObject=_Anything, WrappedStruct=_Anything, BoundFunction=_Anything), find_all=lambda *_: [], find_object=lambda *_: None)
-_stub("unrealsdk.hooks", Type=types.SimpleNamespace(POST=1), add_hook=lambda *_: None, remove_hook=lambda *_: None)
-_stub("mods_base", get_pc=lambda **_: None, build_mod=lambda **_: None, hook=lambda *_a, **_k: (lambda f: f), keybind=lambda *_a, **_k: (lambda f: f))
+unreal_stub.install()
 
 import class_index  # noqa: E402
 from rtse import ammo, character, sdu, skills, world  # noqa: E402

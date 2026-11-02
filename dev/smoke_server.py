@@ -7,38 +7,15 @@ from __future__ import annotations
 
 import http.client
 import sys
-import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def stub(name: str, **attrs) -> types.ModuleType:
-    module = types.ModuleType(name)
-    module.__dict__.update(attrs)
-    sys.modules[name] = module
-    return module
+sys.path.insert(0, str(ROOT / "dev"))
+import unreal_stub  # noqa: E402
 
-
-class Anything:
-    """Stands in for any game class or struct used only in annotations."""
-
-
-stub(
-    "unrealsdk",
-    logging=types.SimpleNamespace(info=lambda *_: None, error=print),
-    unreal=types.SimpleNamespace(UObject=Anything, WrappedStruct=Anything, BoundFunction=Anything),
-    find_all=lambda *_: [],
-    find_object=lambda *_: None,
-)
-stub("unrealsdk.hooks", Type=types.SimpleNamespace(POST=1), add_hook=lambda *_: None, remove_hook=lambda *_: None)
-stub(
-    "mods_base",
-    get_pc=lambda **_: None,
-    build_mod=lambda **_: None,
-    hook=lambda *_a, **_k: (lambda f: f),
-    keybind=lambda *_a, **_k: (lambda f: f),
-)
+unreal_stub.install()
 
 sys.path.insert(0, str(ROOT))
 from rtse import server  # noqa: E402
