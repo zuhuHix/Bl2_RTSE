@@ -113,6 +113,25 @@ function absorbHits(reply) {
   }
 }
 
+const HITS_PAGE = 2000; // the server's per-read maximum
+const MAX_PAGES = 10;
+
+/** Reads new hits. The first read of a session asks for the newest HIT_BUFFER hits directly (tail), since seq also
+ *  counts shots and cannot be turned into a hit count. Later reads page forward from the last seq until caught up. */
+async function readHits() {
+  const target = st.target ? `&target=${encodeURIComponent(st.target)}` : "";
+  if (st.lastSeq < 0) {
+    absorbHits(await C.api("GET", `/api/lab/hits?tail=${HIT_BUFFER}${target}`));
+    if (st.lastSeq < 0) return;
+  }
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const reply = await C.api("GET", `/api/lab/hits?after=${st.lastSeq}&limit=${HITS_PAGE}${target}`);
+    const before = st.session;
+    absorbHits(reply);
+    if (reply.session !== before || reply.hits.length < HITS_PAGE) return;
+  }
+}
+
 // ---------- polling ----------
 
 function startPolling() {
@@ -132,14 +151,7 @@ async function tick() {
   if (st.polling) return;
   st.polling = true;
   try {
-    const target = st.target ? `&target=${encodeURIComponent(st.target)}` : "";
-    // first read of a session: only the newest buffer's worth, so a long session does not start with the oldest hits
-    const after = st.lastSeq >= 0 ? st.lastSeq : Math.max(-1, (st.lab?.session?.recorded ?? 0) - HIT_BUFFER - 1);
-    const [hits, lab] = await Promise.all([
-      C.api("GET", `/api/lab/hits?after=${after}&limit=2000${target}`),
-      C.api("GET", `/api/lab${labQuery()}`),
-    ]);
-    absorbHits(hits);
+    const [, lab] = await Promise.all([readHits(), C.api("GET", `/api/lab${labQuery()}`)]);
     st.lab = lab;
     st.labError = null;
     if (!st.target || !st.targets.length) st.targets = lab.summary.targets || [];
@@ -380,7 +392,7 @@ function damageSection() {
         h("input", { class: "field lab-cap", type: "number", min: 10, max: 20000, step: 1, value: st.cap, "aria-label": "Hit cap", oninput: (event) => { st.cap = event.target.value; } })),
       h("label", { class: "lab-check" },
         h("input", { type: "checkbox", checked: st.onlyWeapon || null, disabled: !st.weaponId || null, onchange: (event) => { st.onlyWeapon = event.target.checked; } }),
-        "Only this weapon"),
+        h("span", { title: "Hits whose causing weapon the game reports are filtered exactly. Hits credited to the held weapon (approximate) are always kept, since they may be this gun's projectiles or DoT landing after a swap." }, "Only this weapon")),
       h("button", { class: "btn sm primary", disabled: active || null, onclick: startSession }, icon("check", 14), "Start"),
       h("button", { class: "btn sm", disabled: !active || null, onclick: stopSession }, "Stop"),
       h("button", { class: "btn sm ghost", onclick: resetSession }, "Reset"),
@@ -442,7 +454,17 @@ function paintNote() {
   C.fill(dom.note,
     h("div", { class: "warn-banner" }, icon("alert", 18), "UNVERIFIED: the damage hooks have not been seen working in a live game. Treat these numbers as a dry run.", unverifiedBadge(u.hooks)),
     h("ul", { class: "lab-unv" }, ["shield", "dps_clock", "pellets"].filter((key) => u[key]).map((key) => h("li", {}, u[key]))),
+    approxNote(),
     hooks ? h("div", { class: "lab-note", text: `Hooks: ${(hooks.installed || []).length} installed, ${Object.keys(hooks.failed || {}).length} failed; fired ${fired}; ${hooks.errors} errors${hooks.last_error ? ` (last: ${hooks.last_error})` : ""}` }) : null);
+}
+
+/** How many kept hits are credited to the weapon held when they landed, because the game gave no causer. */
+function approxNote() {
+  const session = st.lab?.session;
+  if (!session || !session.approximate) return null;
+  const filter = session.weapon ? ' "Only this weapon" cannot exclude them.' : "";
+  return C.h("div", { class: "lab-note lab-approx", text:
+    `${num(session.approximate, 0)} of ${num(session.kept, 0)} hits are credited to the held weapon (approximate): the game gave no causing weapon for them, so a projectile, splash or DoT landing after a weapon swap counts for the new gun.${filter}` });
 }
 
 function paintTiles() {
@@ -451,6 +473,8 @@ function paintTiles() {
   if (!s) return fill(dom.tiles, h("div", { class: "lab-note", text: st.labError ? `Could not read the lab: ${st.labError}` : "Loading..." }));
   const estimated = new Set(s.estimated || []);
   const flagged = (fields) => fields.some((field) => estimated.has(field));
+  const wide = new Set(s.session_wide || []);
+  const allOnly = (field, text) => (wide.has(field) ? "all targets only" : text);
   const u = st.lab.unverified || {};
   const tile = (label, value, sub, { fields = [], unv = null, wide = false } = {}) => h("div", { class: "lab-tile" },
     h("span", { class: "lab-tile-l" }, label, flagged(fields) && estTag(), unv && unverifiedBadge(unv)),
@@ -460,15 +484,15 @@ function paintTiles() {
     tile("Hits", num(s.hits, 0), `of ${num(st.lab.session.recorded, 0)} seen`),
     tile("Crits", num(s.crits, 0), `crit rate ${percent(s.crit_rate)}`, { fields: ["crits", "crit_rate"] }),
     tile("Total damage", num(s.total, 0), `shield absorbed ${num(s.shield, 0)}`, { fields: ["total"] }),
-    tile("DPS", num(s.dps), s.duration == null ? "needs hits over 0.5 s" : `over ${num(s.duration)} s`, { fields: ["dps"], unv: u.dps_clock }),
+    tile("DPS", num(s.dps), s.duration == null ? "needs hits over 0.5 s" : `over ${num(s.duration)} s${s.scope === "target" ? " of this target's hits" : ""}`, { fields: ["dps"], unv: u.dps_clock }),
     tile("Avg hit", num(s.avg_hit), s.min_hit == null ? "" : `min ${num(s.min_hit)}`, { fields: ["avg_hit"] }),
     tile("Max hit", num(s.max_hit), "", { fields: ["max_hit"] }),
     tile("Avg crit / non-crit", `${num(s.avg_crit)} / ${num(s.avg_noncrit)}`, "", { fields: ["avg_crit", "avg_noncrit"], wide: true }),
     tile("Crit multiplier", s.crit_multiplier == null ? "-" : `${num(s.crit_multiplier, 2)}x`, "avg crit / avg non-crit", { fields: ["crit_multiplier"] }),
-    tile("Shots", num(s.shots, 0), `${num(s.pellets_fired, 0)} pellets fired`),
-    tile("Pellets / shot", num(s.pellets_per_shot, 0), "", { unv: u.pellets }),
-    tile("Per pellet", num(s.per_pellet), s.per_pellet == null && s.shots ? "all targets only" : "total / pellets fired", { fields: ["per_pellet"] }),
-    tile("Hits / shot", num(s.hits_per_shot, 2), s.hits_per_shot == null && s.shots ? "all targets only" : "misses lower it", { fields: ["hits_per_shot"] }),
+    tile("Shots", num(s.shots, 0), allOnly("shots", `${num(s.pellets_fired, 0)} pellets fired`)),
+    tile("Pellets / shot", num(s.pellets_per_shot, 0), allOnly("pellets_per_shot", ""), { unv: u.pellets }),
+    tile("Per pellet", num(s.per_pellet), allOnly("per_pellet", "total / pellets fired"), { fields: ["per_pellet"] }),
+    tile("Hits / shot", num(s.hits_per_shot, 2), allOnly("hits_per_shot", "misses lower it"), { fields: ["hits_per_shot"] }),
     tile("Kills", num(s.kills, 0), "killing blows", { fields: ["kills"] }));
 }
 

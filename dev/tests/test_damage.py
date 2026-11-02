@@ -54,9 +54,21 @@ def world(game):
     gun.Owner = pawn
     pc = Fake("PlayerController.Me", Pawn=pawn)
     enemy = Fake("Enemy.Bandit", Class=SimpleNamespace(Name="Bandit"))
+    gun.Class = SimpleNamespace(Name="WillowWeapon")
     game.pc = pc
     damage.install_hooks()
-    return SimpleNamespace(pc=pc, pawn=pawn, gun=gun, enemy=enemy, hooks=dict(damage.HOOKS))
+    post = {path: fn for path, kind, fn in damage.HOOKS if kind == damage.Type.POST}
+    pre = {path: fn for path, kind, fn in damage.HOOKS if kind == damage.Type.PRE}
+    return SimpleNamespace(pc=pc, pawn=pawn, gun=gun, enemy=enemy, hooks=post, pre=pre)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A controllable damage._now(): clock.t is the time; clock.tick(dt) moves it on."""
+    box = SimpleNamespace(t=1000.0)
+    box.tick = lambda dt=1.0: setattr(box, "t", box.t + dt)
+    monkeypatch.setattr(damage, "_now", lambda: box.t)
+    return box
 
 
 def summary_args(**fields: Any) -> SimpleNamespace:
@@ -72,10 +84,14 @@ def notify(world, amount=100.0, *, crit=False, kill=False, target=None, obj=None
     world.hooks[damage.PRIMARY](world.pc if obj is None else obj, args, None, None)
 
 
-def take(world, amount=100.0, *, crit=False, target=None, instigator=None, obj=None):
+def take(world, amount=100.0, *, crit=False, target=None, instigator=None, obj=None, causer=None, inside=None):
+    """One TakeDamage call as the game makes it: PRE hook, the call's body (`inside`, e.g. a nested notify), POST hook."""
     victim = world.enemy if target is None else target
     victim.bWasLastDamageACriticalHit = crit
-    args = SimpleNamespace(Damage=amount, InstigatedBy=world.pc if instigator is None else instigator)
+    args = SimpleNamespace(Damage=amount, InstigatedBy=world.pc if instigator is None else instigator, DamageCauser=causer)
+    world.pre[damage.FALLBACK](victim if obj is None else obj, args, None, None)
+    if inside is not None:
+        inside()
     world.hooks[damage.FALLBACK](victim if obj is None else obj, args, None, None)
 
 
@@ -110,8 +126,8 @@ def test_install_twice_registers_each_hook_once(game):
     damage.install_hooks()
     damage.install_hooks()
     assert len(game.hooks) == len(damage.HOOKS)
-    assert {path for path, _kind, _id in game.hooks} == {path for path, _fn in damage.HOOKS}
-    assert damage._installed == [path for path, _fn in damage.HOOKS]
+    assert {path for path, _kind, _id in game.hooks} == set(damage.HOOK_PATHS)
+    assert damage._installed == list(damage.HOOK_PATHS)
     damage.remove_hooks()
     assert game.hooks == {}
     assert damage._installed == []
@@ -134,10 +150,10 @@ def test_remove_ends_the_session(game, world):
 
 
 def test_hooks_return_without_touching_args_when_no_session(world):
-    for path, fn in damage.HOOKS:
+    for _path, _kind, fn in damage.HOOKS:
         fn(world.pc, Boom(), None, None)  # would raise inside the hook if it read the args
     assert damage._active_hits() == []
-    assert damage._fired == dict.fromkeys((p for p, _ in damage.HOOKS), 0)
+    assert damage._fired == dict.fromkeys(damage.HOOK_PATHS, 0)
     assert damage._errors == 0
 
 
@@ -160,10 +176,20 @@ def test_shot_by_someone_else_is_not_counted(world):
 
 def test_other_weapon_is_skipped_when_session_has_a_weapon(world):
     start(weapon="Weapon.Shotgun")
-    notify(world)
-    shoot(world)
+    take(world, causer=world.gun, inside=lambda: notify(world))  # the causer says: the pistol, not the shotgun
+    shoot(world)  # the pistol consuming ammo: exact, skipped
     assert damage._active_hits() == []
     assert damage._s["shots_seen"] == 0
+
+
+def test_a_held_weapon_hit_is_never_dropped_by_the_weapon_filter(world):
+    start(weapon="Weapon.Shotgun")
+    notify(world)  # no TakeDamage call around it: only the held weapon is known, which is approximate
+    hits = damage._active_hits()
+    assert len(hits) == 1
+    assert hits[0]["attribution"] == "held"
+    assert hits[0]["source"] == "WillowWeapon.Pistol"
+    assert damage.state()["session"]["approximate"] == 1
 
 
 def test_session_weapon_is_resolved_through_renamed_ids(world, monkeypatch):
@@ -189,7 +215,8 @@ def test_recorded_hit_has_the_payload_keys_and_is_published(world):
     assert len(body["hits"]) == 1
     recorded = body["hits"][0]
     assert set(recorded) == {
-        "seq", "t", "amount", "shield", "initial", "critical", "kill", "target", "target_id", "source", "via", "estimated",
+        "seq", "t", "amount", "shield", "initial", "critical", "kill", "target", "target_id", "source", "attribution",
+        "via", "estimated",
     }  # fmt: skip
     assert recorded["amount"] == 120.0
     assert recorded["critical"] is True
@@ -235,23 +262,79 @@ def test_ring_buffer_drops_oldest_and_counts_dropped(world):
 # --- Fallback hook ------------------------------------------------------------------------------------------------------
 
 
-def test_fallback_hit_is_estimated_and_used_only_without_notify(world):
+def test_fallback_hit_waits_out_the_window_then_is_estimated(world, clock):
+    seen: list[dict[str, Any]] = []
+    events.subscribe(events.DAMAGE, seen.append)
     start()
     take(world, 80.0, crit=True)
+    assert damage.state()["session"]["pending"] == 1
+    assert damage._active_hits() == [] and seen == []
+    clock.tick(damage.DEDUPE_WINDOW + 0.01)
     state = damage.state()
     assert state["session"]["via"] == "take_damage"
     assert state["summary"]["hits"] == 1
     assert state["summary"]["crits"] == 1
     assert "total" in state["summary"]["estimated"]
     assert hits_route()["hits"][0]["estimated"] is True
+    assert len(seen) == 1
 
+
+def test_a_primary_report_inside_the_call_is_the_only_record(world, clock):
+    seen: list[dict[str, Any]] = []
+    events.subscribe(events.DAMAGE, seen.append)
+    start()
+    take(world, 999.0, causer=world.gun, inside=lambda: notify(world, 40.0))
+    clock.tick(5)
+    hits = hits_route()["hits"]
+    assert [(h["via"], h["amount"], h["attribution"], h["source"]) for h in hits] == [("notify", 40.0, "weapon", "WillowWeapon.Pistol")]
+    assert len(seen) == 1
+
+
+def test_a_primary_report_after_the_call_discards_the_waiting_fallback(world, clock):
+    seen: list[dict[str, Any]] = []
+    events.subscribe(events.DAMAGE, seen.append)
+    start()
+    take(world, 999.0)
+    clock.tick(0.05)
+    notify(world, 40.0)  # the same hit, reported after TakeDamage returned
+    clock.tick(5)
+    take(world, 999.0)  # once the primary works, the fallback stands down for the session
+    clock.tick(5)
+    assert [h["via"] for h in damage._active_hits()] == ["notify"]
+    assert len(seen) == 1
+    assert damage.state()["summary"]["total"] == 40.0
+    assert "total" not in damage.state()["summary"]["estimated"]
+
+
+def test_fallback_hits_committed_before_the_primary_stay_visible(world, clock):
+    start()
+    take(world, 80.0)
+    clock.tick(1)
     notify(world, 40.0)
-    state = damage.state()
-    assert state["session"]["via"] == "notify"
-    assert state["summary"]["hits"] == 1
-    assert state["summary"]["total"] == 40.0
-    assert "total" not in state["summary"]["estimated"]
-    assert all(h["via"] == "notify" for h in hits_route()["hits"])
+    hits = damage._active_hits()
+    assert [h["via"] for h in hits] == ["take_damage", "notify"]
+    assert damage.state()["summary"]["hits"] == 2
+    assert "total" in damage.state()["summary"]["estimated"]  # one of them is an estimate
+
+
+def test_one_buffer_one_cap_for_both_hooks(world, clock):
+    start(cap=10)
+    for _ in range(6):
+        take(world, 1.0)
+        clock.tick(1)
+    for _ in range(6):
+        notify(world, 2.0)
+    session = damage.state()["session"]
+    assert (session["recorded"], session["kept"], session["dropped"]) == (12, 10, 2)
+
+
+def test_a_projectile_causer_credits_the_weapon_that_owns_it(world, clock):
+    start()
+    projectile = Fake("Projectile.Rocket", Class=SimpleNamespace(Name="WillowProjectile"), Owner=world.gun)
+    world.pawn.Weapon = Fake("WillowWeapon.Other", Class=SimpleNamespace(Name="WillowWeapon"))  # swapped since firing
+    take(world, causer=projectile, inside=lambda: notify(world, 10.0))
+    hit = damage._active_hits()[0]
+    assert (hit["source"], hit["attribution"]) == ("WillowWeapon.Pistol", "projectile")
 
 
 def test_fallback_ignores_hits_on_the_local_pawn_and_other_instigators(world):
@@ -283,11 +366,13 @@ def test_broken_args_do_not_raise_and_are_counted_once_logged(world, game):
     start()
     for _ in range(3):
         world.hooks[damage.PRIMARY](world.pc, Boom(), None, None)
-    world.hooks[damage.FALLBACK](world.enemy, Boom(), None, None)
+    world.pre[damage.FALLBACK](world.enemy, Boom(), None, None)
     state = damage.state()["hooks"]
     assert state["errors"] == 4
     assert "RuntimeError" in state["last_error"]
     assert state["fired"][damage.PRIMARY] == 3
+    world.hooks[damage.FALLBACK](world.enemy, Boom(), None, None)  # POST without its PRE: not the player's call
+    assert damage.state()["hooks"]["errors"] == 4
     lab_errors = [message for level, message in game.log if level == "error" and "damage lab" in message]
     assert len(lab_errors) == 2  # one per distinct message: the notify failure and the fallback failure
 
@@ -462,7 +547,7 @@ def test_state_route_target_filter(world):
     assert body["summary"]["total"] == 20.0
     assert set(body) == {"session", "summary", "hooks", "snapshots", "unverified"}
     assert set(body["unverified"]) == {"hooks", "shield", "dps_clock", "pellets"}
-    assert body["hooks"]["installed"] == [path for path, _fn in damage.HOOKS]
+    assert body["hooks"]["installed"] == list(damage.HOOK_PATHS)
 
 
 # --- Snapshots and compare ---------------------------------------------------------------------------------------------
@@ -671,9 +756,41 @@ def test_a_target_filter_drops_the_per_shot_ratios(monkeypatch):
     damage._s["shots"].append({"seq": 1, "t": 0.0, "weapon": None, "pellets": 1, "cost": 1.0, "fire_mode": 0})
     hit = {"seq": 2, "t": 0.1, "amount": 10.0, "shield": 0.0, "initial": 10.0, "critical": False, "kill": False,
            "target": "A", "target_id": "A", "source": None, "via": "notify", "estimated": False}
-    damage._s["hits"]["notify"].append(hit)
-    damage._s["seen"]["notify"] += 1
+    damage._s["hits"].append({**hit, "attribution": "weapon"})
+    damage._s["recorded"] += 1
     assert damage.state()["summary"]["hits_per_shot"] == 1.0
     filtered = damage.state("A")["summary"]
     assert filtered["hits"] == 1 and filtered["hits_per_shot"] is None and filtered["per_pellet"] is None
     damage._clear_all()
+
+
+def test_a_target_summary_spans_that_targets_hits_only(world, clock):
+    start()
+    other = Fake("Enemy.Rakk", Class=SimpleNamespace(Name="Rakk"))
+    shoot(world)
+    notify(world, 100.0)  # t = 0
+    clock.tick(4)
+    notify(world, 100.0, target=other)
+    clock.tick(1)
+    notify(world, 100.0)  # t = 5
+    shoot(world)
+    whole = damage.state()["summary"]
+    assert whole["scope"] == "session" and whole["shots"] == 2 and whole["session_wide"] == []
+    one = damage.state("Enemy.Bandit")["summary"]
+    assert one["scope"] == "target"
+    assert one["hits"] == 2 and one["duration"] == 5.0 and one["dps"] == 40.0
+    for name in damage.SESSION_WIDE:
+        assert one[name] is None
+    assert set(one["session_wide"]) == set(damage.SESSION_WIDE)
+
+
+def test_hits_tail_returns_the_newest_hits(world):
+    start()
+    for n in range(5):
+        shoot(world)  # shots take seq numbers too
+        notify(world, float(n))
+    assert [h["amount"] for h in hits_route(tail=2)["hits"]] == [3.0, 4.0]
+    assert [h["amount"] for h in hits_route(tail="2", after=0)["hits"]] == [3.0, 4.0]
+    assert hits_route(tail=2)["last"] == 10
+    with pytest.raises(ApiError):
+        hits_route(tail=5000)
