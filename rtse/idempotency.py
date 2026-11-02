@@ -84,15 +84,17 @@ class _Entry:
     future: Future[Any]
     created: float
     response: Response | None = None
+    finished: float | None = None  # the cache clock when the job finished; the TTL counts from here
 
 
 class IdempotencyCache:
     """Remembers recent Idempotency-Keys. Thread-safe.
 
     A key maps to its route, the sha256 of the raw body, the job's future and, once the job finished,
-    the response to replay. Finished entries expire `ttl` seconds after they were created; when there
-    are more than `max_entries`, the oldest finished entries (by insertion) go first. Pending jobs are
-    never evicted, because forgetting one would let a retry run it a second time.
+    the response to replay. Finished entries expire `ttl` seconds after they finished (a job that ran
+    longer than `ttl` is still remembered for `ttl` after it ends); when there are more than
+    `max_entries`, the oldest finished entries (by insertion) go first. Pending jobs are never evicted,
+    because forgetting one would let a retry run it a second time.
     """
 
     def __init__(
@@ -136,11 +138,12 @@ class IdempotencyCache:
             entry = self._entries.get(key)
             if entry is not None and entry.future is future:
                 entry.response = response
+                entry.finished = self._clock()
 
     def _evict_locked(self) -> None:
         now = self._clock()
         for key, entry in list(self._entries.items()):
-            if entry.future.done() and now - entry.created >= self.ttl:
+            if entry.future.done() and entry.finished is not None and now - entry.finished >= self.ttl:
                 del self._entries[key]
         excess = len(self._entries) - self.max_entries
         for key, entry in list(self._entries.items()):

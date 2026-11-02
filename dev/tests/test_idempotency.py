@@ -216,6 +216,50 @@ def test_expired_entries_are_forgotten_after_ttl():
     assert calls == [1] and calls2 == [1]
 
 
+def _running_future() -> Future[Any]:
+    """A future the game thread has started, so cancel() no longer works on it (the job is 'applying')."""
+    future: Future[Any] = Future()
+    future.set_running_or_notify_cancel()
+    return future
+
+
+def test_ttl_counts_from_when_the_job_finished_not_when_it_was_submitted():
+    """A job submitted at t=0 that finishes at t=110 (TTL 10) is replayed at t=111, not run a second time."""
+    now = [0.0]
+    cache = IdempotencyCache(ttl=10.0, clock=lambda: now[0])
+    futures: list[Future[Any]] = []
+
+    def submit() -> Future[Any]:
+        futures.append(_running_future())
+        return futures[-1]
+
+    assert run_job(submit, cache, KEY, ROUTE, BODY, 0, 0)[0] == 504  # still running: the call gives up waiting
+
+    now[0] = 110.0
+    futures[0].set_result({"n": 1})  # long after the TTL from submission, but just finished
+    now[0] = 111.0
+    assert run_job(never, cache, KEY, ROUTE, BODY, 0, 0) == (200, {"n": 1}, REPLAY)
+
+
+def test_retry_a_ttl_after_the_job_finished_runs_fresh():
+    now = [0.0]
+    cache = IdempotencyCache(ttl=10.0, clock=lambda: now[0])
+    futures: list[Future[Any]] = []
+
+    def submit() -> Future[Any]:
+        futures.append(_running_future())
+        return futures[-1]
+
+    run_job(submit, cache, KEY, ROUTE, BODY, 0, 0)
+    now[0] = 110.0
+    futures[0].set_result({"n": 1})
+
+    now[0] = 121.0  # finish + TTL + 1
+    job, calls = counting({"n": 2})
+    assert run_job(completed(job), cache, KEY, ROUTE, BODY, 1, 1) == (200, {"n": 2}, {})
+    assert calls == [1]
+
+
 def test_max_entries_evicts_the_oldest_finished_entry():
     cache = IdempotencyCache(max_entries=2)
     job, calls = counting({"ok": True})
