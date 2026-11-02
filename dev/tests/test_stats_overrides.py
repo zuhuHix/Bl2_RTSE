@@ -351,3 +351,101 @@ def test_a_failed_atomic_save_leaves_the_old_file_and_no_temp_file(overrides_fil
     assert "could not be saved" in result["warning"]
     assert overrides_file.read_bytes() == original
     assert not overrides_file.with_name("overrides.json.tmp").exists()
+
+
+# --- All or nothing (review round 3) ---------------------------------------------------------------
+
+
+class GunRefusing(SimpleNamespace):
+    """A gun whose writes to the attributes in `refuse` raise (or, in `ignore`, are silently dropped)."""
+
+    def __setattr__(self, name, value):
+        if name in self.__dict__.get("refuse", ()):
+            raise RuntimeError(f"the game refused {name}")
+        if name in self.__dict__.get("ignore", ()):
+            return
+        super().__setattr__(name, value)
+
+
+def refusing(gun: SimpleNamespace, *, refuse=(), ignore=()) -> SimpleNamespace:
+    copy = GunRefusing(**vars(gun))  # SimpleNamespace can't change class in place
+    copy.refuse, copy.ignore = set(refuse), set(ignore)
+    return copy
+
+
+def test_base_value_setter_raising_restores_both_values_and_the_map(overrides_file):
+    gun = refusing(make_gun(clip=10), refuse={"ClipSizeBaseValue"})
+    with pytest.raises(stats.StatWriteError) as info:
+        stats.set_override(gun, "ClipSize", 50)
+    assert info.value.restored is True and "nothing was changed" in str(info.value)
+    assert (gun.ClipSize, gun.ClipSizeBaseValue) == (10, 10)  # the live value was written, then put back
+    assert stats.override_scope(gun) is None and stats.overrides_for(gun) == {}
+    assert not overrides_file.exists()  # nothing was saved
+    assert stats.reapply(gun, reason="test") == 0  # no stale override left to push later
+
+
+def test_a_failed_write_on_a_legacy_gun_undoes_the_claim(overrides_file):
+    gun = make_gun(clip=10)
+    legacy_file(overrides_file, gun, {"FireInterval": 0.1})
+    stats.load()
+    gun = refusing(gun, refuse={"ClipSizeBaseValue"})
+    with pytest.raises(stats.StatWriteError):
+        stats.set_override(gun, "ClipSize", 50)
+    assert stats.override_scope(gun) == "legacy"  # still on the shared legacy entry: no own copy was kept
+    assert stats.overrides_for(gun) == {"FireInterval": 0.1}
+
+
+def test_a_failed_write_keeps_an_existing_own_entry_exactly(overrides_file):
+    gun = make_gun(clip=10, fire=0.5)
+    stats.set_override(gun, "ClipSize", 20)
+    gun = refusing(gun, refuse={"FireIntervalBaseValue"})
+    with pytest.raises(stats.StatWriteError):
+        stats.set_override(gun, "FireInterval", 0.1)
+    assert stats.overrides_for(gun) == {"ClipSize": 20}
+    assert (gun.FireInterval, gun.FireIntervalBaseValue) == (0.5, 0.5)
+    assert saved(overrides_file)["weapons"][stats.identity(gun)]["stats"] == {"ClipSize": 20}
+
+
+def test_a_value_that_does_not_stick_is_a_failure_too(overrides_file):
+    gun = refusing(make_gun(clip=10), ignore={"ClipSize"})  # the game silently keeps its own live value
+    with pytest.raises(stats.StatWriteError, match="reads 10"):
+        stats.set_override(gun, "ClipSize", 50)
+    assert gun.ClipSizeBaseValue == 10 and stats.overrides_for(gun) == {}
+
+
+def test_a_restore_that_fails_says_so(overrides_file):
+    gun = make_gun(clip=10)
+    gun = refusing(gun, refuse={"ClipSizeBaseValue"})
+    real = GunRefusing.__setattr__
+    writes = {"ClipSize": 0}
+
+    def live_only_once(self, name, value):
+        if name == "ClipSize":
+            writes["ClipSize"] += 1
+            if writes["ClipSize"] > 1:
+                raise RuntimeError("the game refused the restore")
+        real(self, name, value)
+
+    GunRefusing.__setattr__ = live_only_once
+    try:
+        with pytest.raises(stats.StatWriteError) as info:
+            stats.set_override(gun, "ClipSize", 50)
+    finally:
+        GunRefusing.__setattr__ = real
+    assert info.value.restored is False and "reload the save" in str(info.value)
+    assert stats.overrides_for(gun) == {}  # the map is put back even when the game can't be
+
+
+def test_float32_rounding_on_readback_is_not_a_failure(overrides_file):
+    import struct
+
+    class Float32Gun(SimpleNamespace):
+        def __setattr__(self, name, value):
+            if isinstance(value, float):
+                value = struct.unpack("f", struct.pack("f", value))[0]
+            super().__setattr__(name, value)
+
+    gun = Float32Gun(**vars(make_gun(fire=0.5)))
+    result = stats.set_override(gun, "FireInterval", 0.069)
+    assert result["after"]["value"] != 0.069 and abs(result["after"]["value"] - 0.069) < 1e-7
+    assert stats.overrides_for(gun) == {"FireInterval": 0.069}

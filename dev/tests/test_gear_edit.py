@@ -425,3 +425,25 @@ def test_set_stat_and_set_level_report_a_save_warning_in_warnings(game, monkeypa
     monkeypatch.setattr(stats, "_save", real_save)
     assert api.set_stat({"id": "x", "stat": "ClipSize", "value": 25})["warnings"] == []
     assert api.set_level({"id": "x", "level": 6})["warnings"] == []
+
+
+def test_set_stat_maps_a_failed_write_to_409_or_500(game, monkeypatch):
+    game.pc = gear_pc()
+    item = make_gun(stage=5)
+    use(monkeypatch, item)
+
+    def refused(*_args, **_kwargs):
+        raise stats.StatWriteError("the game did not take it; nothing was changed", restored=True)
+
+    monkeypatch.setattr(stats, "set_override", refused)
+    with pytest.raises(ApiError) as info:
+        api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+    assert info.value.status == 409
+
+    def half(*_args, **_kwargs):
+        raise stats.StatWriteError("restoring also failed", restored=False)
+
+    monkeypatch.setattr(stats, "set_override", half)
+    with pytest.raises(ApiError) as info:
+        api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+    assert info.value.status == 500

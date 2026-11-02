@@ -766,6 +766,8 @@ def set_stat(params: Params) -> dict[str, Any]:
     try:
         value = None if raw is None else float(raw)
         applied = stats.set_override(item, stat, value)
+    except stats.StatWriteError as ex:
+        raise ApiError(409 if ex.restored else 500, str(ex)) from None
     except (TypeError, ValueError) as ex:
         raise ApiError(400, str(ex)) from None
     warnings = _warnings(applied.pop("warning", None))
