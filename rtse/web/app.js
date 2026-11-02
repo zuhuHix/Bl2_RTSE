@@ -920,7 +920,7 @@ function renderCharacter(root) {
 async function applyLevel(level) {
   if (!Number.isInteger(level)) return toast("Enter a whole number", true);
   const result = await guarded(() => api("POST", "/api/item/set_level", { id: state.selected, mode: state.mode, level }));
-  if (result) { setDetail(result); toast(`Level ${result.level}`); }
+  if (result) { setDetail(result); toast(`Level ${result.level}`); if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true)); }
 }
 
 async function applyStat(stat, value) {
@@ -929,6 +929,7 @@ async function applyStat(stat, value) {
   setDetail(result);
   const now = result.stats.find((s) => s.name === stat.name);
   toast(value === null ? `${stat.name} reset` : `${stat.name} ${formatNumber(now && now.value)}`);
+  if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true));
 }
 
 async function applyPart(slotName, option) {
@@ -937,6 +938,7 @@ async function applyPart(slotName, option) {
   closePicker();
   setDetail(result);
   toast(option ? `${slotLabel(slotName)}: ${parsePart(option).title}` : `${slotLabel(slotName)} removed`);
+  if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true));
 }
 
 // ---------- part picker ----------
