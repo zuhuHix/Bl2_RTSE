@@ -34,7 +34,7 @@ GET_PATHS = [
     "/api/debug/world",
     "/api/inspect",
     "/api/item",
-    "/api/item/check_part",
+    "/api/item/save_check",
     "/api/items",
     "/api/lab",
     "/api/lab/compare",

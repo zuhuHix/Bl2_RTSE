@@ -2,6 +2,10 @@
 
 Every edit is written, the item is rebuilt, the game is asked whether it took the change, and the old fields
 are put back if it did not.
+
+Game calls (all UNVERIFIED in game): automatic paths (item detail, the set_* routes, the debug dump) call only the
+pure query CanBeSaved() and only on weapons. The serial save check (GET /api/item/save_check) runs only when asked,
+never on equipped gear, and works on a copy of the definition; it still puts the live item back if it changed it.
 """
 
 from __future__ import annotations
@@ -20,20 +24,18 @@ from . import journal, limits, stats
 from .gear_inventory import EQUIPPED, _find_item, _hidden_bones, _item_id, _note_id_change
 from .gear_parts import (
     ITEM_SLOTS,
-    STATUS_UNSUPPORTED,
     WEAPON_SLOTS,
+    PartRef,
     Slot,
     _is_weapon,
-    _legal_part_lists,
     _mode,
     _part_ref,
-    _ref,
     _ref_dict,
     _slots,
     balance_chain_view,
     dlc_dict,
     item_dlc,
-    part_status,
+    parts_cache_info,
 )
 from .routing import ApiError, Params, Route
 
@@ -167,9 +169,11 @@ def _level_range_message(gear: dict[str, Any]) -> str:
 
 
 
-# --- Save checks and part checks (UNVERIFIED) ----------------------------------------------------
+# --- Quick check (automatic) and the explicit save check (UNVERIFIED) ---------------------------
 # Every game call in this section is named from class data; what it does at runtime has never been run in game.
-# Results carry "verified": False. The checks only read: nothing on the live item is written by them.
+# Automatic paths (item detail, set_part/set_level, the debug dump) call only the pure query CanBeSaved(), and only
+# on weapons. The serial save check calls serial functions on a COPY of the definition. It runs only when someone asks
+# for it (GET /api/item/save_check), never on equipped gear, and its results carry "verified": False.
 
 UNVERIFIED_NOTE = "Function names exist in the game's class data; what they do at runtime is unverified."
 VALIDATION_FUNCTIONS = (
@@ -177,6 +181,14 @@ VALIDATION_FUNCTIONS = (
     "UnpackSerialNumber", "IsDLCRequirementMet", "GetDLCRestrictedMessage",
 )  # fmt: skip
 DEBUG_VALIDATION_FILE = Path(__file__).parent / "debug_validation.json"
+EQUIPPED_CHECK_MESSAGE = (
+    "The experimental save check is not run on equipped gear: unequip it first "
+    "(it calls unverified game functions on the item)"
+)
+NOT_LOADED_REASON = "the part is not loaded right now - try rescanning parts"
+DECODER_NATIVE = "UnpackSerialNumber (native)"
+DECODER_OFFLINE = "offline (rtse.item_serial)"
+CHANGED_LIVE_SUMMARY = "The check changed the live item, so RTSE put it back. Please send the validation dump (unverified)"
 
 # Per game function name (and "struct copy"): how often RTSE used it, whether it exists, and what came back.
 _probe_log: dict[str, dict[str, Any]] = {}
@@ -233,13 +245,6 @@ def _unwrap(value: Any) -> Any:
     return value
 
 
-def _unpack_result(value: Any) -> tuple[Any, Any]:
-    """(ok, unpacked definition) from an UnpackSerialNumber result. Without out values there is no definition."""
-    if isinstance(value, tuple):
-        return (value[0] if value else None), (value[1] if len(value) > 1 else None)
-    return bool(value), None
-
-
 def _plain(value: Any) -> Any:
     """A JSON-friendly stand-in: object paths for objects, scalars as they are, anything else as short text."""
     if isinstance(value, unreal.UObject):
@@ -277,54 +282,63 @@ def _note_struct_copy(method: str, error: str | None = None) -> None:
     entry["last_error"] = error
 
 
-def _copy_def(item: unreal.UObject, changes: dict[str, Any]) -> Any:
-    """A COPY of the item's DefinitionData with `changes` applied. The live item is never changed.
+def _independent_def(item: unreal.UObject, changes: dict[str, Any]) -> Any:
+    """A definition the check may change freely: never the live DefinitionData, and never sharing its storage.
 
-    UNVERIFIED: unrealsdk.make_struct builds a fresh struct from the live fields, so nothing is ever written to the
-    live item. Only when make_struct is missing or fails is copy.copy tried; if a write to that "copy" shows up on
-    the live struct (it shares storage), the originals are put back at once and the check is abandoned. The method
-    used is recorded in _probe_log["struct copy"].
+    unrealsdk.make_struct builds a fresh struct from the live fields and is preferred. Only when it is missing or raises
+    is copy.copy used, and then the copy must prove it is independent: a sentinel written to its UniqueId must not show
+    on the live struct. A copy that shares storage is undone at once and RuntimeError is raised. `changes` are applied
+    to the copy only. UNVERIFIED: neither make_struct nor copy.copy has been run in game. The method used is recorded
+    in _probe_log["struct copy"].
     """
     data = item.DefinitionData
+    make_error: str | None = "no make_struct"
     make = getattr(unrealsdk, "make_struct", None)
-    make_error: str | None = None
     if make is not None:
         values = _field_values(data, _def_fields(item))
         values.update(changes)
-        struct_name = "WeaponDefinitionData" if _is_weapon(item) else "ItemDefinitionData"
         try:
-            made = make(struct_name, **values)
+            made = make("WeaponDefinitionData" if _is_weapon(item) else "ItemDefinitionData", **values)
         except Exception as ex:  # noqa: BLE001
             make_error = f"make_struct raised {ex!r}"
         else:
-            _note_struct_copy("make_struct")
-            return made
+            if made is not data:
+                _note_struct_copy("make_struct")
+                return made
+            make_error = "make_struct returned the live struct"
+
     try:
         copied = copy.copy(data)
     except Exception as ex:  # noqa: BLE001
-        message = f"cannot copy the definition ({make_error or 'no make_struct'}; copy.copy raised {ex!r})"
+        message = f"cannot copy the definition ({make_error}; copy.copy raised {ex!r})"
         _note_struct_copy("none", message)
         raise RuntimeError(message) from None
     if copied is data:
-        message = f"cannot copy the definition ({make_error or 'no make_struct'}; copy.copy returned the live struct)"
+        message = f"cannot copy the definition ({make_error}; copy.copy returned the live struct)"
         _note_struct_copy("none", message)
         raise RuntimeError(message)
+
+    # Proof of independence: a write to the copy's UniqueId must not show on the live struct
+    original_uid = data.UniqueId
+    copied.UniqueId = (original_uid + 1) & 0x7FFFFFFF
+    if not _same_value(data.UniqueId, original_uid):
+        data.UniqueId = original_uid
+        message = f"cannot copy the definition ({make_error}; copy.copy shared the live struct; live UniqueId put back)"
+        _note_struct_copy("none", message)
+        raise RuntimeError(message)
+    copied.UniqueId = original_uid
+
     originals = {field: getattr(data, field) for field in changes}
     for field, value in changes.items():
         setattr(copied, field, value)
-    if all(_same_value(getattr(data, field), originals[field]) for field in changes):
-        _note_struct_copy("copy.copy", make_error)
-        return copied
-    for field, value in originals.items():
-        setattr(data, field, value)  # the "copy" shared the live struct: put the originals back
-    message = "cannot copy the definition (copy.copy shared the live struct; originals restored)"
-    _note_struct_copy("none", message)
-    raise RuntimeError(message)
-
-
-def _hypothetical_def(item: unreal.UObject, field: str, part: unreal.UObject | None) -> Any:
-    """The definition the item would have with `field` set to `part` (None removes it). A copy; the item is untouched."""
-    return _copy_def(item, {field: part})
+    if any(not _same_value(getattr(data, field), originals[field]) for field in changes):
+        for field, value in originals.items():
+            setattr(data, field, value)  # the "copy" shared the live struct: the originals go back
+        message = f"cannot copy the definition ({make_error}; copy.copy shared the live struct; originals restored)"
+        _note_struct_copy("none", message)
+        raise RuntimeError(message)
+    _note_struct_copy("copy.copy", None if make is None else make_error)
+    return copied
 
 
 def _compare_defs(expected: Any, got: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -367,16 +381,20 @@ def _unchecked(reason: str) -> dict[str, Any]:
         "verified": False,
         "checks": [_skipped("serial round-trip", reason)],
         "lost": [],
+        "decoder": None,
     }
 
 
-def _make_serial(item: unreal.UObject, definition: Any) -> tuple[Any, dict[str, Any] | None]:
-    """A serial for the live item (definition None) or for a definition. Returns (serial, None) or (None, a skip)."""
+def _decode_offline(serial: Any, item: unreal.UObject) -> Any | None:
+    """A definition decoded without the game, or None. Not written yet: every decode goes through UnpackSerialNumber."""
+    # TODO(stream B, PR #10): once rtse/item_serial.py (offline serial decoder) is merged, decode here instead of calling UnpackSerialNumber, and return a definition-like object with the same fields.
+    return None
+
+
+def _pack(item: unreal.UObject, target: Any) -> tuple[Any, dict[str, Any] | None]:
+    """The serial of a definition (never the live one). Returns (serial, None) or (None, a skipped check)."""
     name = "serial round-trip"
-    if definition is None:
-        called, raw = _probe(item, "CreateSerialNumber")
-    else:
-        called, raw = _probe(item, "PackSerialNumber", definition)
+    called, raw = _probe(item, "PackSerialNumber", target)
     if not called:
         return None, _skipped(name, "not available on this object")
     if isinstance(raw, Exception):
@@ -387,58 +405,44 @@ def _make_serial(item: unreal.UObject, definition: Any) -> tuple[Any, dict[str, 
     return serial, None
 
 
-def _round_trip(item: unreal.UObject, target: Any, serial: Any) -> tuple[dict[str, Any], Any, list[dict[str, Any]]]:
-    """Unpacks the serial and compares the definition it gives back with `target`.
+def _round_trip(item: unreal.UObject, target: Any, serial: Any) -> tuple[dict[str, Any], Any, list[dict[str, Any]], str | None]:
+    """Decodes the serial and compares the definition it gives back with `target`.
 
-    Returns (the check, the unpacked definition or None, the fields lost). An unpack that needs an out parameter
-    (TypeError) is retried with a copy to unpack into, never the live struct.
+    Offline when a decoder exists (none yet), else UnpackSerialNumber into a seed that is proven independent of the live
+    struct. Returns (the check, the decoded definition or None, the fields lost, the decoder used or None).
     """
     name = "serial round-trip"
-    called, value = _probe(item, "UnpackSerialNumber", serial)
-    if called and isinstance(value, TypeError):
+    decoded = _decode_offline(serial, item)
+    if decoded is not None:
+        ok, unpacked, decoder = True, decoded, DECODER_OFFLINE
+    else:
         try:
-            seed = _copy_def(item, {})
+            seed = _independent_def(item, {})
         except Exception as ex:  # noqa: BLE001
-            return _skipped(name, f"could not make a copy to unpack into ({ex})"), None, []
+            return _skipped(name, f"could not make a copy to unpack into ({ex})"), None, [], None
         called, value = _probe(item, "UnpackSerialNumber", serial, seed)
-    if not called:
-        return _skipped(name, "not available on this object"), None, []
-    if isinstance(value, Exception):
-        return _skipped(name, f"the game raised {value!r}"), None, []
-    ok, unpacked = _unpack_result(value)
+        if not called:
+            return _skipped(name, "not available on this object"), None, [], None
+        decoder = DECODER_NATIVE
+        if isinstance(value, Exception):
+            return _skipped(name, f"the game raised {value!r}"), None, [], decoder
+        if isinstance(value, tuple):
+            ok = value[0] if value else None
+            unpacked = value[1] if len(value) > 1 else None
+        else:
+            # A bare result carries no decoded definition. The seed is a copy of the item as it is now, so comparing
+            # against it would report a candidate part as "lost" when the game simply didn't fill it in.
+            ok, unpacked = bool(value), None
     if ok is False:
-        return {"name": name, "ok": False, "detail": "UnpackSerialNumber returned False"}, None, []
+        return {"name": name, "ok": False, "detail": "UnpackSerialNumber returned False"}, None, [], decoder
     if unpacked is None:
-        return _skipped(name, "the game gave no definition back to compare"), None, []
+        return _skipped(name, "the game gave no definition back to compare"), None, [], decoder
     lost = _compare_defs(target, unpacked, _def_fields(item))
     detail = "nothing lost" if not lost else "lost " + ", ".join(d["field"] for d in lost)
-    return {"name": name, "ok": not lost, "detail": detail}, unpacked, lost
+    return {"name": name, "ok": not lost, "detail": detail}, unpacked, lost, decoder
 
 
-def _save_check(item: unreal.UObject, definition: Any) -> dict[str, Any]:
-    target = item.DefinitionData if definition is None else definition
-    checks: list[dict[str, Any]] = []
-    serial, skipped = _make_serial(item, definition)
-    unpacked: Any = None
-    lost: list[dict[str, Any]] = []
-    if serial is None:
-        checks.append(skipped)
-        checks.append(_skipped("SerialNumberMatchesDef", "no serial number to test"))
-        checks.append(_skipped("CheckDefMatch", "no serial number to test"))
-    else:
-        round_trip, unpacked, lost = _round_trip(item, target, serial)
-        checks.append(round_trip)
-        called, value = _probe(item, "SerialNumberMatchesDef", serial, target, False, False)
-        checks.append(_check("SerialNumberMatchesDef", called, value))
-        if unpacked is None:
-            checks.append(_skipped("CheckDefMatch", "nothing unpacked to compare"))
-        else:
-            called, value = _probe(item, "CheckDefMatch", unpacked, target, False, False)
-            checks.append(_check("CheckDefMatch", called, value))
-    if definition is None and _is_weapon(item):  # CanBeSaved is about the live weapon only
-        called, value = _probe(item, "CanBeSaved")
-        checks.append(_check("CanBeSaved", called, value))
-
+def _verdict(checks: list[dict[str, Any]], lost: list[dict[str, Any]]) -> tuple[bool | None, str]:
     failed = [c for c in checks if c["ok"] is False]
     if failed:
         survives: bool | None = False
@@ -461,87 +465,141 @@ def _save_check(item: unreal.UObject, definition: Any) -> dict[str, Any]:
     else:
         reason = next((c["detail"] for c in checks if c["ok"] is None), "no checks ran")
         summary = f"Could not check: {reason}"
+    return survives, summary
+
+
+def _serial_check(item: unreal.UObject, target: Any, *, whole_item: bool) -> dict[str, Any]:
+    """The serial checks on one definition (a copy). Only PackSerialNumber, UnpackSerialNumber and the pure checks run."""
+    checks: list[dict[str, Any]] = []
+    lost: list[dict[str, Any]] = []
+    decoder: str | None = None
+    serial, skipped = _pack(item, target)
+    unpacked: Any = None
+    if serial is None:
+        checks.append(skipped)
+        checks.append(_skipped("SerialNumberMatchesDef", "no serial number to test"))
+        checks.append(_skipped("CheckDefMatch", "no serial number to test"))
+    else:
+        round_trip, unpacked, lost, decoder = _round_trip(item, target, serial)
+        checks.append(round_trip)
+        called, value = _probe(item, "SerialNumberMatchesDef", serial, target, False, False)
+        checks.append(_check("SerialNumberMatchesDef", called, value))
+        if unpacked is None:
+            checks.append(_skipped("CheckDefMatch", "nothing unpacked to compare"))
+        else:
+            called, value = _probe(item, "CheckDefMatch", unpacked, target, False, False)
+            checks.append(_check("CheckDefMatch", called, value))
+    if whole_item and _is_weapon(item):  # CanBeSaved is about the item as it is, so only for the whole item
+        called, value = _probe(item, "CanBeSaved")
+        checks.append(_check("CanBeSaved", called, value))
+
+    survives, summary = _verdict(checks, lost)
     return {
         "survives": survives,
         "summary": summary,
         "verified": False,
         "checks": checks,
         "lost": lost,
+        "decoder": decoder,
     }
 
 
-def save_check(item: unreal.UObject, definition: Any = None) -> dict[str, Any]:
-    """Would the game keep this definition through a serial round-trip?
-
-    definition None checks the live item (after an apply); a definition checks that one (before an apply).
-    UNVERIFIED: built on game function names from class data. Never raises: a failure comes back as survives None.
-    """
+def _run_experimental(item: unreal.UObject | None, changes: dict[str, Any], *, whole_item: bool) -> dict[str, Any]:
+    """The serial save check of the item with `changes` applied to a copy. Never raises: a failure is survives None."""
     try:
-        return _save_check(item, definition)
+        target = _independent_def(item, changes)
+        return _serial_check(item, target, whole_item=whole_item)
     except Exception as ex:  # noqa: BLE001
         logging.error(f"RTSE: save check failed: {ex!r}")
         return _unchecked(f"the check itself failed ({ex!r})")
 
 
-def _status_of(item: unreal.UObject, slot: Slot, ref: Any) -> dict[str, Any]:
-    """The status of an option: from the slot if it was computed, else worked out now. Never raises."""
-    known = (slot.statuses or {}).get(ref.id)
-    if known is not None:
-        return known
+def _changed_since(item: unreal.UObject, snapshot: dict[str, Any]) -> list[str]:
+    """The snapshot fields that differ from now. A snapshot that cannot be read now counts as every field changed."""
     try:
-        legal = [_ref(p) for p in _legal_part_lists(item).get(slot.name, [])]
-        return part_status(
-            ref,
-            slot=slot.name,
-            weapon=_is_weapon(item),
-            legal_ids={r.id for r in legal},
-            own_classes={r.class_name for r in legal},
-        )
+        now = _snapshot(item)
     except Exception:  # noqa: BLE001
-        return {"status": None, "status_reason": None, "dlc": None}
+        return sorted(snapshot)
+    return [field for field in snapshot if field not in now or not _same_value(snapshot[field], now[field])]
 
 
-def check_part(params: Params) -> dict[str, Any]:
-    """Would this part survive a serial round-trip? Read-only: the item is not changed. UNVERIFIED (see save_check).
-
-    slot and part are as set_part takes them; an empty part checks removing the slot's part.
-    """
-    item, _location = _find_item(params)
-    mode = _mode(params)
-    slot = next((s for s in _slots(item, mode) if s.name == params.get("slot")), None)
-    if slot is None:
-        raise ApiError(400, "unknown slot for this item")
-
-    part_id = params.get("part") or None
-    ref = None
-    if part_id is not None:
-        ref = next((r for r in slot.options if r.id == part_id), None)
-        if ref is None:
-            raise ApiError(400, "that part is not available in this mode")
-    result: dict[str, Any] = {"slot": slot.name, "part": part_id, "status": None, "status_reason": None, "dlc": None}
-
-    part: unreal.UObject | None = None
-    if ref is not None:
-        info = _status_of(item, slot, ref)
-        result.update(status=info["status"], status_reason=info["status_reason"], dlc=info["dlc"])
-        try:
-            part = find_object(ref.class_name, ref.id)
-        except Exception:  # noqa: BLE001
-            part = None
-        if part is None:
-            return {
-                **result,
-                "status": STATUS_UNSUPPORTED,
-                "status_reason": "Not loaded right now - try rescanning parts",
-                "dlc": None,
-                "save_check": _unchecked("the part is not loaded right now - try rescanning parts"),
-            }
-
+def _guard_live(item: unreal.UObject, snapshot: dict[str, Any], save: dict[str, Any]) -> dict[str, Any]:
+    """Checks the live item after the check. If anything on it moved, puts it back and says so (restored True)."""
+    changed = _changed_since(item, snapshot)
+    if not changed:
+        return {**save, "restored": False}
+    logging.error(f"RTSE: the save check changed {', '.join(changed)} on the live item; putting it back")
     try:
-        hypothetical = _hypothetical_def(item, slot.field, part)
+        _restore(item, snapshot, equipped=False)
     except Exception as ex:  # noqa: BLE001
-        return {**result, "save_check": _unchecked(f"could not make a copy to test ({ex})")}
-    return {**result, "save_check": save_check(item, hypothetical)}
+        logging.error(f"RTSE: putting the item back after the save check also failed: {ex!r}")
+    return {
+        "survives": None,
+        "summary": CHANGED_LIVE_SUMMARY,
+        "verified": False,
+        "checks": save["checks"],
+        "lost": [],
+        "decoder": save.get("decoder"),
+        "restored": True,
+    }
+
+
+def _quick_checks(item: unreal.UObject) -> list[dict[str, Any]]:
+    """The automatic check shown after an edit: CanBeSaved() for weapons only, a pure query. [] for other items."""
+    if not _is_weapon(item):
+        return []
+    called, value = _probe(item, "CanBeSaved")
+    return [_check("CanBeSaved", called, value)]
+
+
+def _loaded_part(ref: PartRef) -> unreal.UObject | None:
+    try:
+        return find_object(ref.class_name, ref.id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_check_route(params: Params) -> dict[str, Any]:
+    """GET /api/item/save_check: the EXPERIMENTAL serial check of the item as it is, or with one slot's part swapped.
+
+    slot and part are as set_part takes them; an empty part checks removing the slot's part. Equipped gear is refused
+    (409). Only the 400, 404 and 409 answers raise; the probing never does. UNVERIFIED throughout.
+    """
+    item, location = _find_item(params)
+    if location == EQUIPPED:
+        raise ApiError(409, EQUIPPED_CHECK_MESSAGE)
+    mode = _mode(params)
+    slot_name = params.get("slot") or None
+    part_id = params.get("part") or None
+
+    slot: Slot | None = None
+    part: unreal.UObject | None = None
+    changes: dict[str, Any] = {}
+    if slot_name is not None:
+        slot = next((s for s in _slots(item, mode) if s.name == slot_name), None)
+        if slot is None:
+            raise ApiError(400, "unknown slot for this item")
+        if part_id is not None:
+            ref = next((r for r in slot.options if r.id == part_id), None)
+            if ref is None:
+                raise ApiError(400, "that part is not available in this mode")
+            part = _loaded_part(ref)
+        changes = {slot.field: part}
+    result: dict[str, Any] = {
+        "slot": slot.name if slot is not None else None,
+        "part": part_id if slot is not None else None,
+        "experimental": True,
+    }
+    if slot is not None and part_id is not None and part is None:
+        return {**result, "save_check": _unchecked(NOT_LOADED_REASON)}
+
+    # The snapshot comes before any game call of the check, so anything the check changes can be put back
+    try:
+        snapshot = _snapshot(item)
+    except Exception as ex:  # noqa: BLE001
+        return {**result, "save_check": _unchecked(f"could not read the item before the check ({ex!r})")}
+    save = _run_experimental(item, changes, whole_item=slot is None)
+    return {**result, "save_check": _guard_live(item, snapshot, save)}
 
 
 def _item_dlc_view(item: unreal.UObject) -> dict[str, Any] | None:
@@ -570,9 +628,10 @@ def _result_view(called: bool, value: Any) -> dict[str, Any]:
 
 
 def debug_validation(params: Params) -> dict[str, Any]:
-    """Writes what this item's game calls, DLC data and part statuses look like to DEBUG_VALIDATION_FILE.
+    """Writes what this item's game calls, DLC data, part caches and part statuses look like to DEBUG_VALIDATION_FILE.
 
-    For a person to read after trying it in game. UNVERIFIED: see UNVERIFIED_NOTE.
+    For a person to read after trying it in game. Runs no serial function (the save check is a separate, explicit
+    route). UNVERIFIED: see UNVERIFIED_NOTE.
     """
     item, location = _find_item(params)
     mode = _mode(params)
@@ -597,7 +656,8 @@ def debug_validation(params: Params) -> dict[str, Any]:
         },
         "mode": mode,
         "functions": functions,
-        "save_check": save_check(item),
+        "quick_checks": _quick_checks(item),
+        "parts_cache": _parts_cache_view(item),
         "item_dlc": _item_dlc_view(item),
         "balance_chain": _balance_chain_view(item),
         "IsDLCRequirementMet": _result_view(*_probe(item, "IsDLCRequirementMet", pc)),
@@ -619,6 +679,14 @@ def item_detail(params: Params) -> dict[str, Any]:
 
 
 
+def _parts_cache_view(item: unreal.UObject) -> dict[str, Any]:
+    """The part cache for this item's kind (weapon or item): scanned, age in seconds, and the map it was built on."""
+    try:
+        return parts_cache_info(weapon=_is_weapon(item))
+    except Exception:  # noqa: BLE001
+        return {"scanned": False, "age_s": None, "map": None}
+
+
 def _detail(item: unreal.UObject, location: str, mode: str) -> dict[str, Any]:
     data = item.DefinitionData
     gear = _gear_limits()
@@ -637,6 +705,7 @@ def _detail(item: unreal.UObject, location: str, mode: str) -> dict[str, Any]:
         "stats": stats.read_stats(item),
         "override_scope": stats.override_scope(item),
         "dlc": _item_dlc_view(item),
+        "parts_cache": _parts_cache_view(item),
         "slots": [_slot_view(data, slot) for slot in _slots(item, mode)],
     }
 
@@ -708,7 +777,7 @@ def set_part(params: Params) -> dict[str, Any]:
             "after_rebuild": after_init and after_init["name"],
         },
     }
-    applied["kept"] = _kept_view(item, before_view, edited=slot.name)
+    applied["kept"] = _kept_view(item, before_view, edited=slot.name, location=location)
     logging.info(f"RTSE: set_part {applied}")
     journal.record("gear.part", target=params["id"], before=before, after=after_init)
     _note_id_change(params["id"], item)
@@ -767,7 +836,7 @@ def set_level(params: Params) -> dict[str, Any]:
         "before": before,
         "after": {"exp_level": item.ExpLevel, "grade": data.ManufacturerGradeIndex, "game_stage": data.GameStage},
     }
-    applied["kept"] = _kept_view(item, before_view, edited=None)
+    applied["kept"] = _kept_view(item, before_view, edited=None, location=location)
     logging.info(f"RTSE: set_level {applied}")
     journal.record("gear.level", target=params["id"], before=before, after=applied["after"])
     _note_id_change(params["id"], item)
@@ -831,10 +900,14 @@ def _capture_before(item: unreal.UObject) -> dict[str, Any]:
         return {"error": f"could not read the item before the edit ({ex!r})"}
 
 
-def _kept_view(item: unreal.UObject, before: dict[str, Any], *, edited: str | None) -> dict[str, Any]:
-    """What the game kept of an edit: the name, every slot's part, the stats that changed and a save check.
+def _kept_view(
+    item: unreal.UObject, before: dict[str, Any], *, edited: str | None, location: str,
+) -> dict[str, Any]:
+    """What the game kept of an edit: the name, every slot's part, the stats that changed and the quick checks.
 
-    Never raises: a failure comes back as {"error": ...} and the edit itself is unaffected.
+    The serial save check is not run here (it is the explicit save_check route, refused on equipped gear), so
+    save_check_available says whether the button can be used for this item. Never raises: a failure comes back as
+    {"error": ...} and the edit itself is unaffected.
     """
     if "error" in before:
         return {"error": before["error"]}
@@ -860,7 +933,8 @@ def _kept_view(item: unreal.UObject, before: dict[str, Any], *, edited: str | No
             "name": {"before": before["name"], "after": item.GetHumanReadableName()},
             "parts": parts,
             "stats": changed,
-            "save_check": save_check(item),
+            "quick_checks": _quick_checks(item),
+            "save_check_available": location != EQUIPPED,
         }
     except Exception as ex:  # noqa: BLE001
         logging.error(f"RTSE: could not describe what the game kept: {ex!r}")
@@ -878,7 +952,7 @@ ROUTE_ERROR = ApiError
 
 GET_ROUTES: dict[str, Route] = {
     "/api/item": item_detail,
-    "/api/item/check_part": check_part,
+    "/api/item/save_check": save_check_route,
     "/api/debug/validation": debug_validation,
 }
 POST_ROUTES: dict[str, Route] = {

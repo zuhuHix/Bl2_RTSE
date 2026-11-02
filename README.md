@@ -42,13 +42,14 @@ Click any weapon, shield, grenade mod, relic or class mod in the list.
 ![The stats bench with damage, ammo and accuracy numbers](docs/screenshots/04-stats-bench.png)
 
 - **Check before apply.** Every part in the picker has a status chip, and you can filter by it:
-  - **Could drop naturally**: the part is in this item's own balance list for that slot.
+  - **Could drop naturally**: the part is in this item's own balance list for that slot, including lists it inherits from a parent balance, and it isn't weighted 0 or limited to another manufacturer.
   - **Needs DLC**: only DLC gear uses it. The chip's tooltip names the DLC and says whether the game thinks you own it.
-  - **Custom**: it comes from another gun's or item's balance.
+  - **Custom**: it comes from another gun's or item's balance, or it's in this item's list but can't drop on it (weight 0, or only for other manufacturers).
   - **Unsupported**: the wrong kind of part for this item, e.g. a grenade part on a shield.
 
-  Click a part and the preview's **CHECK BEFORE APPLY** box asks the game to encode the item with that part the way a save does, decode it again, and compare. If the part doesn't come back, a save and reload would probably lose it. It's only advice: you can still bolt the part on.
-- **What the game kept.** After you swap a part or change the level, a panel above the gun shows what the game actually kept: the name, every part that changed, the stats that moved, and the same save check run on the real item. Close it with **x**.
+  Click a part and the preview's **CHECK BEFORE APPLY** box shows its status and why. Nothing is asked of the game until you press **Run save check (experimental)**. That asks the game to encode a copy of the item with that part the way a save does, then decode it again and compare. If the part doesn't come back, a save and reload would probably lose it. The check calls game functions nobody has tried yet, so it never runs on equipped gear. RTSE also compares the item before and after the check and puts it back if anything moved. It's only advice: you can still bolt the part on.
+- **What the game kept.** After you swap a part or change the level, a panel above the gun shows what the game actually kept: the name, every part that changed, the stats that moved, and the game's own `CanBeSaved()` answer. On backpack gear it also has a **Run save check (experimental)** button for the item as it is now. Close it with **x**.
+- The picker says how long ago the part list was scanned. RTSE rescans by itself when the map changes. Press **Rescan** after loading DLC.
 - **Stats bench.** The gun's real numbers (damage, magazine size, reload time, spread, range and so on) with the game's base value next to each one. Type a number and **Set**, or use **/2, x2, x10**. Your tuned values are saved in `rtse/overrides.json` and re-applied whenever the game rebuilds that weapon.
 - **Item info & dev tools** (below the stats) has the item's id, class, level requirement and game stage, plus the **Save ... dump** buttons for bug reports.
 
@@ -236,7 +237,12 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
 - **Ammo pools** are matched to the game's exact `D_Resourcepools.AmmoPools.*` definitions. A pool matched only by its name is marked unverified.
 - **Part effects**: attribute labels come from a hand-written table.
 - **Weapon lab damage**: the hooks (`WillowPlayerController.NotifyDamageDealt`, `WillowPawn.TakeDamage` as a fallback, `WillowWeapon.ConsumeAmmo`) and the damage summary fields exist in the game's class data, but nobody has seen them fire yet. Also unconfirmed: whether `DamageDealtToShields` is the shield damage of that hit, and whether every pellet counts as a hit. DPS uses the PC's clock, not the game's, so pausing during a recording stretches it. Exact weapon attribution relies on `NotifyDamageDealt` being called inside `TakeDamage` and on projectiles being owned by their gun; neither is confirmed.
-- **Check before apply** (part status and the save check): the game functions it calls (`PackSerialNumber`, `UnpackSerialNumber`, `CreateSerialNumber`, `SerialNumberMatchesDef`, `CheckDefMatch`, `CanBeSaved`) and the DLC fields (`DlcItemSet`, `BaseDefinition`, `IsLicensed`) all exist in the game's class data, but nobody has seen what they return in a live game. If a balance has no DLC set, the DLC name is guessed from the part's package name, and the chip says so. "Unsupported" is a rule based on part class names, and the game never confirms it. A struct copy made with `unrealsdk.make_struct` is assumed to leave the live item alone. If `make_struct` is missing, a guarded `copy.copy` is tried, and the check gives up if that turns out to share the live item's data.
+- **Check before apply.** Every game name it uses exists in the game's class data, but nobody has seen what any of them return in a live game:
+  - Only `CanBeSaved()` (weapons) and `WorldInfo.GetMapName` run on their own.
+  - The experimental save check (`PackSerialNumber`, `UnpackSerialNumber`, `SerialNumberMatchesDef`, `CheckDefMatch`) runs only when you press its button, and never on equipped gear. It works on a copy built with `unrealsdk.make_struct` (or a `copy.copy` that's tested first to prove it doesn't share the live data). It never calls `CreateSerialNumber`, and it puts the item back if the item changed during the check. Once the offline serial decoder lands, it will replace `UnpackSerialNumber`.
+  - DLC comes from `DlcItemSet` / `IsLicensed`. When a balance has no DLC set, it's guessed from package names, and the chip says so.
+  - Weights are byte indexes, and index 0 is assumed to mean "never drops". Parent lists are assumed to be inherited through `BaseDefinition` for slots that aren't `bEnabled`.
+  - "Unsupported" is a rule based on part class names.
 
 The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
 
@@ -244,12 +250,13 @@ The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump"
 
 Back up your saves first. Then, with any gun open:
 
-1. Open the part picker in **Legal** mode. Every part should say **Could drop naturally**.
+1. Open the part picker in **Legal** mode. Most parts should say **Could drop naturally**. Any that say **Custom** should give a reason: weight 0, or only for other manufacturers.
 2. Switch to **Any gun**. Parts from other guns should say **Custom**. DLC parts (e.g. Pirate's Booty or Torgue guns) should say **Needs DLC** and name the DLC.
-3. Click a part. **CHECK BEFORE APPLY** should finish within a second or two. Note whether it says the part survived and what each check returned.
-4. Bolt the part on. **What the game kept** should list the new part with a tick, and the save check should agree with step 3.
+3. Click a part on a **backpack** gun and press **Run save check (experimental)**. It should finish within a second or two. Note what each check returned, and whether a red "the check changed the live item" warning appears (it shouldn't). On an equipped gun the button should be disabled.
+4. Bolt the part on. **What the game kept** should list the new part with a tick and a `CanBeSaved` answer. Press its save-check button and compare with step 3.
 5. Save, quit to the menu and reload. Is the part still there? Write down whether this matches what the check said.
 6. Open a shield and switch to **Everything**. Grenade or relic parts should say **Unsupported**.
-7. Click **Save validation dump** (in the picker preview or under **Item info & dev tools**) and attach `rtse/debug_validation.json` to your report. It records which game functions exist, what they returned, and how the struct copy was made.
+7. Travel to another map and open the picker in **Any gun**. The "scanned ... ago" line should have reset.
+8. Click **Save validation dump** (in the picker preview or under **Item info & dev tools**) and attach `rtse/debug_validation.json` to your report. It records which game functions exist, what they returned, and how the struct copy was made.
 
 RTSE isn't affiliated with Gearbox or 2K. Skill names and descriptions in `rtse/skilltrees.json` come from the game's own files.

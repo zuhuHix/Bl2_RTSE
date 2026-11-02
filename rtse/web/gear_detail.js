@@ -125,7 +125,7 @@ function forgetChecks() {
 /** Keeps what the game kept after an edit, for the panel on the gear page (none from an older backend). */
 function keepResult(result, removing = false) {
   const kept = result.applied && result.applied.kept;
-  lastKept = kept ? { id: result.id, what: result.applied.what, kept, removing } : null;
+  lastKept = kept ? { id: result.id, what: result.applied.what, kept, removing, check: null } : null;
 }
 
 function setDetail(detail) {
@@ -396,7 +396,8 @@ function keptPanel(detail) {
       h("thead", {}, h("tr", {}, h("th", { text: "Slot" }), h("th", { text: "Before" }), h("th", { text: "After" }), h("th", { text: "Edit" }))),
       h("tbody", {}, rows.map((part) => keptRow(part, removing))))),
     stats.length > 0 && h("div", { class: "kept-line" }, h("b", { text: "Stats" }), h("span", { text: stats.join("  /  ") })),
-    kept.save_check && h("div", { class: "kept-line" }, saveSummary(kept.save_check)));
+    keptChecks(kept),
+    keptSaveCheck(kept));
 }
 
 function keptRow(part, removing) {
@@ -558,6 +559,7 @@ function renderPicker() {
       h("div", { class: "toolbar" },
         h("div", { style: { display: "flex", gap: "14px", alignItems: "center", flexWrap: "wrap" } }, modeBar,
           h("span", { style: { color: "var(--muted)", fontWeight: 600 }, text: MODES.find((m) => m.id === state.mode).hint })),
+        cacheHint(detail),
         searchBox,
         h("div", { class: "filters", id: "filters" })),
       results,
@@ -575,12 +577,43 @@ async function switchMode(mode) {
   if (mode === state.mode) return;
   state.mode = mode;
   localStorage.setItem("rtse.mode", mode);
+  await fetchDetail(mode);
+}
+
+/** Reads the item in `mode` and shows it. The picker stays open and shows the scan while the parts load. */
+async function fetchDetail(mode) {
   const p = state.picker;
   if (p) { p.loading = true; p.chosen = null; renderResults(); renderPreview(); }
   const detail = await guarded(() => api("GET", `/api/item?id=${encodeURIComponent(state.selected)}&mode=${mode}`));
   if (p) p.loading = false;
   if (detail) setDetail(detail);
   else if (p) renderResults();
+}
+
+/** Rescans the part list in the game (after loading DLC or changing maps), then reads the item again in the current mode. */
+async function rescanParts() {
+  await api("POST", "/api/parts/rescan", {});
+  state.owners = {};
+  await fetchDetail(state.mode);
+}
+
+/** "just now", "40 s ago", "2 min ago", "3 h ago". */
+function scannedAgo(seconds) {
+  if (seconds == null) return "some time ago";
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${Math.round(seconds)} s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  return `${Math.floor(seconds / 3600)} h ago`;
+}
+
+/** The part list's scan age, with a Rescan button. Shown only in the modes that scan every part. */
+function cacheHint(detail) {
+  const cache = detail.parts_cache;
+  if (state.mode === "legal" || !cache || !cache.scanned) return null;
+  const where = cache.map ? ` on ${cache.map}` : "";
+  return h("div", { class: "scan-hint" },
+    h("span", { text: `Part list scanned ${scannedAgo(cache.age_s)}${where}. Rescan after loading DLC or changing maps.` }),
+    h("button", { class: "btn sm ghost", onclick: () => guarded(rescanParts) }, icon("refresh", 13), "Rescan"));
 }
 
 /** The status filter chips: each status that occurs in this slot, with how many parts have it. */
@@ -666,34 +699,52 @@ function renderResults(append = false) {
 
 const SAVE_REASON = "A serial round-trip in the game's own encoder; not confirmed in game";
 const STATUS_REASON = "Read from the game's balance data; not confirmed in game";
+const QUICK_REASON = "A game query; what it means is not confirmed in game";
+const CHECK_NOTE = "Encodes the gun with this part the way a save does, using unverified game functions. Not run on equipped gear.";
+const UNEQUIP_NOTE = "Unequip this item to run the experimental save check.";
+const RESTORED_NOTE = "The check changed the live item and RTSE put it back. Don't run it again on this item; save a validation dump and report it.";
+
+const yesNo = (ok) => (ok === true ? "yes" : ok === false ? "no" : "n/a");
 
 function checkKey(option, slotName) {
   return `${state.selected}|${state.mode}|${slotName}|${option.id}`;
 }
 
-/** Asks whether the part survives save and reload on this item. Read-only; each answer is kept until the next apply. */
-function loadCheck(option) {
-  const slotName = state.picker.slot;
+/** GET /api/item/save_check for the selected item and mode, plus whatever params (a slot and part, or none for the item as it is). */
+function fetchSaveCheck(params) {
+  const query = new URLSearchParams({ id: state.selected, mode: state.mode, ...params });
+  return api("GET", `/api/item/save_check?${query}`);
+}
+
+function rerenderPreview() {
+  if (state.picker) renderPreview();
+}
+
+/** The experimental save check of one part. Only ever run on a click; the answer is kept until the next apply, like before. */
+function runSaveCheck(option, slotName) {
   const key = checkKey(option, slotName);
-  if (checkCache.has(key)) return;
   const gen = checkGen;
   const settle = (value) => { if (gen === checkGen) checkCache.set(key, value); };
   checkCache.set(key, { loading: true });
-  api("GET", `/api/item/check_part?id=${encodeURIComponent(state.selected)}&mode=${state.mode}&slot=${encodeURIComponent(slotName)}&part=${encodeURIComponent(option.id)}`)
+  rerenderPreview();
+  fetchSaveCheck({ slot: slotName, part: option.id })
     .then((result) => settle({ result }), (error) => settle({ error: error.message }))
-    .then(() => {
-      const chosen = state.picker && state.picker.chosen;
-      if (gen === checkGen && chosen && chosen.id === option.id) renderPreview();
-    });
+    .then(rerenderPreview);
 }
 
-/** The CHECK BEFORE APPLY block: the status, the DLC line if any, and the save and reload check. Advisory: Apply is never blocked. */
+/** The CHECK BEFORE APPLY block: the status and DLC line, then the experimental save check (a button, never automatic). Advisory: Apply is never blocked. */
 function checkSection(option, slotName) {
   const entry = checkCache.get(checkKey(option, slotName));
+  const equipped = state.detail.location === "Equipped";
   let save;
-  if (!entry || entry.loading) save = h("div", { class: "hint", text: "Checking whether it survives save/reload..." });
-  else if (entry.error) save = h("div", { class: "chk-sum bad" }, icon("alert", 16), h("span", { text: `Could not check: ${entry.error}` }));
-  else save = saveCheckView(entry.result.save_check);
+  if (entry && entry.loading) save = h("div", { class: "hint", text: "Running the experimental save check..." });
+  else if (entry && entry.result) save = saveCheckBlock(entry.result);
+  else {
+    save = h("div", { class: "chk-run" },
+      entry && entry.error && h("div", { class: "chk-sum bad" }, icon("alert", 16), h("span", { text: `Could not check: ${entry.error}` })),
+      h("button", { class: "btn sm", disabled: equipped, onclick: () => runSaveCheck(option, slotName) }, "Run save check (experimental)"),
+      h("div", { class: "chk-note", text: equipped ? UNEQUIP_NOTE : CHECK_NOTE }));
+  }
   const meta = PART_STATUS[option.status];
   return h("div", { class: "check" },
     h("div", { class: "label", text: "CHECK BEFORE APPLY" }),
@@ -713,7 +764,6 @@ function saveSummary(save) {
 
 /** The whole save and reload check: the summary, each check's result, and anything a save lost. */
 function saveCheckView(save) {
-  const yesNo = (ok) => (ok === true ? "yes" : ok === false ? "no" : "n/a");
   return h("div", { class: "chk-body" },
     saveSummary(save),
     h("ul", { class: "chk-list" }, (save.checks || []).map((c) => h("li", {},
@@ -722,16 +772,54 @@ function saveCheckView(save) {
       save.lost.map((l) => h("div", { title: `${l.field}: ${l.expected} -> ${l.got}`, text: `${l.field}: ${partName(l.expected)} -> ${partName(l.got)}` }))));
 }
 
+/** One save check's answer: a loud warning first when RTSE had to put the live item back, then the check and who decoded it. */
+function saveCheckBlock(result) {
+  const save = result.save_check;
+  return h("div", { class: "chk-result" },
+    save.restored && h("div", { class: "chk-restored", role: "alert" }, icon("alert", 20), h("span", { text: RESTORED_NOTE })),
+    saveCheckView(save),
+    save.decoder && h("div", { class: "chk-decoder", text: `decoded by: ${save.decoder}` }));
+}
+
 /** A part path from a check, as a readable name ("none" for nothing). */
 function partName(path) {
   return path ? parsePart(path.split(".").pop()).title : "none";
+}
+
+/** The game's quick queries after an edit (weapons: CanBeSaved). Each one is a game query, unverified. */
+function keptChecks(kept) {
+  const checks = kept.quick_checks || [];
+  if (checks.length === 0) return null;
+  return h("div", { class: "kept-line" }, h("b", { text: "Checks" }),
+    h("ul", { class: "chk-list kept-qc" }, checks.map((c) => h("li", {},
+      h("span", { text: c.name }), h("b", { class: `yn ${yesNo(c.ok)}`, text: yesNo(c.ok) }), h("small", { text: c.detail }), unverifiedBadge(QUICK_REASON)))));
+}
+
+/** The experimental save check in the kept panel: asked for by a button, on the item as it is now. */
+function keptSaveCheck(kept) {
+  if (!kept.save_check_available) return h("div", { class: "kept-line" }, h("span", { class: "kept-muted", text: "Experimental save check: unequip the item to run it." }));
+  const check = lastKept.check;
+  if (check && check.loading) return h("div", { class: "kept-line" }, h("span", { class: "kept-muted", text: "Running the experimental save check..." }));
+  if (check && check.result) return saveCheckBlock(check.result);
+  return h("div", { class: "kept-line" },
+    h("button", { class: "btn sm", onclick: runKeptSaveCheck }, "Run save check (experimental)"),
+    check && check.error && h("span", { class: "kept-bad", text: `Could not check: ${check.error}` }));
+}
+
+/** Runs the kept panel's save check. The answer is kept on the panel's entry, so it stays until the panel is dismissed or replaced. */
+function runKeptSaveCheck() {
+  const entry = lastKept;
+  if (!entry) return;
+  entry.check = { loading: true };
+  shell.renderWorkspace();
+  fetchSaveCheck({}).then((result) => { entry.check = { result }; }, (error) => { entry.check = { error: error.message }; })
+    .then(() => { if (lastKept === entry) shell.renderWorkspace(); });
 }
 
 async function choose(option) {
   const p = state.picker;
   p.chosen = option;
   renderResults(true);
-  loadCheck(option);
   renderPreview();
   if (!state.effects.has(option.id)) {
     state.effects.set(option.id, { loading: true });
