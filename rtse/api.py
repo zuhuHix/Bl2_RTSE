@@ -31,6 +31,7 @@ from . import (
     history,
     inspector,
     journal,
+    loadouts,
     sdu,
     session_guard,
     skills,
@@ -53,6 +54,7 @@ ROUTE_MODULES = (
     codes, bank,
     farmguard,
     history,
+    loadouts,
 )
 
 

@@ -1,0 +1,77 @@
+/* ---- Builds page (page_loadouts.js) ---- */
+.lo-body { padding: 4px 26px 26px; }
+.lo-warn .unv { color: var(--ink); border-color: var(--ink); margin-left: 10px; }
+.lo-h { font-family: var(--display); font-weight: 400; font-size: 26px; letter-spacing: .06em; color: var(--hazard); line-height: 1.1; margin: 0 0 6px; }
+.lo-sub { font-family: var(--display); font-weight: 400; font-size: 20px; letter-spacing: .08em; color: var(--bone); margin: 0 0 6px; }
+.lo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 22px; align-items: start; }
+.lo-card { min-width: 0; border: 3px solid #000; background: var(--panel-2); box-shadow: 4px 4px 0 #000; padding: 16px 18px 18px; }
+.lo-wide { grid-column: 1 / -1; margin-top: 22px; }
+.lo-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; justify-content: space-between; }
+.lo-head .lo-h { overflow-wrap: anywhere; }
+.lo-field { display: grid; gap: 6px; margin-top: 12px; min-width: 0; }
+.lo-label { color: var(--muted); font-size: 11.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.field.lo-name { width: 100%; }
+.field.lo-paste { width: 100%; min-height: 96px; resize: vertical; font-family: Consolas, monospace; font-size: 12.5px; }
+.lo-file { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; font-weight: 700; }
+.lo-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 16px; margin-top: 14px; }
+.lo-check { display: flex; align-items: center; gap: 9px; font-weight: 600; min-height: 26px; cursor: pointer; min-width: 0; }
+.lo-check input { accent-color: var(--hazard); width: 16px; height: 16px; margin: 0; flex: none; }
+.lo-check span { overflow-wrap: anywhere; }
+.lo-check em { color: var(--muted); font-style: normal; font-size: 12px; }
+.lo-check.dim { opacity: .5; }
+.lo-hint, .lo-why { color: var(--muted); font-weight: 600; font-size: 12.5px; margin: 0; overflow-wrap: anywhere; }
+.lo-tag { display: inline-block; margin-left: 8px; padding: 0 7px; border: 2px solid #000; background: var(--plate-dim); color: var(--bone); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle; }
+.lo-tag.warn { background: var(--blaze); color: var(--ink); }
+.lo-list, .lo-rows { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.lo-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 16px; align-items: center; padding: 12px 14px; background: var(--panel); border: 2px solid #000; border-left: 8px solid var(--hazard); box-shadow: 3px 3px 0 #000; min-width: 0; }
+.lo-row.other { border-left-color: var(--steel); }
+.lo-main { min-width: 0; }
+.lo-name { font-weight: 700; font-size: 16px; letter-spacing: .02em; overflow-wrap: anywhere; }
+.lo-meta { color: var(--muted); font-size: 12.5px; font-weight: 600; margin-top: 3px; overflow-wrap: anywhere; }
+.lo-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lo-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 1px 9px; border: 2px solid #000; background: var(--ink); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--bone); }
+.lo-chip b { font-family: var(--display); font-weight: 400; font-size: 18px; color: var(--hazard); letter-spacing: .04em; }
+.lo-row-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.lo-row .field.lo-link { grid-column: 1 / -1; width: 100%; min-height: 48px; font-family: Consolas, monospace; font-size: 12px; resize: vertical; }
+.lo-preview { margin-top: 24px; background: var(--panel); box-shadow: var(--shadow); scroll-margin-top: 16px; }
+.lo-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 14px 0 4px; }
+.lo-opt { display: grid; gap: 7px; align-content: start; border: 2px solid #000; background: var(--ink); padding: 10px 12px; min-width: 0; }
+.lo-opt.lo-wide { grid-column: 1 / -1; }
+.lo-opt-title { color: var(--muted); font-size: 11.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.lo-class { margin-top: 14px; padding: 8px 12px; border: 3px solid #000; font-weight: 700; overflow-wrap: anywhere; }
+.lo-class.good { background: var(--good); color: var(--ink); }
+.lo-class.bad { background: var(--blaze); color: var(--ink); }
+.lo-class.unknown { background: var(--panel-2); color: var(--muted); border-style: dashed; }
+.lo-mode { display: inline-block; margin-left: 8px; padding: 0 6px; border: 1px solid var(--hazard); color: var(--hazard); font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; vertical-align: middle; cursor: help; white-space: nowrap; }
+.lo-plan.stale { opacity: .5; pointer-events: none; }
+.lo-tablewrap { overflow-x: auto; margin-top: 12px; border: 2px solid #000; background: var(--ink); }
+.lo-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.lo-table th, .lo-table td { text-align: left; padding: 7px 10px; border-bottom: 1px dashed var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.lo-table th { background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.lo-table td.lo-num { width: 44px; color: var(--muted); font-weight: 700; }
+.lo-mono { font-family: Consolas, monospace; font-size: 12.5px; }
+.lo-fold { margin-top: 14px; border: 2px solid #000; background: var(--ink); }
+.lo-fold summary { padding: 8px 12px; cursor: pointer; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; font-size: 12.5px; }
+.lo-fold ul { list-style: none; margin: 0; padding: 4px 12px 10px; display: grid; gap: 6px; }
+.lo-fold li .lo-why { margin-left: 8px; }
+.lo-block { margin-top: 18px; }
+.lo-row-flat { display: grid; gap: 6px; padding: 9px 12px; background: var(--ink); border: 2px solid #000; min-width: 0; }
+.lo-row-flat > div { min-width: 0; overflow-wrap: anywhere; }
+.lo-block .tools { margin-top: 10px; align-items: center; }
+.lo-apply { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 18px; padding-top: 14px; border-top: 2px dashed var(--line); }
+.lo-apply .note { margin: 0; flex: 1 1 320px; }
+.btn.lo-big { font-size: 15px; padding: 10px 18px; }
+.lo-pill { display: inline-block; padding: 1px 9px; border: 2px solid #000; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.lo-pill.ok { background: var(--good); color: var(--ink); }
+.lo-pill.failed, .lo-pill.rollback_failed { background: var(--blaze); color: var(--ink); }
+.lo-pill.rolled_back { background: var(--hazard); color: var(--ink); }
+.lo-pill.not_run { background: var(--plate-dim); color: var(--bone); }
+.lo-report { margin-top: 24px; border-top: 8px solid var(--good); scroll-margin-top: 16px; }
+.lo-report.bad { border-top-color: var(--blaze); }
+.lo-report .warn-banner { margin-top: 12px; }
+@media (max-width: 900px) {
+  .lo-grid { grid-template-columns: minmax(0, 1fr); }
+  .lo-body { padding: 4px 16px 20px; }
+  .lo-row { grid-template-columns: minmax(0, 1fr); }
+  .lo-row-actions { justify-content: flex-start; }
+}

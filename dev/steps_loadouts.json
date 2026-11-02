@@ -1,0 +1,33 @@
+{
+  "url": "http://127.0.0.1:8777/?t=mock",
+  "width": 1440,
+  "height": 1100,
+  "steps": [
+    {"wait": 1200},
+    {"clickText": "Save and apply presets"},
+    {"wait": 1000},
+    {"shot": "dev/out/loadouts_1_page.png"},
+    {"clickText": "Preview"},
+    {"wait": 1300},
+    {"shot": "dev/out/loadouts_2_plan.png"},
+    {"scroll": {"selector": ".workspace", "top": 900}},
+    {"wait": 300},
+    {"shot": "dev/out/loadouts_3_plan_more.png"},
+    {"clickText": "Apply "},
+    {"wait": 1600},
+    {"shot": "dev/out/loadouts_4_applied.png"},
+    {"eval": "[...document.querySelectorAll('.lo-row')].find(r => r.textContent.includes('fail drill')).querySelector('.btn.primary').click(); 'opened fail preview'"},
+    {"wait": 1300},
+    {"shot": "dev/out/loadouts_5_fail_plan.png"},
+    {"clickText": "Apply "},
+    {"wait": 1600},
+    {"eval": "document.querySelector('.toast') && document.querySelector('.toast').textContent"},
+    {"shot": "dev/out/loadouts_6_rollback.png"},
+    {"clickText": "Build dev tools"},
+    {"wait": 500},
+    {"click": ".drop .tools .btn"},
+    {"wait": 700},
+    {"eval": "document.querySelector('.toast') && document.querySelector('.toast').textContent"},
+    {"shot": "dev/out/loadouts_7_dev_tools.png"}
+  ]
+}
