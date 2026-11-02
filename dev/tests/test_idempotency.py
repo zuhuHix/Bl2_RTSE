@@ -311,3 +311,28 @@ def test_requests_without_a_key_always_run_and_still_cancel_on_timeout():
     assert run_job(completed(job), None, None, ROUTE, BODY, 1, 1) == (200, {"ok": True}, {})
     assert run_job(completed(job), None, None, ROUTE, BODY, 1, 1) == (200, {"ok": True}, {})
     assert calls == [1, 1]
+
+
+def test_over_cap_eviction_skips_entries_whose_response_is_not_recorded_yet():
+    """A future is done a moment before _finished records its response. Under cache pressure that entry must stay,
+    or a same-key retry in that window would run the edit a second time."""
+    cache = IdempotencyCache(max_entries=1)
+    finished = cache._finished  # noqa: SLF001
+    cache._finished = lambda key, future: None  # noqa: SLF001 - freeze the window: done, response not recorded
+    job, calls = counting({"n": 1})
+    run_job(completed(job), cache, KEY, ROUTE, BODY, 1, 1)
+    cache._finished = finished  # noqa: SLF001
+
+    other, _ = counting({"other": True})
+    run_job(completed(other), cache, "abcdefgh-k2", ROUTE, BODY, 1, 1)  # over the cap: something must go, not KEY
+    assert run_job(never, cache, KEY, ROUTE, BODY, 1, 1)[:2] == (200, {"n": 1})
+    assert calls == [1]
+
+
+def test_keyless_request_still_running_after_grace_is_told_not_to_resend():
+    future = _running_future()
+    status, payload, _ = run_job(lambda: future, None, None, ROUTE, BODY, 0, 0)
+    assert status == 504
+    assert payload == {"error": idempotency.STILL_RUNNING_UNKEYED_ERROR, "pending": True, "retry": False}
+    assert "Idempotency-Key" not in payload["error"] and "don't resend" in payload["error"]
+    future.set_result({"ok": True})
