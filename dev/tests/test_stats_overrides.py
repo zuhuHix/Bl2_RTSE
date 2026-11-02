@@ -283,3 +283,71 @@ def test_an_unknown_version_is_not_overwritten_either(overrides_file):
 
     assert overrides_file.read_bytes() == original
     assert not stats.has_overrides()
+
+
+# --- Saves that fail ---------------------------------------------------------------------------------
+
+
+def failing_save(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Makes stats._save raise OSError, and returns the real one so the test can put it back."""
+    real_save = stats._save  # noqa: SLF001
+
+    def boom() -> None:
+        raise OSError("disk full (test)")
+
+    monkeypatch.setattr(stats, "_save", boom)
+    return real_save
+
+
+def test_move_overrides_save_failure_keeps_both_keys_and_warns(overrides_file, monkeypatch):
+    gun = make_gun(uid=7)
+    stats.set_override(gun, "ClipSize", 20)  # saved while the save still works
+    old = stats.identity(gun)
+    real_save = failing_save(monkeypatch)
+
+    gun.DefinitionData.UniqueId = 99  # What a rebuild does
+    new = stats.identity(gun)
+    warning = stats.move_overrides(old, new)
+
+    assert isinstance(warning, str) and "could not be saved" in warning
+    assert stats.overrides_for(gun) == {"ClipSize": 20}
+    assert old in stats._weapons and new in stats._weapons  # noqa: SLF001 - both keys kept in memory
+    assert old in saved(overrides_file)["weapons"] and new not in saved(overrides_file)["weapons"]
+
+    monkeypatch.setattr(stats, "_save", real_save)
+    assert stats.move_overrides(old, new) is None  # a later save that works returns None
+    assert new in saved(overrides_file)["weapons"] and old not in saved(overrides_file)["weapons"]
+
+
+def test_set_override_save_failure_keeps_the_change_and_returns_a_warning(overrides_file, monkeypatch):
+    gun = make_gun(uid=7)
+    real_save = failing_save(monkeypatch)
+
+    result = stats.set_override(gun, "ClipSize", 20)
+
+    assert "could not be saved" in result["warning"]
+    assert result["after"]["value"] == 20 and gun.ClipSize == 20
+    assert stats.overrides_for(gun) == {"ClipSize": 20}  # kept in memory
+
+    monkeypatch.setattr(stats, "_save", real_save)
+    assert stats.set_override(gun, "ClipSize", 25)["warning"] is None
+
+
+@pytest.mark.parametrize("broken", ["replace", "fsync"])
+def test_a_failed_atomic_save_leaves_the_old_file_and_no_temp_file(overrides_file, monkeypatch, broken):
+    gun = make_gun(uid=7)
+    stats.set_override(gun, "ClipSize", 20)
+    original = overrides_file.read_bytes()
+
+    def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError(f"{broken} failed (test)")
+
+    if broken == "replace":
+        monkeypatch.setattr(stats.os, "replace", boom)
+    else:
+        monkeypatch.setattr(stats.os, "fsync", boom)
+    result = stats.set_override(gun, "ClipSize", 30)
+
+    assert "could not be saved" in result["warning"]
+    assert overrides_file.read_bytes() == original
+    assert not overrides_file.with_name("overrides.json.tmp").exists()

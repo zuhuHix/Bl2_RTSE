@@ -406,3 +406,22 @@ def test_clearing_a_stat_moves_the_guns_own_overrides_to_its_new_uid(game, monke
     assert stats.override_scope(item) == "own"
     assert item.FireInterval == 0.25
     assert item.ClipSize == 10  # The override was removed; the game's value is back
+
+
+def test_set_stat_and_set_level_report_a_save_warning_in_warnings(game, monkeypatch):
+    game.pc = gear_pc()
+    item = make_gun(stage=5)
+    use(monkeypatch, item)
+    real_save = stats._save  # noqa: SLF001
+
+    def boom() -> None:
+        raise OSError("disk full (test)")
+
+    monkeypatch.setattr(stats, "_save", boom)
+    result = api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+    assert len(result["warnings"]) == 1 and "could not be saved" in result["warnings"][0]
+    assert "warning" not in result["applied"]
+
+    monkeypatch.setattr(stats, "_save", real_save)
+    assert api.set_stat({"id": "x", "stat": "ClipSize", "value": 25})["warnings"] == []
+    assert api.set_level({"id": "x", "level": 6})["warnings"] == []

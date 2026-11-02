@@ -34,8 +34,10 @@ untouched and is copied aside to overrides.corrupt.bak.json before the first sav
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -196,10 +198,20 @@ def _prepare_write() -> None:
 
 
 def _save() -> None:
-    OVERRIDES_FILE.write_text(
-        json.dumps({"version": FILE_VERSION, "weapons": _weapons, "legacy": _legacy}, indent=2),
-        encoding="utf-8",
-    )
+    """Writes the file atomically: a temp file next to it, flushed to disk, then renamed over the real one. A failure
+    midway leaves the old file intact, and the temp file is removed."""
+    text = json.dumps({"version": FILE_VERSION, "weapons": _weapons, "legacy": _legacy}, indent=2)
+    tmp = OVERRIDES_FILE.with_name(OVERRIDES_FILE.name + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, OVERRIDES_FILE)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 # --- Identity ------------------------------------------------------------------------------------
@@ -254,30 +266,37 @@ def override_scope(item: unreal.UObject) -> str | None:
     return None
 
 
-def move_overrides(old_identity: str | None, new_identity: str | None) -> None:
+def move_overrides(old_identity: str | None, new_identity: str | None) -> str | None:
     """Carries a gun's overrides to its new identity after the game rebuilt it (new UniqueId and/or parts).
 
     Moves its own entry. If it had none but a legacy entry matched its old fingerprint, and the fingerprint
     changed, the legacy stats are copied under the new identity (the legacy entry itself stays for the
-    other identical guns). Nothing is saved if nothing moved. A save failure is logged, not raised, because
-    the game has already been changed.
+    other identical guns). Nothing is saved if nothing moved. The game has already been changed, so a save
+    failure is not raised: the entry is kept under both the old and the new key in memory (a restart then
+    still finds it under whichever identity the file has), and a warning is returned. None on success.
     """
     if old_identity is None or new_identity is None or old_identity == new_identity:
-        return
+        return None
+    kept_old = None
     if old_identity in _weapons:
+        kept_old = _weapons[old_identity]
         _weapons[new_identity] = _weapons.pop(old_identity)
     else:
         old_key = old_identity.partition("#")[2]
         new_key = new_identity.partition("#")[2]
         legacy = _legacy_stats(old_key)
         if legacy is None or old_key == new_key or new_identity in _weapons:
-            return
+            return None
         _weapons[new_identity] = {"label": _legacy[old_key].get("label", ""), "stats": legacy}
     try:
         _prepare_write()
         _save()
     except OSError as ex:
+        if kept_old is not None:
+            _weapons[old_identity] = kept_old  # Both keys stay in memory until a save succeeds
         logging.error(f"RTSE: could not save moved overrides: {ex!r}")
+        return f"the moved overrides could not be saved ({ex}); they are kept in memory and may be lost after a restart"
+    return None
 
 
 # --- Reading and writing -------------------------------------------------------------------------
@@ -335,6 +354,7 @@ def set_override(item: unreal.UObject, stat: str, value: float | None) -> dict[s
     """Stores (or with None, removes) an override on this gun and applies it. Returns what the game reports.
 
     The first change on a gun that uses a legacy entry gives that gun its own copy of the legacy stats first.
+    If the file can't be saved, the change is kept in memory and the result's "warning" says so (None otherwise).
     """
     if stat not in STAT_NAMES:
         raise KeyError(stat)
@@ -364,10 +384,15 @@ def set_override(item: unreal.UObject, stat: str, value: float | None) -> dict[s
         own["stats"][stat] = value
         own["label"] = label
         _write(item, stat, value)
-    _save()
+    warning = None
+    try:
+        _save()
+    except OSError as ex:
+        logging.error(f"RTSE: could not save stat override {stat}: {ex!r}")
+        warning = f"the {stat} override could not be saved to {OVERRIDES_FILE.name} ({ex}); it is kept in memory and may be lost after a restart"
 
     after = {"value": getattr(item, stat), "base": getattr(item, f"{stat}BaseValue")}
-    return {"stat": stat, "requested": value, "before": before, "after": after}
+    return {"stat": stat, "requested": value, "before": before, "after": after, "warning": warning}
 
 
 # --- Re-applying ---------------------------------------------------------------------------------

@@ -680,7 +680,7 @@ def set_part(params: Params) -> dict[str, Any]:
         verify=verify,
     )
     # The game rebuilt the gun: its overrides follow it to the new identity, then get applied to it again
-    stats.move_overrides(old_identity, stats.identity(item))
+    warnings = _warnings(stats.move_overrides(old_identity, stats.identity(item)))
     stats.reapply(item, reason="changing a part")
     after_init = _part_ref(getattr(item.DefinitionData, slot.field))
     applied = {
@@ -694,7 +694,7 @@ def set_part(params: Params) -> dict[str, Any]:
     }
     logging.info(f"RTSE: set_part {applied}")
     _note_id_change(params["id"], item)
-    return {**_detail(item, location, _mode(params)), "applied": applied}
+    return {**_detail(item, location, _mode(params)), "applied": applied, "warnings": warnings}
 
 
 def set_level(params: Params) -> dict[str, Any]:
@@ -738,7 +738,7 @@ def set_level(params: Params) -> dict[str, Any]:
         verify=verify,
         after_rebuild=fix_exp_level,
     )
-    stats.move_overrides(old_identity, stats.identity(item))
+    warnings = _warnings(stats.move_overrides(old_identity, stats.identity(item)))
     stats.reapply(item, reason="changing the level")
 
     data = item.DefinitionData
@@ -750,7 +750,7 @@ def set_level(params: Params) -> dict[str, Any]:
     }
     logging.info(f"RTSE: set_level {applied}")
     _note_id_change(params["id"], item)
-    return {**_detail(item, location, _mode(params)), "applied": applied}
+    return {**_detail(item, location, _mode(params)), "applied": applied, "warnings": warnings}
 
 
 def set_stat(params: Params) -> dict[str, Any]:
@@ -768,12 +768,13 @@ def set_stat(params: Params) -> dict[str, Any]:
         applied = stats.set_override(item, stat, value)
     except (TypeError, ValueError) as ex:
         raise ApiError(400, str(ex)) from None
+    warnings = _warnings(applied.pop("warning", None))
 
     if value is None:
         # Removing an override: rebuild the weapon so the game restores the real value. The rebuild gives
         # the gun a new UniqueId, so its own overrides move with it.
         _reinitialize(item, equipped=location == EQUIPPED)
-        stats.move_overrides(old_identity, stats.identity(item))
+        warnings += _warnings(stats.move_overrides(old_identity, stats.identity(item)))
         stats.reapply(item, reason="clearing an override")
         applied["after"] = {
             "value": getattr(item, stat),
@@ -781,7 +782,13 @@ def set_stat(params: Params) -> dict[str, Any]:
         }
     logging.info(f"RTSE: set_stat {applied}")
     _note_id_change(params["id"], item)
-    return {**_detail(item, location, _mode(params)), "applied": {"what": f"{stat} ({location})", **applied}}
+    return {**_detail(item, location, _mode(params)), "applied": {"what": f"{stat} ({location})", **applied},
+            "warnings": warnings}
+
+
+def _warnings(message: str | None) -> list[str]:
+    """A save warning from rtse/stats.py as the list the JSON carries (empty when there is none)."""
+    return [message] if message else []
 
 
 MAX_EFFECTS = 40
