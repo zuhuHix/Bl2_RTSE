@@ -1,63 +1,65 @@
-// The shell: boot, the connection pill, the sidebar's pinned pages, routing between pages, and keys.
+// The shell: boot, the connection pill, the sidebar, routing between pages, and the keyboard shortcuts.
+// Which pages exist is listed in pages.js; this file builds the sidebar from that list and opens pages.
 import { $, fill, h, icon, pageCtx, shell, state } from "./core.js";
 import { pollInventory, renderInventory } from "./gear_list.js";
 import { closePicker, renderGear } from "./gear_detail.js";
-import { currentClass, loadCharacter, openCharacter, portraitEl, renderCharacter } from "./page_character.js";
-import { openAmmo, renderAmmo } from "./page_ammo.js";
-import { CLASS_INFO } from "./portraits.js";
-import * as sduPage from "./page_sdu.js";
-import * as skillsPage from "./page_skills.js";
-import * as worldPage from "./page_world.js";
-import * as inspectPage from "./page_inspect.js";
+import { PAGES } from "./pages.js";
 
+const modules = new Map(); // page id -> its module, once it has been imported
+
+/** Imports a page's module the first time it is needed. */
+function importPage(page) {
+  if (modules.has(page.id)) return Promise.resolve(modules.get(page.id));
+  return import(page.module).then((mod) => {
+    modules.set(page.id, mod);
+    return mod;
+  });
+}
+
+/** The sidebar: one card per page, showing the page's own pin() if it has one, else the registry's text. */
 function renderPinned() {
-  const c = state.character;
-  const cls = currentClass();
-  const pin = (page, open, icon_, title, sub, extra) => h(
-    "button",
-    { class: `pin${state.page === page ? " on" : ""}`, onclick: open },
-    h("span", { class: "pin-ic" }, icon_),
-    h("div", {}, h("div", { class: "t", text: title }), h("div", { class: "s", text: sub })),
-    extra);
-  fill($("#pinned"),
-    pin("character", openCharacter, portraitEl(), "Character",
-      cls.key ? `${CLASS_INFO[cls.key].name} / ${CLASS_INFO[cls.key].job}` : (c && c.name) || "Level, skill points, money",
-      c && c.level != null && h("div", { class: "lvl" }, h("small", { text: "LV" }), String(c.level))),
-    pin("ammo", openAmmo, icon("crosshair", 20), "Ammo", "Every ammo type", null),
-    pin("sdu", openSdu, icon("backpack", 20), "Upgrades", "Backpack, bank, ammo SDUs", null),
-    pin("skills", openSkills, icon("sliders", 20), "Skills", "Skill tree", null),
-    pin("world", openWorld, icon("swap", 20), "World", "Missions, challenges, travel", null),
-    pin("inspect", openInspect, icon("search", 20), "Inspector", "Raw live game data", null));
+  fill($("#pinned"), PAGES.map((page) => {
+    const mod = modules.get(page.id);
+    const card = mod && mod.pin ? mod.pin(pageCtx) : { icon: page.icon && icon(page.icon, 20), sub: page.sub };
+    return h(
+      "button",
+      { class: `pin${state.page === page.id ? " on" : ""}`, onclick: () => openPage(page.id) },
+      h("span", { class: "pin-ic" }, card.icon),
+      h("div", {}, h("div", { class: "t", text: page.label }), h("div", { class: "s", text: card.sub })),
+      card.badge,
+    );
+  }));
 }
 
 function renderWorkspace() {
   const root = $("#workspace");
-  if (state.page === "character") return renderCharacter(root);
-  if (state.page === "ammo") return renderAmmo(root);
-  if (state.page === "sdu") return sduPage.render(root, pageCtx);
-  if (state.page === "skills") return skillsPage.render(root, pageCtx);
-  if (state.page === "world") return worldPage.render(root, pageCtx);
-  if (state.page === "inspect") return inspectPage.render(root, pageCtx);
+  const mod = modules.get(state.page);
+  if (mod) return mod.render(root, pageCtx);
+  if (state.page !== "gear") return fill(root, h("div", { class: "empty" }, h("div", {}, h("h2", { text: "Loading..." }))));
   return renderGear(root);
 }
 
-// ---------- feature pages (own modules: page_sdu.js, page_skills.js, page_world.js, page_inspect.js) ----------
-
-async function openPage(page, module) {
-  state.page = page;
+/** Opens a page: draws it at once, then loads its data (importing its module the first time). */
+async function openPage(id) {
+  const page = PAGES.find((p) => p.id === id);
+  state.page = id;
   closePicker();
   renderPinned();
   renderInventory();
   renderWorkspace();
-  await module.load(pageCtx);
+  const mod = await importPage(page);
+  if (state.page !== id) return; // the user has moved on while the module loaded
+  renderWorkspace();
+  await mod.load(pageCtx);
 }
 
-const openSdu = () => openPage("sdu", sduPage);
-const openSkills = () => openPage("skills", skillsPage);
-const openWorld = () => openPage("world", worldPage);
-const openInspect = () => openPage("inspect", inspectPage);
-
 // ---------- boot ----------
+
+for (const page of PAGES) {
+  if (page.css) document.head.append(h("link", { rel: "stylesheet", href: page.css }));
+}
+shell.renderPinned = renderPinned;
+shell.renderWorkspace = renderWorkspace;
 
 $("#search").addEventListener("input", (event) => { state.search = event.target.value; renderInventory(); });
 document.addEventListener("keydown", (event) => {
@@ -65,12 +67,14 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { event.preventDefault(); $("#search").focus(); }
 });
 
-shell.renderPinned = renderPinned;
-shell.renderWorkspace = renderWorkspace;
-
 renderPinned();
 renderWorkspace();
 renderInventory();
 pollInventory();
-loadCharacter();
+for (const page of PAGES.filter((p) => p.eager)) {
+  importPage(page).then((mod) => {
+    renderPinned();
+    return mod.load(pageCtx);
+  });
+}
 setInterval(pollInventory, 2500);

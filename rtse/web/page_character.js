@@ -1,8 +1,6 @@
 // The character page: level, skill points, cash and tokens. Also the sidebar portrait helpers.
 import { CLASS_INFO, classFromText, portraitUrl } from "./portraits.js";
 import { api, dropdown, dump, fill, guarded, h, icon, shell, state, toast, unverifiedBadge } from "./core.js";
-import { renderInventory } from "./gear_list.js";
-import { closePicker } from "./gear_detail.js";
 
 // ---------- character ----------
 
@@ -14,7 +12,7 @@ const CURRENCY_STYLE = {
 };
 
 /** The player's vault hunter: what the game says, else what their class mod says. */
-export function currentClass() {
+function currentClass() {
   const c = state.character;
   let key = c && c.class_key && CLASS_INFO[c.class_key] ? c.class_key : null;
   if (!key) {
@@ -25,7 +23,7 @@ export function currentClass() {
 }
 
 /** The game's own picture of the character, or a plain tile if we can't tell who they are. */
-export function portraitEl(size = "") {
+function portraitEl(size = "") {
   const { key } = currentClass();
   const el = h("div", { class: `avatar ${size}`.trim() });
   if (key) {
@@ -39,16 +37,18 @@ export function portraitEl(size = "") {
   return el;
 }
 
-export async function openCharacter() {
-  state.page = "character";
-  closePicker();
-  shell.renderPinned();
-  renderInventory();
-  shell.renderWorkspace();
-  await loadCharacter();
+/** The sidebar card: the game's portrait, the class and the level. */
+export function pin() {
+  const c = state.character;
+  const cls = currentClass();
+  return {
+    icon: portraitEl(),
+    sub: cls.key ? `${CLASS_INFO[cls.key].name} / ${CLASS_INFO[cls.key].job}` : (c && c.name) || "Level, skill points, money",
+    badge: c && c.level != null && h("div", { class: "lvl" }, h("small", { text: "LV" }), String(c.level)),
+  };
 }
 
-export async function loadCharacter() {
+async function loadCharacter() {
   const data = await guarded(() => api("GET", "/api/character"));
   if (!data) return;
   state.character = data;
@@ -86,7 +86,7 @@ function numberCard({ title, sub, value, input, quick, glyph, color, field, max,
   );
 }
 
-export function renderCharacter(root) {
+function renderCharacter(root) {
   const c = state.character;
   if (!c) {
     fill(root, h("div", { class: "empty" }, h("div", {}, h("h2", { text: "Loading..." }))));
@@ -149,3 +149,6 @@ export function renderCharacter(root) {
       h("button", { class: "btn sm", onclick: () => dump("/api/debug/character") }, "Save character dump"))),
   );
 }
+
+// The page interface (see pages.js): load() fetches the character, render() draws the page.
+export { loadCharacter as load, renderCharacter as render };
