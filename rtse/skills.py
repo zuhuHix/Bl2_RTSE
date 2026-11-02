@@ -21,7 +21,7 @@ from typing import Any
 
 from unrealsdk import logging, unreal
 
-from . import character, skilltree_data
+from . import character, journal, skilltree_data
 from .routing import Route
 
 DEBUG_SKILLS_FILE = Path(__file__).parent / "debug_skills.json"
@@ -376,6 +376,7 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
         "before": before["level"], "after": after and after["level"], "over_max": over_max,
     }
     logging.info(f"RTSE: skills {applied}")
+    journal.record("skills.level", target=before["name"], before=applied["before"], after=applied["after"])
     return {**state, "applied": applied}
 
 
@@ -433,6 +434,7 @@ def reset(params: dict[str, Any]) -> dict[str, Any]:
         "skill_points": state["skill_points"],
     }
     logging.info(f"RTSE: skills reset {applied}")
+    journal.record("skills.reset", target="skill tree", before=applied["before"], after=applied["after"])
     return {**state, "applied": applied}
 
 

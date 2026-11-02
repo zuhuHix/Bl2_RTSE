@@ -12,7 +12,7 @@ from typing import Any
 from mods_base import get_pc
 from unrealsdk import find_object, logging, unreal
 
-from . import limits, stats
+from . import journal, limits, stats
 from .gear_inventory import EQUIPPED, _find_item, _hidden_bones, _item_id, _note_id_change
 from .gear_parts import ITEM_SLOTS, WEAPON_SLOTS, _is_weapon, _mode, _part_ref, _ref_dict, _slots
 from .routing import ApiError, Params, Route
@@ -235,6 +235,7 @@ def set_part(params: Params) -> dict[str, Any]:
         },
     }
     logging.info(f"RTSE: set_part {applied}")
+    journal.record("gear.part", target=params["id"], before=before, after=after_init)
     _note_id_change(params["id"], item)
     return {**_detail(item, location, _mode(params)), "applied": applied, "warnings": warnings}
 
@@ -291,6 +292,7 @@ def set_level(params: Params) -> dict[str, Any]:
         "after": {"exp_level": item.ExpLevel, "grade": data.ManufacturerGradeIndex, "game_stage": data.GameStage},
     }
     logging.info(f"RTSE: set_level {applied}")
+    journal.record("gear.level", target=params["id"], before=before, after=applied["after"])
     _note_id_change(params["id"], item)
     return {**_detail(item, location, _mode(params)), "applied": applied, "warnings": warnings}
 
@@ -325,6 +327,7 @@ def set_stat(params: Params) -> dict[str, Any]:
             "base": getattr(item, f"{stat}BaseValue"),
         }
     logging.info(f"RTSE: set_stat {applied}")
+    journal.record("gear.stat", target=params["id"], before=applied["before"], after=applied["after"])
     _note_id_change(params["id"], item)
     return {**_detail(item, location, _mode(params)), "applied": {"what": f"{stat} ({location})", **applied},
             "warnings": warnings}

@@ -20,6 +20,7 @@ from typing import Any
 
 from mods_base import get_pc
 from unrealsdk import logging, unreal
+from . import journal
 from .routing import Route
 
 DEBUG_AMMO_FILE = Path(__file__).parent / "debug_ammo.json"
@@ -203,6 +204,7 @@ def set_value(params: dict[str, Any]) -> dict[str, Any]:
     after = _describe(index, pool)
     applied = {"label": before["label"], "requested": value, "via": via, "before": before["value"], "after": after and after["value"]}
     logging.info(f"RTSE: ammo {applied}")
+    journal.record("ammo.value", target=before["label"], before=before["value"], after=applied["after"])
     return {**read(), "applied": applied}
 
 
