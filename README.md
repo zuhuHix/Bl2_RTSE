@@ -19,6 +19,7 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **Bank & codes:** copy any item as a `BL2(...)` code (the format the Gibbed editor uses), paste codes to add items, look through your bank, move items between backpack and bank, duplicate or delete them, and save or load your whole inventory as a JSON file.
 - **Farm guard:** protects a farm that a mission step would ruin (the Wildlife Exploitation Preserve loot midgets in Doctor's Orders, the Space Cowboy porta-potty midget). It warns you, then lets you keep the change or undo it. It also counts attempts, time and drops while you farm.
 - **History:** every change RTSE made, what you asked for and what the game kept, with **Undo**. Your save file is backed up before your first change each session, and you can back up or restore it yourself.
+- **Builds:** save your gear, skills and character as a named build, preview exactly what applying it would change, then apply it. Share builds as a JSON file or a link, and export or import a whole character.
 
 ## A tour of the editor
 
@@ -143,6 +144,26 @@ Which gun a hit belongs to comes from the game's `DamageCauser` on `TakeDamage`:
 9. Watch the "Hooks" line: `NotifyDamageDealt` should be counting. If only `TakeDamage` counts, the page shows the "pre-mitigation estimate" banner. Note that down.
 10. Press **Save lab dump** and send `rtse/debug_lab.json` (it holds the raw damage summary fields of the first 20 hits).
 11. Press F8 twice and toggle the mod off and on in the mod menu, then record again. Hits must not be counted twice.
+### Builds
+
+Save a named build of what you have now. Pick what goes in: **Equipped gear**, **Backpack gear**, **Skills**, **Level & skill points** and **Currencies**. **Export whole character** downloads everything (all gear, every skill, level, XP, skill points and currencies) as one JSON file.
+
+- **Share.** Each build has **Download JSON** and **Copy link**. A link is a compact `RTSE-L1:...` string, the same build compressed. **Import** takes a `.json` file or a pasted link or JSON.
+- **Preview first.** **Preview** is a dry run. It lists every change (before and after), what already matches, gear the build has that you don't (**missing**), and anything it **can't apply** with the reason: wrong class for the skills, a skill above its maximum (tick **Allow above max**), a level above the cap, a part the game hasn't loaded, or an item in the wrong place. RTSE can't equip or unequip items, so it tells you to do that yourself. Untick sections or single items to leave them out.
+- **Matching.** Gear is matched by item type and balance (which gun or item it is), then by how many parts already match. The item's `UniqueId` isn't used, because it changes when an item is rebuilt or re-imported. Each item you own is used for one build entry at most. Missing items are reported, never spawned. **Import from item code** appears once the item-codes feature lands.
+- **Apply.** Every change runs through the same functions as the Gear, Skills and Character pages, so each one gets the same checks, readback and rollback. **Apply** only runs if the game still matches the preview. Otherwise it asks you to preview again. If a step fails, RTSE stops. By default it then undoes the steps that worked, newest first. Pick **Keep them** to leave those in place. The result lists every step as ok, failed, rolled back, rollback failed or not run. If it says *rollback failed*, reload your save before playing.
+- Builds are stored in `rtse/loadouts.json`. Imported files and links are checked strictly: the format and version must match (`rtse.loadout` version 1), unknown fields are refused, and size limits apply (256 KB per build, 100 builds).
+
+**In-game test checklist** (none of this has been run in the game yet):
+
+1. Save a build with only equipped gear. Change a part and the level on one equipped gun in the Gear page. **Preview** should show exactly those two changes. **Apply** them, then check the gun is back as it was.
+2. Save a build with skills and level & skill points. Change a few skill ranks, then preview and apply. Check the skill tree and unspent points.
+3. Move a build gun from equipped to the backpack. The preview should show a location note and still plan its parts.
+4. Sell or drop a build item. The preview should list it as missing and change nothing for it.
+5. Load a character of another class. The skills section should be blocked as "this build is for ...".
+6. **Export whole character**, then import the file on the same character. The preview should show no changes, or only XP.
+7. Copy a link, delete the build and import the link. You should get the same build back.
+8. Press **Debug dump** and attach `rtse/debug_loadouts.json` to any bug report.
 
 ### Bank & codes
 
@@ -308,6 +329,7 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
   - Parent lists are assumed to be inherited through `BaseDefinition` for slots that aren't `bEnabled`.
   - "Unsupported" is a rule based on part class names.
 - **Farm guard**: the hook names exist in the game, but none of this has run in a live game. Still unconfirmed: that writing a mission's stored objective numbers back makes the game forget the progress (and brings the midgets back after a reload), that blocking a hook stops a pickup cleanly, which Space Cowboy step ends the porta-potty midget, the quick reload relaunch and its "not saving" check (the save manager's state 0 is assumed to mean idle), item rarity numbers (1 white to 5 orange), and spotting a fresh map from the world clock.
+- **Builds** have never been applied in a live game. Rebuilding many items in one go, the rollback of a failed step, and whether skill ranks and levels set through a build stick after a save and reload are all unconfirmed. Stat overrides aren't part of a build yet.
 
 - **History and save backups**: undo is tied to the character by `SaveGameFileId` and `PlayerClass` on the player controller and `PlayerName` on its replication info. If any of those can't be read in the real game, undo refuses every change. Finding the save reads `WillowSaveGameManager.LastLoadedFilePath` (it isn't known whether that's a full path or just a file name), then `SaveGameFileId`, then guesses the newest save in the Documents folder. If neither game value works in practice, every session's first change asks you to back up or skip. A staged restore waits for the map name `menumap` (assumed to be the main menu) and a player controller with no `Pawn` (assumed to mean no character is loaded). If either assumption is wrong, a staged restore never applies: the page keeps showing what it's waiting for, and **Cancel restore** drops it. Undo replays each page's own write with the old value, so it's exactly as verified as those pages are.
 

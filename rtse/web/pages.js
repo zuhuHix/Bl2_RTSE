@@ -31,4 +31,5 @@ export const PAGES = [
   { id: "bank", label: "Bank & codes", sub: "Bank, item codes, import", icon: "backpack", module: "./page_bank.js", css: "page_bank.css" },
   { id: "farm", label: "Farm guard", sub: "Guard a farm, count drops", icon: "crosshair", module: "./page_farm.js", css: "page_farm.css" },
   { id: "history", label: "History", sub: "Undo and save backups", icon: "swap", module: "./page_history.js", css: "page_history.css" },
+  { id: "loadouts", label: "Builds", sub: "Save and apply presets", icon: "check", module: "./page_loadouts.js", css: "page_loadouts.css" },
 ];
