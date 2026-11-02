@@ -291,6 +291,9 @@ h1, h2, h3 { margin: 0; font-weight: 400; font-family: var(--display); letter-sp
 .cc-val { font-family: var(--display); font-size: 50px; line-height: 1.05; margin: 10px 0 12px; color: var(--bone); text-shadow: 3px 3px 0 #000; overflow-wrap: anywhere; }
 .cc-ctrl { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .cc-ctrl .field { width: 132px; }
+/* A value the game did not confirm: small and muted, the reason is in the tooltip. */
+.unv { display: inline-block; margin-left: 8px; padding: 1px 6px; border: 1px solid var(--muted); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle; cursor: help; white-space: nowrap; }
+.unv-note { margin-top: 8px; color: var(--muted); font-size: 12px; font-weight: 600; cursor: help; }
 
 .pin-ic .avatar { width: 100%; height: 100%; border: 0; }
 .pin + .pin { margin-top: 8px; }

@@ -227,7 +227,10 @@ def character() -> dict:
         "sources": {"level": "pri.ExpLevel", "xp": "pc.GetExpPoints()", "skill_points": "pri.GeneralSkillPoints", "name": "pri.PlayerName",
                     "xp_this_level": "pc.GetExpPointsRequiredForLevel()", "xp_next_level": "pc.GetExpPointsRequiredForLevel()"},
         # example of what the UI shows for a guessed value: the Torgue Tokens index is not confirmed by the game data
-        "unverified": {"torgue": "currency index 3 is CURRENCY_Reserved_A in ECurrencyType; no game data ties it to Torgue Tokens"},
+        "unverified": {
+            "torgue": "currency index 3 is CURRENCY_Reserved_A in ECurrencyType; no game data ties it to Torgue Tokens",
+            "xp_next_level": "XP table not read from the game; the mock uses a formula",
+        },
     }
 
 
@@ -272,7 +275,8 @@ for _name in ("sdu", "skills", "world", "inspect"):
 # Same shape as limits.gear_level_cap(): gear level = character cap (80) + Overpower levels (10)
 GEAR_LIMITS = {
     "min": 1, "max": 90, "character_max": 80, "overpower_max": 10,
-    "sources": {"character_max": "mock", "overpower_max": "mock"},
+    # demo: the OP cap is pretended to be a fallback, so the UI shows its "not read from the game" note
+    "sources": {"character_max": "mock", "overpower_max": "fallback: 10 (game value not read)"},
 }
 
 
@@ -286,7 +290,8 @@ def detail(item: Item, mode: str) -> dict:
         "id": item.id, "location": item.location, "mode": mode, "class": item.cls, "name": item.name,
         "level": item.level, "overpower": max(0, item.level - GEAR_LIMITS["character_max"]), "limits": GEAR_LIMITS,
         "grade": item.level, "game_stage": item.level, "stats": stats,
-        "override_scope": "own" if item.overrides else None,
+        # demo: one gun is pretended to hold overrides saved before per-gun copies existed ("legacy")
+        "override_scope": "legacy" if "Dahl" in item.name else ("own" if item.overrides else None),
         "slots": slots_for(item, mode), "hide_bones": item.hide,
     }
 
