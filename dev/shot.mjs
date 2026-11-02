@@ -107,5 +107,14 @@ for (const step of config.steps) {
 
 console.log(problems.length ? `PROBLEMS:\n${problems.join("\n")}` : "no console problems");
 ws.close();
+// Close the browser this script started through its own DevTools port (Browser.close), so no headless Edge is left
+// holding a debug port; killing the launcher PID alone leaves the real browser process running.
+try {
+  const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const browser = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((resolve) => browser.addEventListener("open", resolve));
+  browser.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+  await sleep(500);
+} catch { /* already gone */ }
 proc.kill();
 process.exit(0);
