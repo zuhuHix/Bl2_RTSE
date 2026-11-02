@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
+import time
 import re
 import sys
 from pathlib import Path
@@ -24,6 +26,7 @@ from rtse import server  # noqa: E402
 
 # The real game may be running and listening on the default port; never share it. Use a random one.
 server.DEFAULT_PORT = 0
+server.Handler.timeout = 1.0  # a short socket timeout, so the stalled-body checks finish quickly
 url = server.start()
 port, token = server.port, server.token
 assert port != 8765, "test server must not use the game's port"
@@ -148,6 +151,29 @@ try:
     )
     check("queued keyed post times out -> 503", status, 503, body)
     results.append(("queued keyed post reports applied false", json.loads(body).get("applied") is False, body))
+
+    def stalled_post(headers: str) -> tuple[float, bytes]:
+        """Sends a POST announcing 1000 body bytes but only 10 of them, then waits. Returns (seconds until the
+        server closed the connection, whatever it answered)."""
+        sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        head = f"POST /api/item/set_level HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{headers}Content-Length: 1000\r\n\r\n"
+        sock.sendall(head.encode() + b"0123456789")
+        started = time.monotonic()
+        answer = b""
+        try:
+            while chunk := sock.recv(4096):
+                answer += chunk
+        except OSError:
+            pass  # a reset counts as closed too
+        sock.close()
+        return time.monotonic() - started, answer
+
+    waited, answer = stalled_post("")
+    results.append(("stalled unauthorized body: closed within the socket timeout", waited < 5, f"{waited:.1f}s"))
+    results.append(("stalled unauthorized body: no answer sent", answer == b"", repr(answer[:60])))
+    waited, answer = stalled_post(f"X-RTSE-Token: {token}\r\n")
+    results.append(("stalled authorized body: closed within the socket timeout", waited < 5, f"{waited:.1f}s"))
+    check("server still answers after stalled bodies", request("GET", "/app.js")[0], 200)
 finally:
     server.stop()
 
