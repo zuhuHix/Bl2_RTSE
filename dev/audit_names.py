@@ -25,7 +25,7 @@ import json  # noqa: E402
 
 import class_index  # noqa: E402
 import upk  # noqa: E402
-from rtse import ammo, character, limits, sdu, skills, world  # noqa: E402
+from rtse import ammo, character, damage, limits, sdu, skills, world  # noqa: E402
 
 ix = class_index.Index()
 
@@ -218,6 +218,18 @@ for function in ("NotifyPlaythroughChanged", "GetMissionStatus"):
 # ---- skills ----
 for owner, attribute in skills.TREE_SOURCES:
     check("skills", owner, attribute)
+
+# ---- damage lab (rtse/damage.py): the hooked functions, and the fields read inside the hooks ----
+for path, _fn in damage.HOOKS:
+    cls, _, function = path.split(".", 1)[1].partition(":")
+    hit = ix.function(cls, function)
+    rows.append(("damage.hooks", f"{cls}.{function}()", "REAL" if hit else "MISSING", str(hit)))
+struct_check("damage", "DamagePipeline.DamageEventSummary", damage.RAW_FIELDS)
+for cls, names in (("WillowPawn", ("bWasLastDamageACriticalHit", "GetHumanReadableName")), ("WillowWeapon", ("Owner", "ProjectilesPerShot", "ShotCost")), ("Pawn", ("Weapon",))):
+    for name in names:
+        hit = ix.field(cls, name) or ix.function(cls, name)
+        rows.append(("damage", f"{cls}.{name}", "REAL" if hit else "MISSING", str(hit)))
+
 
 # ---- game data objects and values (what the ammo, SDU and XP tables were read from) ----
 def data_check(module: str, what: str, ok: bool, detail: Any) -> None:
