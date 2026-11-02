@@ -13,7 +13,7 @@ from typing import Any, NamedTuple
 
 from unrealsdk import find_all, find_object, logging, unreal
 
-from .routing import ApiError, Params
+from .routing import ApiError, Params, Route
 
 # --- Part slot discovery -------------------------------------------------------------------------
 # "Legal" parts mirror how the game decides what an item may have: its balance definition owns a part
@@ -480,3 +480,11 @@ def part_owners(params: Params) -> dict[str, Any]:
     weapon = params.get("kind", "weapon") != "item"
     _part_universe(weapon=weapon)
     return {"owners": {pid: [len(names), *list(names)[:4]] for pid, names in _owners[weapon].items()}}
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = ApiError
+
+GET_ROUTES: dict[str, Route] = {"/api/part": part_info, "/api/part_owners": part_owners}
+POST_ROUTES: dict[str, Route] = {"/api/parts/rescan": rescan_parts}

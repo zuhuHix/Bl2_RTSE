@@ -31,6 +31,7 @@ from mods_base import get_pc
 from unrealsdk import logging, unreal
 
 from . import ammo
+from .routing import Route
 
 DEBUG_SDU_FILE = Path(__file__).parent / "debug_sdu.json"
 MAX_AMMO_CAPACITY = 100_000
@@ -522,3 +523,14 @@ def debug_dump() -> dict[str, Any]:
     out["read"] = state
     DEBUG_SDU_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     return {"saved_to": str(DEBUG_SDU_FILE), "sources": state["sources"], "warnings": state["warnings"], "unverified": state["unverified"]}
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = SduError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/sdu": lambda _params: read(),
+    "/api/debug/sdu": lambda _params: debug_dump(),
+}
+POST_ROUTES: dict[str, Route] = {"/api/sdu/set": set_level, "/api/sdu/ammo_max": set_ammo_max}
