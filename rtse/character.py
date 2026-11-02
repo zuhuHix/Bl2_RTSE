@@ -342,12 +342,14 @@ def set_field(params: dict[str, Any]) -> dict[str, Any]:
         if before["xp"] is None or before["level"] is None:
             # Without the old values there is nothing to put back, so don't start a write that might need undoing.
             raise CharacterError(409, "can't read the current level/XP, so a change couldn't be undone - nothing was changed")
-        where["xp"] = _write_xp(owners, target_xp)
         try:
+            # The XP write is inside the protected block too: a setter can change XP and then raise, so any failure
+            # from here on puts both fields back (restoring an XP value that never changed is harmless).
+            where["xp"] = _write_xp(owners, target_xp)
             where["level"] = _write(owners, "level", level)
             check = read()
-        except Exception as ex:  # noqa: BLE001 - whatever failed after the XP write, both fields go back
-            raise _undo_level(owners, before, level, target_xp, xp_source, f"writing the level failed ({ex})",
+        except Exception as ex:  # noqa: BLE001 - whatever failed, both fields go back
+            raise _undo_level(owners, before, level, target_xp, xp_source, f"writing the level/XP failed ({ex})",
                               ex.status if isinstance(ex, CharacterError) else 409) from ex
         if check["level"] != level or check["xp"] != target_xp:
             raise _undo_level(owners, before, level, target_xp, xp_source,

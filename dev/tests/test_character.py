@@ -155,7 +155,7 @@ def test_level_write_failing_after_the_xp_write_restores_both_and_says_so(game):
     with pytest.raises(character.CharacterError) as info:
         character.set_field({"field": "level", "value": 20})
     assert info.value.status == 409
-    assert "writing the level failed" in str(info.value)
+    assert "writing the level/XP failed" in str(info.value)
     assert str(info.value).endswith("restored the previous level and XP")
     assert world.state.xp == XP_TABLE[10] and world.pri.ExpLevel == 10
     assert character._last_write["restored"] == {"level": 10, "xp": XP_TABLE[10]}
@@ -242,3 +242,24 @@ def test_debug_dump_writes_the_evidence(game, tmp_path):
     assert out["xp_pool_definition"] == "D_Resourcepools.PlayerPools.ExperiencePool"
     assert out["level_cap"]["value"] == 72
     assert (tmp_path / "debug_character.json").is_file()
+
+
+def test_xp_setter_that_changes_xp_then_raises_restores_both(game):
+    """The XP write itself is protected: a setter that applies the new XP and then raises still gets undone."""
+    world = make_world(game, level=10)
+    real_set = world.pool.SetCurrentValue
+    calls = {"n": 0}
+
+    def set_then_raise(value: float) -> None:
+        calls["n"] += 1
+        real_set(value)  # the value really changes...
+        if calls["n"] == 1:
+            raise RuntimeError("the pool complained after writing")  # ...and then the call fails
+
+    world.pool.SetCurrentValue = set_then_raise
+    with pytest.raises(character.CharacterError) as info:
+        character.set_field({"field": "level", "value": 20})
+    assert "writing the level/XP failed" in str(info.value)
+    assert str(info.value).endswith("restored the previous level and XP")
+    assert world.state.xp == XP_TABLE[10] and world.pri.ExpLevel == 10
+    assert calls["n"] == 2  # the failed write, then the restore
