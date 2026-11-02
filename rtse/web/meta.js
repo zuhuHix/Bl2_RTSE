@@ -60,10 +60,19 @@ function titleCase(words) {
   return words.map((w) => (/^\d/.test(w) ? w : w[0].toUpperCase() + w.slice(1))).join(" ");
 }
 
-/** Reads a part's game name (e.g. Pistol_Barrel_Hyperion_LogansGun) into display pieces. */
-export function parsePart(name, group = "") {
+/**
+ * Reads a part's game name (e.g. Pistol_Barrel_Hyperion_LogansGun) into display pieces.
+ * Also accepts a part object from the server ({ name, group, label }): when the server sent a real
+ * in-game `label`, that is the title; otherwise the title is inferred from the name tokens (the fallback).
+ */
+export function parsePart(name, group = "", label = null) {
+  if (name && typeof name === "object") {
+    label = name.label ?? label;
+    group = name.group ?? group;
+    name = name.name;
+  }
   const tokens = splitTokens(name);
-  const info = { title: "", weaponType: null, slot: null, manufacturer: null, element: null, rarity: null };
+  const info = { title: "", weaponType: null, slot: null, manufacturer: null, element: null, rarity: null, fromGame: false };
   const rest = [];
   tokens.forEach((token, index) => {
     const t = token.toLowerCase();
@@ -92,7 +101,18 @@ export function parsePart(name, group = "") {
   } else {
     info.title = titleCase(rest);
   }
+  if (label) {
+    // The real in-game text wins; the token title above stays as the fallback when the server sent none.
+    info.title = label;
+    info.fromGame = true;
+  }
   return info;
+}
+
+/** The best label for a part object: the server's in-game `label`, else the token-inferred title. */
+export function partLabel(part) {
+  if (!part) return "";
+  return part.label || parsePart(part.name, part.group).title;
 }
 
 export function manufacturerColor(key) {
@@ -142,7 +162,8 @@ export function prettyAttribute(attribute, labels = {}) {
 
 /** Describes one attribute effect as { text, value, tone }, e.g. "Damage per shot", "x1.25 (+25%)". */
 export function describeEffect(effect, labels) {
-  const text = prettyAttribute(effect.attribute, labels);
+  // The server's attribute_label (hand-written table or humanized object name) wins over the token guess.
+  const text = effect.attribute_label || prettyAttribute(effect.attribute, labels);
   const kind = (effect.type || "").toLowerCase();
   const v = effect.value;
   if (v === null || v === undefined) return { text, value: effect.type || "modifies", tone: "" };

@@ -15,7 +15,7 @@ from typing import Any, Callable, NamedTuple
 from mods_base import get_pc
 from unrealsdk import find_all, find_object, logging, unreal
 
-from . import ammo, character, inspector, sdu, skills, stats, world
+from . import ammo, character, inspector, limits, sdu, skills, stats, world
 
 Params = dict[str, Any]
 
@@ -28,8 +28,7 @@ GESTALTS_FILE = Path(__file__).parent / "gestalts.json"
 COVERAGE_FILE = Path(__file__).parent / "debug_coverage.json"
 MODELS_MANIFEST = Path(__file__).parent / "web" / "models" / "parts.json"
 
-MIN_LEVEL = 1
-MAX_LEVEL = 100
+MIN_LEVEL = 1  # The gear level cap is limits.gear_level_cap(pc): character cap + Overpower levels, not 100
 
 
 class ApiError(Exception):
@@ -97,9 +96,43 @@ def _ref(part: unreal.UObject) -> PartRef:
     return PartRef(part._path_name(), part.Class.Name, _mesh_names(part))  # noqa: SLF001
 
 
-def _ref_dict(ref: PartRef) -> dict[str, str]:
+# Only name parts carry in-game text. Class data verified: these two have a `PartName` (Str) field.
+# WeaponPartDefinition and ItemPartDefinition have no display-name field, so they get no label.
+# The runtime text itself is unverified until read in game.
+NAME_PART_CLASSES = ("WeaponNamePartDefinition", "ItemNamePartDefinition")
+
+
+def _text_of(part: unreal.UObject | None) -> str | None:
+    """A name part's in-game text (e.g. "Logan's Gun"), or None for any other part or when it can't be read."""
+    if part is None or part.Class.Name not in NAME_PART_CLASSES:
+        return None
+    try:
+        return str(getattr(part, "PartName", "") or "").strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _part_label(ref: PartRef) -> str | None:
+    """The in-game label for a part reference. Looked up only for name parts, so the part scan never pays for it."""
+    if ref.class_name not in NAME_PART_CLASSES:
+        return None
+    try:
+        part = find_object(ref.class_name, ref.id)
+    except Exception:  # noqa: BLE001
+        return None
+    return _text_of(part)
+
+
+def _ref_dict(ref: PartRef) -> dict[str, Any]:
     package, _, name = ref.id.rpartition(".")
-    return {"id": ref.id, "name": name or ref.id, "group": package, "class": ref.class_name, "meshes": list(ref.meshes)}
+    return {
+        "id": ref.id,
+        "name": name or ref.id,
+        "group": package,
+        "class": ref.class_name,
+        "meshes": list(ref.meshes),
+        "label": _part_label(ref),  # real in-game text, or None: the browser then infers a label from tokens
+    }
 
 
 def _part_ref(part: unreal.UObject | None) -> dict[str, str] | None:
@@ -373,17 +406,23 @@ def equipped_weapons() -> list[unreal.UObject]:
     return [item for item, location in found if location == EQUIPPED and _is_weapon(item)]
 
 
-def _reinitialize(item: unreal.UObject, *, equipped: bool) -> None:
-    """Makes the game rebuild the item from its (edited) definition data."""
+def _reinitialize(item: unreal.UObject, *, equipped: bool, reroll_names: bool = True) -> None:
+    """Makes the game rebuild the item from its (edited) definition data.
+
+    reroll_names=True clears the title and prefix (so the game picks new ones) and gives the item a new
+    UniqueId. reroll_names=False keeps both and leaves the UniqueId alone; restoring a snapshot uses it.
+    """
     data = item.DefinitionData
     if _is_weapon(item):
-        data.TitlePartDefinition = None
-        data.PrefixPartDefinition = None
+        if reroll_names:
+            data.TitlePartDefinition = None
+            data.PrefixPartDefinition = None
         # Initializing a weapon without a weapon type crashes the game
         can_initialize = data.WeaponTypeDefinition is not None
     else:
-        data.TitleItemNamePartDefinition = None
-        data.PrefixItemNamePartDefinition = None
+        if reroll_names:
+            data.TitleItemNamePartDefinition = None
+            data.PrefixItemNamePartDefinition = None
         can_initialize = data.ItemDefinition is not None
 
     if can_initialize:
@@ -391,7 +430,107 @@ def _reinitialize(item: unreal.UObject, *, equipped: bool) -> None:
         if not equipped:
             # Unreadying would holster/unequip gear the player is using
             item.Unready(True)
-    item.DefinitionData.UniqueId = item.GenerateUniqueID()
+    if reroll_names:
+        item.DefinitionData.UniqueId = item.GenerateUniqueID()
+
+
+# Fields a rebuild reads and a part or level edit writes. Everything else on the item is left alone.
+_WEAPON_REBUILD_FIELDS = (
+    "WeaponTypeDefinition", "BalanceDefinition", "ManufacturerDefinition",
+    *(f"{s}PartDefinition" for s in WEAPON_SLOTS), "PrefixPartDefinition", "TitlePartDefinition",
+)  # fmt: skip
+_ITEM_REBUILD_FIELDS = (
+    "ItemDefinition", "BalanceDefinition", "ManufacturerDefinition",
+    *(f"{s}ItemPartDefinition" for s in ITEM_SLOTS), "PrefixItemNamePartDefinition", "TitleItemNamePartDefinition",
+)  # fmt: skip
+_LEVEL_FIELDS = ("GameStage", "ManufacturerGradeIndex", "UniqueId")
+
+
+def _path_or_none(obj: unreal.UObject | None) -> str | None:
+    return None if obj is None else obj._path_name()  # noqa: SLF001
+
+
+def _snapshot(item: unreal.UObject) -> dict[str, Any]:
+    """Every field a rebuild or a part/level edit can change, so a failed edit can be put back exactly.
+
+    Fields this game build does not have are skipped. Any other read error stops the edit before it starts.
+    """
+    data = item.DefinitionData
+    fields = _WEAPON_REBUILD_FIELDS if _is_weapon(item) else _ITEM_REBUILD_FIELDS
+    snapshot: dict[str, Any] = {}
+    for field in (*fields, *_LEVEL_FIELDS):
+        try:
+            snapshot[field] = getattr(data, field)
+        except AttributeError:
+            continue
+    try:
+        snapshot["ExpLevel"] = item.ExpLevel
+    except AttributeError:
+        pass
+    return snapshot
+
+
+def _restore(item: unreal.UObject, snapshot: dict[str, Any], *, equipped: bool) -> None:
+    for field, value in snapshot.items():
+        if field != "ExpLevel":
+            setattr(item.DefinitionData, field, value)
+    # Rebuild with the old UniqueId already back in place, so the stat-override hooks find the right gun
+    _reinitialize(item, equipped=equipped, reroll_names=False)
+    if "UniqueId" in snapshot:
+        item.DefinitionData.UniqueId = snapshot["UniqueId"]
+    if "ExpLevel" in snapshot:
+        item.ExpLevel = snapshot["ExpLevel"]
+
+
+def _edit_with_rollback(
+    item: unreal.UObject,
+    *,
+    equipped: bool,
+    what: str,
+    write: Callable[[], None],
+    verify: Callable[[], str | None],
+    after_rebuild: Callable[[], None] | None = None,
+) -> None:
+    """Writes an edit, rebuilds the item and checks the game took it.
+
+    verify() returns None when the item is as requested, else a description of the problem. If the write or
+    the rebuild raises, or the check fails, every field from before is put back and an ApiError is raised.
+    Overrides are not moved here: callers do that only after this returns normally.
+    """
+    snapshot = _snapshot(item)
+    try:
+        write()
+        _reinitialize(item, equipped=equipped)
+        if after_rebuild is not None:
+            after_rebuild()
+        problem = verify()
+    except Exception as ex:  # noqa: BLE001
+        problem = f"the game raised {ex!r}"
+    if problem is None:
+        return
+
+    logging.error(f"RTSE: {what} rejected: {problem}")
+    try:
+        _restore(item, snapshot, equipped=equipped)
+    except Exception as ex:  # noqa: BLE001
+        logging.error(f"RTSE: restoring {what} also failed: {ex!r} (fields {sorted(snapshot)})")
+        raise ApiError(
+            500,
+            f"the change failed AND restoring failed - reload the save before playing ({problem})",
+        ) from None
+    raise ApiError(409, f"the game did not accept that change; the previous parts were restored ({problem})")
+
+
+def _gear_limits() -> dict[str, Any]:
+    """The gear level range for the game as it is right now (limits.py explains the fallbacks)."""
+    return limits.gear_level_cap(get_pc(possibly_loading=True))
+
+
+def _level_range_message(gear: dict[str, Any]) -> str:
+    return (
+        f"level must be {gear['min']}-{gear['max']} (gear is level {gear['character_max']} + OP n, "
+        f"so {gear['max']} = level {gear['character_max']} OP{gear['overpower_max']})"
+    )
 
 
 # --- Routes --------------------------------------------------------------------------------------
@@ -474,6 +613,7 @@ def _hidden_bones(item: unreal.UObject) -> list[str]:
 
 def _detail(item: unreal.UObject, location: str, mode: str) -> dict[str, Any]:
     data = item.DefinitionData
+    gear = _gear_limits()
     return {
         "hide_bones": _hidden_bones(item),
         "id": _item_id(item),
@@ -482,9 +622,12 @@ def _detail(item: unreal.UObject, location: str, mode: str) -> dict[str, Any]:
         "class": item.Class.Name,
         "name": item.GetHumanReadableName(),
         "level": item.ExpLevel,
+        "overpower": limits.overpower_of(item.ExpLevel, gear["character_max"]),
+        "limits": gear,
         "grade": data.ManufacturerGradeIndex,
         "game_stage": data.GameStage,
         "stats": stats.read_stats(item),
+        "override_scope": stats.override_scope(item),
         "slots": [
             {
                 "slot": slot.name,
@@ -516,18 +659,36 @@ def set_part(params: Params) -> dict[str, Any]:
             raise ApiError(409, "that part is not loaded right now - try rescanning parts")
 
     before = _part_ref(getattr(item.DefinitionData, slot.field))
-    old_fingerprint = stats.fingerprint(item)
-    setattr(item.DefinitionData, slot.field, part)
-    stats.move_overrides(old_fingerprint, stats.fingerprint(item))
-    after_write = _part_ref(getattr(item.DefinitionData, slot.field))
-    _reinitialize(item, equipped=location == EQUIPPED)
+    seen: dict[str, Any] = {}
+
+    def write() -> None:
+        setattr(item.DefinitionData, slot.field, part)
+        seen["after_write"] = _part_ref(getattr(item.DefinitionData, slot.field))
+
+    def verify() -> str | None:
+        current = _path_or_none(getattr(item.DefinitionData, slot.field))
+        if current == part_id:
+            return None
+        return f"the {slot.name} slot holds {current!r}, not {part_id!r}"
+
+    old_identity = stats.identity(item)
+    _edit_with_rollback(
+        item,
+        equipped=location == EQUIPPED,
+        what=f"{slot.name} ({location})",
+        write=write,
+        verify=verify,
+    )
+    # The game rebuilt the gun: its overrides follow it to the new identity, then get applied to it again
+    stats.move_overrides(old_identity, stats.identity(item))
+    stats.reapply(item, reason="changing a part")
     after_init = _part_ref(getattr(item.DefinitionData, slot.field))
     applied = {
         "what": f"{slot.name} ({location})",
         "requested": part_id,
         "before": before and before["name"],
         "after": {
-            "after_write": after_write and after_write["name"],
+            "after_write": seen["after_write"] and seen["after_write"]["name"],
             "after_rebuild": after_init and after_init["name"],
         },
     }
@@ -542,21 +703,41 @@ def set_level(params: Params) -> dict[str, Any]:
         level = int(params["level"])
     except (KeyError, TypeError, ValueError):
         raise ApiError(400, "'level' must be an integer") from None
-    if not MIN_LEVEL <= level <= MAX_LEVEL:
-        raise ApiError(400, f"level must be {MIN_LEVEL}-{MAX_LEVEL}")
+    gear = _gear_limits()
+    if not MIN_LEVEL <= level <= gear["max"]:
+        raise ApiError(400, _level_range_message(gear))
 
     data = item.DefinitionData
     before = {"exp_level": item.ExpLevel, "grade": data.ManufacturerGradeIndex, "game_stage": data.GameStage}
 
-    # The level the game shows and saves is built from the manufacturer grade; game stage is a
-    # separate stored value (both are written to the save). Keep them in step.
-    old_fingerprint = stats.fingerprint(item)
-    data.GameStage = level
-    data.ManufacturerGradeIndex = level
-    stats.move_overrides(old_fingerprint, stats.fingerprint(item))
-    _reinitialize(item, equipped=location == EQUIPPED)
-    if item.ExpLevel != level:
-        item.ExpLevel = level
+    def write() -> None:
+        # The level the game shows and saves is built from the manufacturer grade; game stage is a
+        # separate stored value (both are written to the save). Keep them in step.
+        item.DefinitionData.GameStage = level
+        item.DefinitionData.ManufacturerGradeIndex = level
+
+    def fix_exp_level() -> None:
+        if item.ExpLevel != level:
+            item.ExpLevel = level
+
+    def verify() -> str | None:
+        if item.ExpLevel != level:
+            return f"ExpLevel is {item.ExpLevel}, not {level}"
+        if item.DefinitionData.GameStage != level:
+            return f"GameStage is {item.DefinitionData.GameStage}, not {level}"
+        return None
+
+    old_identity = stats.identity(item)
+    _edit_with_rollback(
+        item,
+        equipped=location == EQUIPPED,
+        what=f"level ({location})",
+        write=write,
+        verify=verify,
+        after_rebuild=fix_exp_level,
+    )
+    stats.move_overrides(old_identity, stats.identity(item))
+    stats.reapply(item, reason="changing the level")
 
     data = item.DefinitionData
     applied = {
@@ -579,6 +760,7 @@ def set_stat(params: Params) -> dict[str, Any]:
         raise ApiError(400, "only weapons have editable stats")
 
     raw = params.get("value")
+    old_identity = stats.identity(item)
     try:
         value = None if raw is None else float(raw)
         applied = stats.set_override(item, stat, value)
@@ -586,8 +768,11 @@ def set_stat(params: Params) -> dict[str, Any]:
         raise ApiError(400, str(ex)) from None
 
     if value is None:
-        # Removing an override: rebuild the weapon so the game restores the real value
+        # Removing an override: rebuild the weapon so the game restores the real value. The rebuild gives
+        # the gun a new UniqueId, so its own overrides move with it.
         _reinitialize(item, equipped=location == EQUIPPED)
+        stats.move_overrides(old_identity, stats.identity(item))
+        stats.reapply(item, reason="clearing an override")
         applied["after"] = {
             "value": getattr(item, stat),
             "base": getattr(item, f"{stat}BaseValue"),
@@ -600,8 +785,11 @@ def set_stat(params: Params) -> dict[str, Any]:
 MAX_EFFECTS = 40
 
 
-def _struct_summary(struct: Any) -> dict[str, Any]:
-    """Flattens the simple fields of a struct, e.g. one attribute effect of a part."""
+def _struct_summary(struct: Any, *, paths: bool = False) -> dict[str, Any]:
+    """Flattens the simple fields of a struct, e.g. one attribute effect of a part.
+
+    paths=True keeps object fields as full paths (the stable id of an attribute) instead of bare names.
+    """
     out: dict[str, Any] = {}
     for prop in struct._type._fields():  # noqa: SLF001
         try:
@@ -609,7 +797,7 @@ def _struct_summary(struct: Any) -> dict[str, Any]:
         except Exception:  # noqa: BLE001, S112
             continue
         if isinstance(value, unreal.UObject):
-            out[prop.Name] = value.Name
+            out[prop.Name] = value._path_name() if paths else value.Name  # noqa: SLF001
         elif isinstance(value, Enum):
             out[prop.Name] = value.name
         elif value is None or isinstance(value, (bool, int, float, str)):
@@ -619,15 +807,92 @@ def _struct_summary(struct: Any) -> dict[str, Any]:
     return out
 
 
+# Hand-written, NOT verified in game: the labels below are guesses for common weapon attributes. The key is
+# the attribute object's own name (last dotted segment of its path, lower-cased), e.g. "WeaponDamage" from
+# "D_Attributes.Weapon.WeaponDamage". Anything not listed is split into words from its name instead.
+ATTRIBUTE_LABELS: dict[str, str] = {
+    "weapondamage": "Weapon damage",
+    "meleedamage": "Melee damage",
+    "criticaldamage": "Critical damage",
+    "firerate": "Fire rate",
+    "fireinterval": "Fire interval",
+    "reloadtime": "Reload time",
+    "reloadspeed": "Reload speed",
+    "clipsize": "Magazine size",
+    "magazinesize": "Magazine size",
+    "accuracy": "Accuracy",
+    "spread": "Spread",
+    "recoil": "Recoil",
+    "projectilespeed": "Projectile speed",
+    "statuseffectchance": "Status effect chance",
+    "statuseffectdamage": "Status effect damage",
+}
+
+
+def _attribute_label(attribute: str | None) -> str | None:
+    """A readable name for an attribute path: the hand-written table first, then its object name split into words."""
+    if not attribute:
+        return None
+    leaf = attribute.rpartition(".")[2] or attribute
+    known = ATTRIBUTE_LABELS.get(leaf.lower())
+    if known:
+        return known
+    return " ".join(re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", leaf)) or leaf
+
+
+def _plain_number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _exact_effect(summary: dict[str, Any]) -> dict[str, Any] | None:
+    """Reads the fields the class data names, or returns None when they are not all there.
+
+    Field names verified in class data: AttributeEffectData.AttributeToModify (Object, its path is the id),
+    AttributeEffectData.ModifierType (Byte) and AttributeEffectData.BaseModifierValue (Struct), which should
+    hold AttributeInitializationData.BaseValueConstant and .BaseValueScaleConstant (Float). The runtime
+    values and the meaning of each ModifierType number are UNVERIFIED.
+    """
+    attribute = summary.get("AttributeToModify")
+    base = summary.get("BaseModifierValue")
+    if not isinstance(attribute, str) or not isinstance(base, dict) or "ModifierType" not in summary:
+        return None
+    if "BaseValueConstant" not in base and "BaseValueScaleConstant" not in base:
+        return None
+    constant = _plain_number(base.get("BaseValueConstant"))
+    scale = _plain_number(base.get("BaseValueScaleConstant"))
+    kind = summary.get("ModifierType")
+    return {
+        "attribute": attribute,
+        "attribute_label": _attribute_label(attribute),
+        "type": kind if kind is None or isinstance(kind, str) else str(kind),
+        "value": constant * scale if constant is not None and scale is not None else None,
+        "exact": True,
+    }
+
+
 def _effect_view(summary: dict[str, Any]) -> dict[str, Any]:
-    """Picks out the attribute, how it is modified and by how much; keeps the rest for display."""
+    """Picks out the attribute, how it is modified and by how much; keeps the raw summary for display.
+
+    Reads the exact class-data fields first (see _exact_effect). Only when they are missing does it fall
+    back to scanning keys by name, which is a guess; that result has "exact": False.
+    """
+    exact = _exact_effect(summary)
+    if exact is not None:
+        return {**exact, "raw": summary}
     attribute = next((v for k, v in summary.items() if "Attribute" in k and isinstance(v, str)), None)
     kind = next((v for k, v in summary.items() if "Type" in k and isinstance(v, str)), None)
     value = next(
         (v for k, v in summary.items() if "Value" in k and isinstance(v, (int, float)) and not isinstance(v, bool)),
         None,
     )
-    return {"attribute": attribute, "type": kind, "value": value, "raw": summary}
+    return {
+        "attribute": attribute,
+        "attribute_label": _attribute_label(attribute),
+        "type": kind,
+        "value": value,
+        "raw": summary,
+        "exact": False,
+    }
 
 
 def _part_object(params: Params) -> unreal.UObject:
@@ -654,7 +919,7 @@ def _part_effects(part: unreal.UObject) -> list[dict[str, Any]]:
             continue  # Not an array
         for element in elements[:MAX_EFFECTS]:
             try:
-                effects.append({"source": prop.Name, **_effect_view(_struct_summary(element))})
+                effects.append({"source": prop.Name, **_effect_view(_struct_summary(element, paths=True))})
             except Exception:  # noqa: BLE001, S112
                 continue
     return effects
@@ -916,13 +1181,22 @@ def debug_item(params: Params) -> dict[str, Any]:
         return out
 
     data = item.DefinitionData
+    # UniqueId is what per-gun stat overrides are keyed on. Whether it survives a save and reload is unverified.
+    unique_id = stats.unique_id(item)
     result = {
         "name": item.GetHumanReadableName(),
+        "unique_id": unique_id,  # 0 when unreadable
+        "identity": stats.identity(item),
         "item": dump(item.Class, item),
         "definition_data": dump(data._type, data),  # noqa: SLF001
     }
+    logging.info(f"RTSE: debug_item {result['name']!r} UniqueId={unique_id} identity={result['identity']}")
     DEBUG_DUMP_FILE.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-    return {"saved_to": str(DEBUG_DUMP_FILE), "fields": len(result["item"]) + len(result["definition_data"])}
+    return {
+        "saved_to": str(DEBUG_DUMP_FILE),
+        "fields": len(result["item"]) + len(result["definition_data"]),
+        "unique_id": unique_id,
+    }
 
 
 def debug_inventory(_params: Params) -> dict[str, Any]:
