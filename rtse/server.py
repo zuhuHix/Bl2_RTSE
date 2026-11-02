@@ -92,7 +92,14 @@ class Handler(BaseHTTPRequestHandler):
         return secrets.compare_digest(supplied, token)
 
     def _dispatch(
-        self, route_path: str, route: api.Route, params: api.Params, *, body: bytes = b"", key: str | None = None
+        self,
+        route_path: str,
+        route: api.Route,
+        params: api.Params,
+        *,
+        body: bytes = b"",
+        key: str | None = None,
+        mutating: bool = True,
     ) -> None:
         """Runs the route on the game thread. Timeout, cancel, grace and key rules: rtse/idempotency.py."""
         status, payload, headers = idempotency.run_job(
@@ -103,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
             body,
             GAME_THREAD_TIMEOUT,
             RUNNING_GRACE,
+            mutating=mutating,
         )
         self._json(status, payload, headers)
 
@@ -128,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         params = {k: v[0] for k, v in parse_qs(split.query).items() if k != "t"}
-        self._dispatch(split.path, route, params)
+        self._dispatch(split.path, route, params, mutating=False)
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorized(header_only=True):

@@ -336,3 +336,42 @@ def test_keyless_request_still_running_after_grace_is_told_not_to_resend():
     assert payload == {"error": idempotency.STILL_RUNNING_UNKEYED_ERROR, "pending": True, "retry": False}
     assert "Idempotency-Key" not in payload["error"] and "don't resend" in payload["error"]
     future.set_result({"ok": True})
+
+
+def test_a_full_cache_of_unfinished_jobs_refuses_a_new_key_without_submitting():
+    """The cap is hard: pending entries are never evicted, so a new key is refused (503 busy) instead of queued."""
+    cache = IdempotencyCache(max_entries=2)
+    stalled = [_running_future(), _running_future()]
+    for key, future in zip(("abcdefgh-p1", "abcdefgh-p2"), stalled):
+        assert run_job(lambda future=future: future, cache, key, ROUTE, BODY, 0, 0)[0] == 504
+    status, payload, _ = run_job(never, cache, "abcdefgh-p3", ROUTE, BODY, 0, 0)
+    assert status == 503
+    assert payload == {"error": idempotency.BUSY_ERROR, "applied": False, "busy": True}
+    assert len(cache) == 2
+    # The pending keys still work, and once one finishes there is room again.
+    stalled[0].set_result({"n": 1})
+    assert run_job(never, cache, "abcdefgh-p1", ROUTE, BODY, 0, 0)[:2] == (200, {"n": 1})
+    job, calls = counting({"n": 3})
+    assert run_job(completed(job), cache, "abcdefgh-p3", ROUTE, BODY, 1, 1)[:2] == (200, {"n": 3})
+    assert calls == [1]
+    stalled[1].set_result({"n": 2})
+
+
+def test_a_full_cache_of_finished_jobs_still_accepts_new_keys():
+    cache = IdempotencyCache(max_entries=1)
+    job, calls = counting({"ok": True})
+    run_job(completed(job), cache, "abcdefgh-f1", ROUTE, BODY, 1, 1)
+    assert run_job(completed(job), cache, "abcdefgh-f2", ROUTE, BODY, 1, 1)[0] == 200
+    assert calls == [1, 1] and len(cache) == 1
+
+
+def test_a_slow_keyless_read_gets_a_retryable_504():
+    future = _running_future()
+    status, payload, _ = run_job(lambda: future, None, None, "/api/items", b"", 0, 0, mutating=False)
+    assert status == 504
+    assert payload == {"error": idempotency.STILL_RUNNING_READ_ERROR, "pending": True, "retry": True}
+    future.set_result({"items": []})
+    # A keyless write in the same state still says not to resend.
+    write = _running_future()
+    assert run_job(lambda: write, None, None, ROUTE, BODY, 0, 0)[1]["retry"] is False
+    write.set_result({})
