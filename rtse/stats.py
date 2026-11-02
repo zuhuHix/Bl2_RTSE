@@ -35,6 +35,7 @@ untouched and is copied aside to overrides.corrupt.bak.json before the first sav
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import math
 import os
@@ -350,11 +351,50 @@ def _write(item: unreal.UObject, stat: str, value: float) -> None:
         _applying = False
 
 
+class StatWriteError(RuntimeError):
+    """Writing a stat to the gun failed or didn't stick. `restored` says whether the gun and the stored overrides
+    were put back as they were (False: the gun may be left half-written)."""
+
+    def __init__(self, message: str, *, restored: bool) -> None:
+        super().__init__(message)
+        self.restored = restored
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Readback comparison: the game stores floats as 32-bit, so allow for that rounding."""
+    try:
+        return a == b or math.isclose(float(a), float(b), rel_tol=1e-6, abs_tol=1e-6)
+    except (TypeError, ValueError):
+        return False
+
+
+def _put_back(item: unreal.UObject, stat: str, before: dict[str, Any]) -> bool:
+    """Writes the old live and base values back; True if both read back as they were."""
+    global _applying  # noqa: PLW0603
+    _applying = True
+    try:
+        for name, old in ((stat, before["value"]), (f"{stat}BaseValue", before["base"])):
+            try:
+                setattr(item, name, old)
+            except Exception as ex:  # noqa: BLE001 - try the other one anyway
+                logging.error(f"RTSE: could not put {name} back to {old!r}: {ex!r}")
+    finally:
+        _applying = False
+    try:
+        return _same(getattr(item, stat), before["value"]) and _same(getattr(item, f"{stat}BaseValue"), before["base"])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def set_override(item: unreal.UObject, stat: str, value: float | None) -> dict[str, Any]:
     """Stores (or with None, removes) an override on this gun and applies it. Returns what the game reports.
 
     The first change on a gun that uses a legacy entry gives that gun its own copy of the legacy stats first.
     If the file can't be saved, the change is kept in memory and the result's "warning" says so (None otherwise).
+
+    All or nothing: the stored entry and both game values are snapshotted first. If writing the live or base value
+    raises, or they don't read back as written, both values and the stored entry are put back and StatWriteError
+    is raised (nothing is saved).
     """
     if stat not in STAT_NAMES:
         raise KeyError(stat)
@@ -368,6 +408,15 @@ def set_override(item: unreal.UObject, stat: str, value: float | None) -> dict[s
     label = item.GetHumanReadableName()
     if value is not None:
         value = _coerce(item, stat, value)
+
+    had_entry = ident in _weapons
+    old_entry = copy.deepcopy(_weapons.get(ident))
+
+    def restore_entry() -> None:
+        if had_entry:
+            _weapons[ident] = old_entry
+        else:
+            _weapons.pop(ident, None)
 
     own = _weapons.get(ident)
     if own is None and _legacy_stats(key) is not None:
@@ -383,7 +432,23 @@ def set_override(item: unreal.UObject, stat: str, value: float | None) -> dict[s
             own = _weapons[ident] = {"label": label, "stats": {}}
         own["stats"][stat] = value
         own["label"] = label
-        _write(item, stat, value)
+        try:
+            _write(item, stat, value)
+            live, base = getattr(item, stat), getattr(item, f"{stat}BaseValue")
+            problem = None if _same(live, value) and _same(base, value) else f"it reads {live!r} (base {base!r})"
+        except Exception as ex:  # noqa: BLE001
+            problem = f"the game raised {ex!r}"
+        if problem is not None:
+            restore_entry()
+            restored = _put_back(item, stat, before)
+            logging.error(f"RTSE: {stat} override not applied: {problem}; restored={restored}")
+            if restored:
+                raise StatWriteError(f"the game did not take {stat} = {value} ({problem}); nothing was changed", restored=True)
+            raise StatWriteError(
+                f"the game did not take {stat} = {value} ({problem}) and putting the old value back also failed; "
+                "reload the save before playing",
+                restored=False,
+            )
     warning = None
     try:
         _save()
