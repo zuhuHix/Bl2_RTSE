@@ -20,6 +20,7 @@ from typing import Any
 
 from mods_base import get_pc
 from unrealsdk import logging, unreal
+from .routing import Route
 
 DEBUG_AMMO_FILE = Path(__file__).parent / "debug_ammo.json"
 MAX_AMMO = 100_000
@@ -246,3 +247,14 @@ def debug_dump() -> dict[str, Any]:
         out["pools"].append(entry)
     DEBUG_AMMO_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     return {"saved_to": str(DEBUG_AMMO_FILE), "pools": len(out["pools"])}
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = AmmoError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/ammo": lambda _params: read(),
+    "/api/debug/ammo": lambda _params: debug_dump(),
+}
+POST_ROUTES: dict[str, Route] = {"/api/ammo/set": set_value}

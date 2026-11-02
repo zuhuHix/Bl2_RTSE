@@ -25,6 +25,7 @@ from mods_base import get_pc
 from unrealsdk import logging, unreal
 
 from . import limits
+from .routing import Route
 
 DEBUG_CHARACTER_FILE = Path(__file__).parent / "debug_character.json"
 
@@ -450,3 +451,14 @@ def _definition_path_or_none(pool: Any) -> str | None:
         return pool.Definition._path_name()  # noqa: SLF001
     except Exception:  # noqa: BLE001
         return None
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = CharacterError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/character": lambda _params: read(),
+    "/api/debug/character": lambda _params: debug_dump(),
+}
+POST_ROUTES: dict[str, Route] = {"/api/character/set": set_field}

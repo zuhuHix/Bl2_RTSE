@@ -20,6 +20,7 @@ from typing import Any
 
 from mods_base import get_pc
 from unrealsdk import logging, unreal
+from .routing import Route
 
 PAGE = 100  # most array entries one answer lists
 MAX_PATH = 300
@@ -339,3 +340,11 @@ def set_value(params: dict[str, Any]) -> dict[str, Any]:
     logging.info(f"RTSE: inspector {applied}")
     parent_path = path[: path.rindex("[")] if index is not None else path.rsplit(".", 1)[0]
     return {**look({"path": parent_path, "offset": params.get("offset") or 0}), "applied": applied}
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = InspectError
+
+GET_ROUTES: dict[str, Route] = {"/api/inspect": look}
+POST_ROUTES: dict[str, Route] = {"/api/inspect/set": set_value}

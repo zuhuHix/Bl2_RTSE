@@ -15,7 +15,7 @@ from unrealsdk import find_all, logging, unreal
 from . import stats
 from .gear_inventory import _find_item, _item_id, _manager, _walk_chain
 from .gear_parts import PartRef, _part_effects, _part_object, _part_universe, _struct_summary, _value_summary
-from .routing import ApiError, Params
+from .routing import ApiError, Params, Route
 
 DEBUG_DUMP_FILE = Path(__file__).parent / "debug_item.json"
 DEBUG_INVENTORY_FILE = Path(__file__).parent / "debug_inventory.json"
@@ -290,3 +290,19 @@ def debug_inventory(_params: Params) -> dict[str, Any]:
 
     DEBUG_INVENTORY_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     return {"saved_to": str(DEBUG_INVENTORY_FILE), "chains": {k: len(v) if isinstance(v, list) else v for k, v in out["chains"].items()}}
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = ApiError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/debug/item": debug_item,
+    "/api/debug/inventory": debug_inventory,
+    "/api/debug/part": debug_part,
+    "/api/debug/meshes": debug_meshes,
+    "/api/debug/gestalt": debug_gestalt,
+    "/api/debug/gestalts": export_gestalts,
+    "/api/debug/coverage": export_coverage,
+}
+POST_ROUTES: dict[str, Route] = {}

@@ -26,6 +26,7 @@ from typing import Any, Callable, NamedTuple
 
 from mods_base import get_pc
 from unrealsdk import find_all, logging, unreal
+from .routing import Route
 
 DEBUG_WORLD_FILE = Path(__file__).parent / "debug_world.json"
 
@@ -1169,3 +1170,24 @@ def debug_dump() -> dict[str, Any]:
         "saved_to": str(DEBUG_WORLD_FILE),
         "sections": {name: not (isinstance(out[name], str) and out[name].startswith("<error")) for name in SECTIONS},
     }
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = WorldError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/world": read,
+    "/api/debug/world": lambda _params: debug_dump(),
+    "/api/world/objectives": mission_objectives,
+}
+POST_ROUTES: dict[str, Route] = {
+    "/api/world/mission": set_mission,
+    "/api/world/missions/reset": reset_missions,
+    "/api/world/objective": set_objective,
+    "/api/world/objective_set": set_objective_set,
+    "/api/world/track": track_mission,
+    "/api/world/challenge": set_challenge,
+    "/api/world/stations": unlock_stations,
+    "/api/world/playthrough": set_playthrough,
+}
