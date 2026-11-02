@@ -2,9 +2,13 @@
 
 The player controller keeps its ammo in resource pools: Controller.ResourcePoolManager.ResourcePools holds
 ResourcePool objects (AmmoResourcePool for ammo) with GetCurrentValue/SetCurrentValue/GetMaxValue, and each pool's
-Definition names its ammo (D_Resourcepools.AmmoPools.Ammo_Repeater_Pistol_Pool, ...). Those names were read from the
-game's own class definitions and data; none of it has run in a live game, so reading is still defensive and the dump
-saves everything a pool exposes.
+Definition names its ammo.
+
+Which pool is which ammo type is settled from the game's own data, not from names: POOL_DEFINITIONS maps the seven
+ammo pool definitions (Startup.upk, package D_Resourcepools.AmmoPools, class Engine.ResourcePoolDefinition; read with
+dev/upk.py) to their kind. A live pool whose Definition path is in that table is "matched": "definition" (settled).
+Only a pool whose definition is NOT in the table falls back to matching words in its names; that match is marked
+"word" and reported in `unverified`. None of this has run in a live game.
 """
 
 from __future__ import annotations
@@ -20,7 +24,20 @@ from unrealsdk import logging, unreal
 DEBUG_AMMO_FILE = Path(__file__).parent / "debug_ammo.json"
 MAX_AMMO = 100_000
 
-# (key, label, words in the pool's name that identify it); the first match wins, so order matters
+# Game ammo pool definition (object path, read from Startup.upk) -> (kind key, label). Each definition's Resource is
+# the matching D_Resources.AmmoResources.Ammo_* object. Verified present in the game data by dev/audit_names.py.
+POOL_DEFINITIONS: dict[str, tuple[str, str]] = {
+    "D_Resourcepools.AmmoPools.Ammo_Repeater_Pistol_Pool": ("pistol", "Pistol"),
+    "D_Resourcepools.AmmoPools.Ammo_Patrol_SMG_Pool": ("smg", "SMG"),
+    "D_Resourcepools.AmmoPools.Ammo_Combat_Rifle_Pool": ("rifle", "Assault Rifle"),
+    "D_Resourcepools.AmmoPools.Ammo_Combat_Shotgun_Pool": ("shotgun", "Shotgun"),
+    "D_Resourcepools.AmmoPools.Ammo_Sniper_Rifle_Pool": ("sniper", "Sniper Rifle"),
+    "D_Resourcepools.AmmoPools.Ammo_Rocket_Launcher_Pool": ("launcher", "Launcher"),
+    "D_Resourcepools.AmmoPools.Ammo_Grenade_Protean_Pool": ("grenade", "Grenades"),
+}
+
+# FALLBACK ONLY (unverified): (key, label, words in the pool's name that identify it); the first match wins.
+# Used only for a pool whose definition is not in POOL_DEFINITIONS.
 KINDS = (
     ("sniper", "Sniper Rifle", ("sniper",)),
     ("pistol", "Pistol", ("pistol", "revolver")),
@@ -50,11 +67,22 @@ def _pools() -> list[Any]:
     return [pool for pool in pools if pool is not None]
 
 
+def _definition_path(pool: Any) -> str | None:
+    """The pool's Definition object path (real field: the ResourcePoolDefinition), or None."""
+    definition = getattr(pool, "Definition", None)
+    if definition is None:
+        return None
+    try:
+        return definition._path_name()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _names(pool: Any) -> str:
-    """Everything name-like about a pool, lower-cased, so its ammo type can be recognised."""
+    """Everything name-like about a pool, lower-cased (used only by the unverified word fallback)."""
     found: list[str] = []
     targets = [pool]
-    definition = getattr(pool, "Definition", None)  # real: the ResourcePoolDefinition, whose path names the ammo type
+    definition = getattr(pool, "Definition", None)
     if definition is not None:
         targets.append(definition)
     for target in targets:
@@ -76,9 +104,9 @@ def _names(pool: Any) -> str:
     return " ".join(found).lower()
 
 
-def _number(pool: Any, getter: str, *fields: str) -> float | None:
+def _number(pool: Any, getter: str, *fields: str, args: tuple[Any, ...] = ()) -> float | None:
     try:
-        return float(getattr(pool, getter)())
+        return float(getattr(pool, getter)(*args))
     except Exception:  # noqa: BLE001, S110
         pass
     for field in fields:
@@ -90,31 +118,51 @@ def _number(pool: Any, getter: str, *fields: str) -> float | None:
 
 
 def _describe(index: int, pool: Any) -> dict[str, Any] | None:
-    text = _names(pool)
-    if "ammo" not in text:
-        return None
-    key, label = None, None
-    for kind, name, words in KINDS:
-        if any(word in text for word in words):
-            key, label = kind, name
-            break
-    if label is None:
-        raw = re.search(r"ammo[_ ]?([a-z_ ]+)", text)
-        key, label = f"other{index}", (raw.group(1).strip("_ ").replace("_", " ").title() if raw else f"Ammo {index}")
+    path = _definition_path(pool)
+    if path in POOL_DEFINITIONS:
+        key, label = POOL_DEFINITIONS[path]
+        matched = "definition"
+    else:
+        text = _names(pool)
+        if "ammo" not in text:
+            return None
+        key, label, matched = None, None, "none"
+        for kind, name, words in KINDS:
+            if any(word in text for word in words):
+                key, label, matched = kind, name, "word"
+                break
+        if label is None:
+            raw = re.search(r"ammo[_ ]?([a-z_ ]+)", text)
+            key = f"other{index}"
+            label = raw.group(1).strip("_ ").replace("_", " ").title() if raw else f"Ammo {index}"
     value = _number(pool, "GetCurrentValue", "CurrentValue")
+    # GetMaxValue(bWantBaseValue, ReturnValue) in the game: False = the maximum after upgrades and modifiers
+    maximum = _number(pool, "GetMaxValue", "MaxValue", args=(False,))
     return {
         "id": index,
         "key": key,
         "label": label,
         "value": None if value is None else round(value),
-        "max": None if (m := _number(pool, "GetMaxValue", "MaxValue")) is None else round(m),
+        "max": None if maximum is None else round(maximum),
+        "matched": matched,
+        "definition": path,
     }
+
+
+def _unverified(pools: list[dict[str, Any]]) -> dict[str, str]:
+    out = {}
+    for pool in pools:
+        if pool["matched"] == "word":
+            out[pool["key"]] = "matched by words in the pool's name, not by its pool definition"
+        elif pool["matched"] == "none":
+            out[pool["key"]] = "no pool definition or name match; the key is the pool's position, not an ammo type"
+    return out
 
 
 def read() -> dict[str, Any]:
     pools = [d for i, pool in enumerate(_pools()) if (d := _describe(i, pool))]
     pools.sort(key=lambda p: ORDER.index(p["key"]) if p["key"] in ORDER else len(ORDER))
-    return {"pools": pools, "limit": MAX_AMMO}
+    return {"pools": pools, "limit": MAX_AMMO, "unverified": _unverified(pools)}
 
 
 def set_value(params: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +190,7 @@ def set_value(params: dict[str, Any]) -> dict[str, Any]:
         raise AmmoError(400, f"amount must be 0-{MAX_AMMO}")
 
     try:
-        pool.SetCurrentValue(float(value))
+        pool.SetCurrentValue(float(value))  # real: ResourcePool.SetCurrentValue(Float Value)
         via = "SetCurrentValue"
     except Exception:  # noqa: BLE001
         try:
@@ -158,10 +206,19 @@ def set_value(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def debug_dump() -> dict[str, Any]:
-    """Saves what every resource pool on the player's pawn exposes, to find the real field names."""
-    out: dict[str, Any] = {"pools": []}
+    """Saves what every resource pool on the player's pawn exposes, to find the real field names, and how each
+    pool was matched to its ammo type (definition path, exact table or word fallback)."""
+    out: dict[str, Any] = {"pool_definitions": POOL_DEFINITIONS, "pools": []}
     for index, pool in enumerate(_pools()):
-        entry: dict[str, Any] = {"index": index, "type": type(pool).__name__, "names": _names(pool)[:400]}
+        described = _describe(index, pool)
+        entry: dict[str, Any] = {
+            "index": index,
+            "type": type(pool).__name__,
+            "definition_path": _definition_path(pool),
+            "matched": described and described["matched"],
+            "key": described and described["key"],
+            "names": _names(pool)[:400],
+        }
         for label, owner in (("pool", pool), ("definition", getattr(pool, "Definition", None))):
             if owner is None:
                 continue
@@ -185,7 +242,7 @@ def debug_dump() -> dict[str, Any]:
                     values[prop.Name] = f"<{type(value).__name__}>"
             entry[label] = values
         entry["current"] = _number(pool, "GetCurrentValue", "CurrentValue")
-        entry["max"] = _number(pool, "GetMaxValue", "MaxValue")
+        entry["max"] = _number(pool, "GetMaxValue", "MaxValue", args=(False,))
         out["pools"].append(entry)
     DEBUG_AMMO_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     return {"saved_to": str(DEBUG_AMMO_FILE), "pools": len(out["pools"])}

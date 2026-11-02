@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -20,16 +21,90 @@ import unreal_stub  # noqa: E402
 
 unreal_stub.install()
 
+import json  # noqa: E402
+
 import class_index  # noqa: E402
-from rtse import ammo, character, sdu, skills, world  # noqa: E402
+import upk  # noqa: E402
+from rtse import ammo, character, limits, sdu, skills, world  # noqa: E402
 
 ix = class_index.Index()
+
+# ---- game data objects and enums (read from the packages once, cached in dev/out/objects.json) ----
+OBJECT_PACKAGES = ("Startup", "Engine", "WillowGame")  # Startup holds the ammo pools, SDU attributes and XP pool
+OBJECTS_CACHE = Path(__file__).resolve().parent / "out" / "objects.json"
+WATCHED_PREFIXES = ("GD_BlackMarket.Misc.Att_", "D_Resourcepools.AmmoPools.", "D_Resourcepools.PlayerPools.ExperiencePool",
+                    "Default__WillowInventoryManager")  # their property values are kept for the value checks below
+
+
+def _enum_names(pkg: upk.Package, export: dict) -> list[str]:
+    """An Enum's value names: its tagged properties end at "None", then a UField.Next reference, then the Names array."""
+    import struct
+
+    raw = pkg.raw
+    pos, end = export["offset"] + 4, export["offset"] + export["size"]
+    while pos + 8 <= end:
+        ni, nn = struct.unpack_from("<ii", raw, pos)
+        name = pkg.name(ni, nn)
+        pos += 8
+        if name == "None":
+            break
+        ti, tn, size, _index = struct.unpack_from("<iiii", raw, pos)
+        kind = pkg.name(ti, tn)
+        pos += 16
+        if kind in ("StructProperty", "ByteProperty"):
+            pos += 8
+        if kind == "BoolProperty":
+            pos += 1
+            continue
+        pos += size
+    pos += 4  # UField.Next
+    count, = struct.unpack_from("<i", raw, pos)
+    pos += 4
+    names = []
+    for _ in range(count):
+        i, n = struct.unpack_from("<ii", raw, pos)
+        pos += 8
+        names.append(pkg.name(i, n))
+    return names
+
+
+def build_objects() -> dict:
+    objects: dict[str, str] = {}
+    props: dict[str, Any] = {}
+    enums: dict[str, list[str]] = {}
+    for name in OBJECT_PACKAGES:
+        pkg = upk.load(class_index.GAME / f"{name}.upk")
+        for i, e in enumerate(pkg.exports, 1):
+            path = pkg.object_name(i)
+            cls = pkg.class_name(e)
+            objects.setdefault(path, cls)
+            if cls.endswith(".Enum"):
+                try:
+                    enums.setdefault(path, _enum_names(pkg, e))
+                except Exception:  # noqa: BLE001, S112
+                    continue
+            if path.startswith(WATCHED_PREFIXES) or path.endswith(".ConstantAttributeValueResolver_0"):
+                try:
+                    props.setdefault(path, pkg.properties(e))
+                except Exception:  # noqa: BLE001, S112
+                    continue
+    return {"objects": objects, "props": props, "enums": enums}
+
+
+def load_objects() -> dict:
+    if not OBJECTS_CACHE.is_file():
+        OBJECTS_CACHE.parent.mkdir(exist_ok=True)
+        OBJECTS_CACHE.write_text(json.dumps(build_objects()), encoding="utf-8")
+    return json.loads(OBJECTS_CACHE.read_text(encoding="utf-8"))
+
+
+GAME_DATA = load_objects()
 CLASS_OF = {  # the owner names the modules use -> the real class they hold at runtime
     "pc": "WillowPlayerController", "pri": "WillowPlayerReplicationInfo", "pawn": "WillowPlayerPawn",
     "invmgr": "WillowInventoryManager", "pool": "AmmoResourcePool", "tree": "PlayerSkillTree",
     "missions": "MissionTracker", "game": "WillowGameInfo", "gri": "WillowGameReplicationInfo",
     "missiondef": "MissionDefinition", "chaldef": "ChallengeDefinition", "chalcat": "ChallengeCategoryDefinition",
-    "station": "FastTravelStationDefinition",
+    "station": "FastTravelStationDefinition", "xppool": "ExperienceResourcePool", "pooldef": "ResourcePoolDefinition",
 }
 rows: list[tuple[str, str, str, str]] = []  # (module, what, verdict, detail)
 
@@ -68,14 +143,25 @@ for function in ("GetCurrencyOnHand", "AddCurrencyOnHand", "SetCurrencyOnHand"):
     check("character", "pri", function + "()")
 check("character", "pc", "GetExpPoints()")
 check("character", "pc", "ResourcePoolManager")  # where the experience pool lives
+check("character", "pc", "GetExpPointsRequiredForLevel()")  # the game's XP table, per level
+check("character", "xppool", "SetCurrentValue()")  # the experience pool write
+check("character", "xppool", "GetCurrentValue()")
+check("character", "xppool", "Definition")
+check("character", "pc", "ExpLevelUp()")  # considered as a level alternative (adds one level only); exists, not used
+check("limits", "pc", "GetMaximumPossiblePlayerLevelCap()")  # limits.character_level_cap
 
 # ---- ammo ----
 check("ammo", "pc", "ResourcePoolManager")
 for field in ("ResourcePools",):
     rows.append(("ammo", "ResourcePoolManager.ResourcePools", "REAL" if ix.field("ResourcePoolManager", field) else "MISSING", str(ix.field("ResourcePoolManager", field))))
-for name in ("GetCurrentValue()", "GetMaxValue()", "SetCurrentValue()"):
+for name in ("GetCurrentValue()", "GetMaxValue(bWantBaseValue=False)", "SetCurrentValue()"):
     check("ammo", "pool", name)
 for name in ("CurrentValue", "MaxValue", "Definition"):
+    check("ammo", "pool", name)
+check("ammo", "pool", "SetMaxValueFromProfile(Value)")  # the ammo capacity write
+for name in ("BaseMaxValue", "TotalUpgradeCount", "MaxValueUpgrade", "UpgradeLevelAttribute", "Resource"):
+    check("ammo.definition", "pooldef", name)
+for name in ("GetUpgradeLevel()", "SetUpgradeLevel(NewUpgradeLevel)", "ApplyUpgrades()"):
     check("ammo", "pool", name)
 
 # ---- sdu ----
@@ -132,6 +218,56 @@ for function in ("NotifyPlaythroughChanged", "GetMissionStatus"):
 # ---- skills ----
 for owner, attribute in skills.TREE_SOURCES:
     check("skills", owner, attribute)
+
+# ---- game data objects and values (what the ammo, SDU and XP tables were read from) ----
+def data_check(module: str, what: str, ok: bool, detail: Any) -> None:
+    rows.append((module, what, "REAL" if ok else "MISSING", str(detail)))
+
+
+def prop(path: str) -> dict:
+    return GAME_DATA["props"].get(path) or {}
+
+
+def existing(path: str, cls: str | None = None) -> bool:
+    found = GAME_DATA["objects"].get(path)
+    return found is not None and (cls is None or found == cls)
+
+
+for path, (key, _label) in ammo.POOL_DEFINITIONS.items():
+    data_check("data.ammo", f"pool definition {path}", existing(path, "Engine.ResourcePoolDefinition"), GAME_DATA["objects"].get(path, "not in game data"))
+    table = sdu.AMMO_TABLES[key][1]
+    base = prop(path).get("BaseMaxValue", {}).get("BaseValueConstant")
+    data_check("data.ammo", f"  {key}: BaseMaxValue = table base {table[0]}", base == table[0], f"BaseMaxValue {base}")
+    total = prop(path).get("TotalUpgradeCount")
+    data_check("data.ammo", f"  {key}: TotalUpgradeCount = {len(table) - 1}", total == len(table) - 1, f"TotalUpgradeCount {total}")
+    attribute = {"pistol": "Pistol", "smg": "SMG", "rifle": "CombatRifle", "shotgun": "Shotgun", "sniper": "Sniper",
+                 "launcher": "Rocket", "grenade": "Grenade"}[key]
+    step_path = f"GD_BlackMarket.Misc.Att_{attribute}AmmoPerUpgrade.ConstantAttributeValueResolver_0"
+    step = prop(step_path).get("ConstantValue")
+    data_check("data.ammo", f"  {key}: Att_{attribute}AmmoPerUpgrade = table step {table[1] - table[0]}", step == table[1] - table[0], f"ConstantValue {step}")
+
+data_check("data.sdu", "backpack base = Default__WillowInventoryManager.InventorySlotMax_Misc",
+           prop("Default__WillowInventoryManager").get("InventorySlotMax_Misc") == sdu.BACKPACK_TABLE[0],
+           prop("Default__WillowInventoryManager").get("InventorySlotMax_Misc"))
+bp_step = prop("GD_BlackMarket.Misc.Att_BackPackSlotsPerUpgrade.ConstantAttributeValueResolver_0").get("ConstantValue")
+data_check("data.sdu", f"backpack step = Att_BackPackSlotsPerUpgrade {sdu.BACKPACK_TABLE[1] - sdu.BACKPACK_TABLE[0]}",
+           bp_step == sdu.BACKPACK_TABLE[1] - sdu.BACKPACK_TABLE[0], bp_step)
+bank_start = prop("GD_BlackMarket.Misc.Att_BankStartingSlots.ConstantAttributeValueResolver_0").get("ConstantValue")
+data_check("data.sdu", f"bank base = Att_BankStartingSlots {sdu.BANK_TABLE[0]}", bank_start == sdu.BANK_TABLE[0], bank_start)
+bank_step = prop("GD_BlackMarket.Misc.Att_BankSlotsPerUpgrade.ConstantAttributeValueResolver_0").get("ConstantValue")
+data_check("data.sdu", f"bank step = Att_BankSlotsPerUpgrade {sdu.BANK_TABLE[1] - sdu.BANK_TABLE[0]}", bank_step == sdu.BANK_TABLE[1] - sdu.BANK_TABLE[0], bank_step)
+for path in sdu.DATA_OBJECTS:
+    data_check("data.sdu", f"object {path}", existing(path), GAME_DATA["objects"].get(path, "not in game data"))
+data_check("data.xp", f"experience pool {character.EXPERIENCE_POOL}", existing(character.EXPERIENCE_POOL, "Engine.ResourcePoolDefinition"),
+           GAME_DATA["objects"].get(character.EXPERIENCE_POOL, "not in game data"))
+
+currency_enum = GAME_DATA["enums"].get("WillowInventoryDefinition.ECurrencyType", [])
+for index, expected in ((0, "CURRENCY_Credits"), (1, "CURRENCY_Eridium"), (2, "CURRENCY_SeraphCrystals"), (3, "CURRENCY_Reserved_A")):
+    data_check("data.currency", f"ECurrencyType[{index}] = {expected}", index < len(currency_enum) and currency_enum[index] == expected,
+               currency_enum[index] if index < len(currency_enum) else "missing")
+for key, label, index in character.CURRENCIES:
+    rows.append(("data.currency", f"currency {key} ({label}) -> index {index}", "REAL" if index < len(currency_enum) else "MISSING",
+                 "UNVERIFIED as " + label if key in character.UNVERIFIED_CURRENCY else "settled"))
 
 # ---- report ----
 width = max(len(r[1]) for r in rows)
