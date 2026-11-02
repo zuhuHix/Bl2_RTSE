@@ -164,13 +164,14 @@ function sduCard(ctx, entry) {
     onclick: () => setLevel(ctx, entry, i + 1),
   }));
   const src = entry.sources;
+  const reason = state.data && state.data.unverified ? state.data.unverified[entry.key] : null;
   return h(
     "div",
     { class: `cc sdu-card${available ? "" : " off"}`, vars: { "--c": look.color } },
     h("div", { class: "cc-head" },
       h("span", { class: "coin", text: look.glyph }),
       h("div", {},
-        h("div", { class: "k", text: entry.label }),
+        h("div", { class: "k", text: entry.label }, reason && h("span", { class: "unv", title: reason, text: "unverified" })),
         h("div", { class: "sub", text: level === null ? "Level unavailable" : `SDU level ${level} of ${entry.max_level}${entry.level_inferred ? " (guessed)" : ""}` }))),
     h("div", { class: "cc-val", text: entry.capacity === null ? "unavailable" : entry.capacity.toLocaleString() },
       entry.capacity !== null && h("small", { text: entry.unit })),

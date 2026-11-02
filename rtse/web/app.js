@@ -84,15 +84,45 @@ function fill(parent, ...nodes) {
 const icon = (name, size = 16) => h("span", { class: "icon", style: { display: "inline-flex" }, html: ui(name, size) });
 const emblem = (key, size = 16) => h("span", { style: { display: "inline-flex" }, html: emblemSvg(key, manufacturerColor(key), size) });
 
+const RETRY_EVERY_MS = 1000; // a POST the game is still applying (504 pending) is retried this often...
+const RETRY_LIMIT = 30; // ...for at most this many retries, then the server's error is shown
+
+/** A fresh Idempotency-Key for one user action: A-Z, a-z, 0-9, _ and - only (see rtse/idempotency.py). */
+function newIdempotencyKey() {
+  if (globalThis.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * One API call. A POST sends one Idempotency-Key for the whole call, so a retry cannot apply the change
+ * twice. On 504 {pending: true} the game is still applying it: the same request goes out again with the
+ * same key, once a second, until the game answers or the retries run out.
+ */
 async function api(method, path, body) {
-  const response = await fetch(path, {
-    method,
-    headers: { "X-RTSE-Token": token, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return data;
+  const key = method === "POST" ? newIdempotencyKey() : null;
+  const headers = { "X-RTSE-Token": token, "Content-Type": "application/json" };
+  if (key) headers["Idempotency-Key"] = key;
+  const init = { method, headers, body: body === undefined ? undefined : JSON.stringify(body) };
+  for (let retry = 0; ; retry += 1) {
+    const response = await fetch(path, init);
+    const data = await response.json();
+    if (response.status === 504 && data.pending && key && retry < RETRY_LIMIT) {
+      await new Promise((resolve) => setTimeout(resolve, RETRY_EVERY_MS));
+      continue;
+    }
+    if (!response.ok) {
+      const message = data.error || `HTTP ${response.status}`;
+      // 503 applied:false means the game never started the change: say so plainly.
+      const unchanged = response.status === 503 && data.applied === false && !/nothing was changed/.test(message);
+      throw new Error(unchanged ? `${message} - nothing was changed` : message);
+    }
+    return data;
+  }
+}
+
+/** A small muted tag for a value the game did not confirm; the reason shows on hover. */
+function unverifiedBadge(reason) {
+  return reason ? h("span", { class: "unv", title: reason, text: "unverified" }) : null;
 }
 
 function toast(message, isError = false) {
@@ -129,7 +159,7 @@ const isWeapon = (detail) => detail.class === "WillowWeapon";
 
 /** A small drawn plate for a part in a slot. */
 function partPlate(part, slotName, detail, cls = "") {
-  const info = parsePart(part.name, part.group);
+  const info = parsePart(part); // the part object carries the server's in-game label, if any
   if (!isWeapon(detail)) {
     return { info, el: plateEl({ html: letterSvg(slotName), color: "var(--bone)", cls: `${cls} item`, imageName: part.name }) };
   }
@@ -199,7 +229,7 @@ function regionFills(detail) {
   const fills = {};
   for (const slot of detail.slots) {
     if (!slot.current) continue;
-    const info = parsePart(slot.current.name, slot.current.group);
+    const info = parsePart(slot.current);
     const color = info.element ? ELEMENTS[info.element].color : info.manufacturer ? manufacturerColor(info.manufacturer) : STEEL;
     fills[SLOT_REGION[slot.slot]] = color;
   }
@@ -210,7 +240,7 @@ function regionFills(detail) {
 function regionTitles(detail) {
   const titles = {};
   for (const slot of detail.slots) {
-    const part = slot.current ? parsePart(slot.current.name, slot.current.group).title : "empty";
+    const part = slot.current ? parsePart(slot.current).title : "empty";
     titles[SLOT_REGION[slot.slot]] = `${slotLabel(slot.slot)}: ${part}`.replace(/[<>&]/g, "");
   }
   return titles;
@@ -231,7 +261,7 @@ function mixHex(a, b, t) {
 
 /** Paint colour for a part in 3D: its maker's colour, nudged by what kind of part it is. */
 function pieceColor(part, slotName) {
-  const info = parsePart(part.name, part.group);
+  const info = parsePart(part);
   let base = info.manufacturer ? manufacturerColor(info.manufacturer) : STEEL;
   if (info.element) base = ELEMENTS[info.element].color;
   if (slotName === "Barrel") return mixHex(base, "#aab2bc", 0.5);
@@ -388,9 +418,13 @@ function renderWorkspace() {
   const weapon = isWeapon(detail);
   const mfr = itemManufacturer(detail.name);
   const type = weaponTypeFrom(entry.type_path);
-  const levelInput = h("input", { type: "number", min: 1, max: 100, value: detail.level, onkeydown: (e) => e.key === "Enter" && commitLevel() });
+  // The level range comes from the game (limits.min/max); gear level = character cap + Overpower levels.
+  const { min: minLevel, max: maxLevel, character_max: characterMax, sources: capSources = {} } = detail.limits;
+  const overpower = detail.overpower || 0;
+  const capFallback = Object.values(capSources).some((from) => String(from).includes("fallback"));
+  const levelInput = h("input", { type: "number", min: minLevel, max: maxLevel, value: detail.level, onkeydown: (e) => e.key === "Enter" && commitLevel() });
   const commitLevel = () => applyLevel(parseInt(levelInput.value, 10));
-  const nudge = (by) => () => { levelInput.value = Math.max(1, Math.min(100, (parseInt(levelInput.value, 10) || 1) + by)); };
+  const nudge = (by) => () => { levelInput.value = Math.max(minLevel, Math.min(maxLevel, (parseInt(levelInput.value, 10) || minLevel) + by)); };
 
   const banner = h(
     "div",
@@ -401,7 +435,9 @@ function renderWorkspace() {
       h("div", { class: "facts" },
         mfr && h("span", {}, emblem(mfr, 18), h("b", { text: MANUFACTURERS[mfr].label })),
         h("span", { text: type || classLabel(detail.class) }),
-        entry.rarity != null && h("span", { text: `Rarity ${entry.rarity}` }))),
+        entry.rarity != null && h("span", { text: `Rarity ${entry.rarity}` }),
+        overpower > 0 && h("span", { title: `Gear level ${detail.level}: character level ${characterMax} plus ${overpower} Overpower levels`, text: `${characterMax} OP${overpower}` })),
+      capFallback && h("div", { class: "unv-note", title: "The level cap came from a fallback value, not from the game", text: "level cap not read from the game (unverified)" })),
     h("div", { class: "level" },
       h("span", { class: "big", text: "LVL" }),
       h("div", { class: "stepper" },
@@ -517,7 +553,7 @@ function setHot(slotName, on) {
 
 function legendRow(slot, index, detail) {
   const current = slot.current;
-  const info = current ? parsePart(current.name, current.group) : null;
+  const info = current ? parsePart(current) : null;
   const type = hostType(detail);
   const foreign = info && isWeapon(detail) && type && info.weaponType && info.weaponType !== type;
   return h(
@@ -565,6 +601,7 @@ function renderStats(detail) {
     "div",
     {},
     h("p", { class: "note", text: "Tuned values are saved in rtse/overrides.json and re-applied whenever the game rebuilds this weapon." }),
+    detail.override_scope === "legacy" && h("p", { class: "note", text: "These overrides were saved before RTSE could tell identical guns apart; they apply to every identical copy. Editing a stat here gives this gun its own copy." }),
     groups.filter((g) => g.stats.length).map((g) =>
       h("div", { class: "stat-group" }, h("h4", { text: g.title }), g.stats.map(statRow))),
   );
@@ -737,7 +774,7 @@ async function applyAmmo(pool, value) {
   else toast(`${pool.label}: asked for ${requested.toLocaleString()} but the game reports ${after == null ? "nothing" : after.toLocaleString()} (the game may cap it at your maximum)`, true);
 }
 
-function ammoCard(pool) {
+function ammoCard(pool, reason) {
   const box = h("input", { class: "field", type: "number", min: 0, value: pool.value ?? 0, "aria-label": `${pool.label} ammo`, onkeydown: (e) => e.key === "Enter" && commit() });
   const commit = () => applyAmmo(pool, parseInt(box.value, 10));
   const pct = pool.max ? Math.max(0, Math.min(100, ((pool.value || 0) / pool.max) * 100)) : 0;
@@ -745,7 +782,7 @@ function ammoCard(pool) {
     "div",
     { class: "cc ammo", vars: { "--c": "#ffd21f" } },
     h("div", { class: "cc-head" }, h("span", { class: "coin", text: pool.label.slice(0, 2).toUpperCase() }),
-      h("div", {}, h("div", { class: "k", text: pool.label }), pool.max != null && h("div", { class: "sub", text: `Capacity ${pool.max.toLocaleString()}` }))),
+      h("div", {}, h("div", { class: "k", text: pool.label }, unverifiedBadge(reason)), pool.max != null && h("div", { class: "sub", text: `Capacity ${pool.max.toLocaleString()}` }))),
     h("div", { class: "cc-val", text: pool.value == null ? "unavailable" : pool.value.toLocaleString() }),
     pool.max != null && h("div", { class: "bar" }, h("i", { style: { width: `${pct}%` } })),
     pool.value != null && h("div", { class: "cc-ctrl" },
@@ -778,7 +815,7 @@ function renderAmmo(root) {
       h("div", { class: "bench-body" },
         a.error && h("div", { class: "warn-banner" }, icon("alert", 18), `${a.error}. Save the ammo dump below and send it over.`),
         !a.error && a.pools.length === 0 && h("div", { class: "warn-banner" }, icon("alert", 18), "No ammo pools were recognised. Save the ammo dump below and send it over."),
-        h("div", { class: "char-grid" }, a.pools.map(ammoCard)))),
+        h("div", { class: "char-grid" }, a.pools.map((pool) => ammoCard(pool, (a.unverified || {})[pool.key]))))),
     dropdown("ammoinfo", "Ammo dev tools", "", h("div", { class: "tools" },
       h("button", { class: "btn sm", onclick: () => dump("/api/debug/ammo") }, "Save ammo dump"))),
   );
@@ -796,7 +833,7 @@ async function applyCharacter(field, label, value) {
   else toast(`${label}: asked for ${value.toLocaleString()} but the game reports ${after == null ? "nothing" : after.toLocaleString()}`, true);
 }
 
-function numberCard({ title, sub, value, input, quick, glyph, color, field, max }) {
+function numberCard({ title, sub, value, input, quick, glyph, color, field, max, reason }) {
   const box = h("input", { class: "field", type: "number", min: 0, max, value: input ?? value ?? 0, "aria-label": `${title} amount`, onkeydown: (e) => e.key === "Enter" && commit() });
   const commit = () => applyCharacter(field, title, parseInt(box.value, 10));
   const available = value != null;
@@ -805,7 +842,7 @@ function numberCard({ title, sub, value, input, quick, glyph, color, field, max 
     { class: `cc${available ? "" : " off"}`, vars: { "--c": color } },
     h("div", { class: "cc-head" },
       h("span", { class: "coin", text: glyph }),
-      h("div", {}, h("div", { class: "k", text: title }), sub && h("div", { class: "sub", text: sub }))),
+      h("div", {}, h("div", { class: "k", text: title }, unverifiedBadge(reason)), sub && h("div", { class: "sub", text: sub }))),
     h("div", { class: "cc-val", text: available ? value.toLocaleString() : "unavailable" }),
     available && h("div", { class: "cc-ctrl" },
       box,
@@ -821,6 +858,9 @@ function renderCharacter(root) {
     return;
   }
   const [lowLevel, highLevel] = c.limits.level;
+  // Keys in `unverified` may be dotted (e.g. "limits.level", "xp_next_level", or a currency key such as "torgue").
+  const unv = c.unverified || {};
+  const levelReason = unv.level || unv["limits.level"];
   const levelBox = h("input", { type: "number", min: lowLevel, max: highLevel, value: c.level ?? 1, onkeydown: (e) => e.key === "Enter" && setLevel() });
   const setLevel = () => applyCharacter("level", "Level", parseInt(levelBox.value, 10));
   const nudge = (by) => () => { levelBox.value = Math.max(lowLevel, Math.min(highLevel, (parseInt(levelBox.value, 10) || 1) + by)); };
@@ -834,9 +874,9 @@ function renderCharacter(root) {
       h("span", { class: "stamp equipped", text: cls.key ? `${CLASS_INFO[cls.key].job}` : "Your character" }),
       h("h1", { text: c.name || (cls.key && CLASS_INFO[cls.key].name) || "Vault Hunter" }),
       h("div", { class: "facts" },
-        c.level != null && h("span", { text: `Level ${c.level}` }),
+        c.level != null && h("span", { text: `Level ${c.level}` }, unverifiedBadge(levelReason)),
         c.xp != null && h("span", { text: `${c.xp.toLocaleString()} XP` }),
-        c.xp_next_level != null && c.level < highLevel && h("span", { text: `${Math.max(0, c.xp_next_level - (c.xp || 0)).toLocaleString()} to next level` })))),
+        c.xp_next_level != null && c.level < highLevel && h("span", { text: `${Math.max(0, c.xp_next_level - (c.xp || 0)).toLocaleString()} to next level` }, unverifiedBadge(unv.xp_next_level))))),
     c.level != null && h("div", { class: "level" },
       h("span", { class: "big", text: "LVL" }),
       h("div", { class: "stepper" },
@@ -850,12 +890,12 @@ function renderCharacter(root) {
   const cards = [
     numberCard({
       title: "Skill points", sub: "Unspent", value: c.skill_points, field: "skill_points", glyph: "SP", color: "#ffd21f", max: c.limits.skill_points,
-      quick: [["+1", (n, now) => now + 1], ["+5", (n, now) => now + 5], ["+25", (n, now) => now + 25]],
+      quick: [["+1", (n, now) => now + 1], ["+5", (n, now) => now + 5], ["+25", (n, now) => now + 25]], reason: unv.skill_points,
     }),
     ...c.currencies.map((cur) => {
       const style = CURRENCY_STYLE[cur.key] || { color: "#8b93a7", glyph: "?", step: 100 };
       return numberCard({
-        title: cur.label, value: cur.value, field: cur.key, glyph: style.glyph, color: style.color, max: c.limits.currency,
+        title: cur.label, value: cur.value, field: cur.key, glyph: style.glyph, color: style.color, max: c.limits.currency, reason: unv[cur.key],
         quick: [[`+${style.step.toLocaleString()}`, (n, now) => now + style.step], ["Max", () => c.limits.currency]],
       });
     }),
@@ -896,7 +936,7 @@ async function applyPart(slotName, option) {
   if (!result) return;
   closePicker();
   setDetail(result);
-  toast(option ? `${slotLabel(slotName)}: ${parsePart(option.name, option.group).title}` : `${slotLabel(slotName)} removed`);
+  toast(option ? `${slotLabel(slotName)}: ${parsePart(option).title}` : `${slotLabel(slotName)} removed`);
 }
 
 // ---------- part picker ----------
@@ -954,7 +994,7 @@ function parsedOptions(slot) {
   let parsed = parsedCache.get(slot);
   if (!parsed) {
     parsed = slot.options.map((option) => {
-      const info = parsePart(option.name, option.group);
+      const info = parsePart(option);
       return { option, info, hay: `${info.title} ${option.name} ${option.group} ${info.manufacturer || ""} ${info.weaponType || ""} ${info.element || ""}`.toLowerCase() };
     });
     parsedCache.set(slot, parsed);
@@ -993,7 +1033,7 @@ function renderPicker() {
     const el = e.target;
     if (el.scrollTop + el.clientHeight > el.scrollHeight - 500 && p.shown < filteredOptions(slot).length) { p.shown += PAGE; renderResults(true); }
   } });
-  const current = slot.current ? parsePart(slot.current.name, slot.current.group) : null;
+  const current = slot.current ? parsePart(slot.current) : null;
   if (p.watcher) p.watcher.disconnect();
   p.watcher = new IntersectionObserver((entries) => {
     for (const entry of entries) {

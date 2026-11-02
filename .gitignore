@@ -4,3 +4,4 @@ dev/out/
 __pycache__/
 *.bak
 .claude/
+rtse/overrides.*.bak*.json

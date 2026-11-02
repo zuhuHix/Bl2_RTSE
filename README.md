@@ -163,4 +163,32 @@ Other bits in `dev/`:
 
 The mod itself is plain Python and vanilla JavaScript, no build step.
 
+### Running the tests
+
+The game modules (`unrealsdk`, `mods_base`) are stubbed by `dev/unreal_stub.py`, so everything below runs without the game. Install pytest once (`python -m pip install pytest`).
+
+Full suite, before opening a pull request:
+
+```
+python -I -m pytest dev/tests
+python -I dev/smoke_server.py
+python -I dev/mock_server.py 8766      # in another terminal, then:
+node dev/shot.mjs dev/steps_pages.json # screenshots through headless Edge; any console error or HTTP 4xx/5xx is printed
+```
+
+While iterating, run only the tests for what you touched: `python -I -m pytest dev/tests -k <module>` (e.g. `-k stats`, `-k idempotency`).
+
+### What is not verified in a live game
+
+Tests and `audit_names.py` prove that names exist and that the logic does what it says with fake game objects. They can't prove what the game does at runtime. These are still unconfirmed, and the UI marks them **unverified**:
+
+- **Torgue Tokens** use currency slot 3. The game's `ECurrencyType` enum only names that slot `Reserved_A`.
+- **Level caps** come from `GetMaximumPossiblePlayerLevelCap()` / `GetMaxOverpowerLevel()`. If those can't be read, RTSE falls back to level 80 and OP10, so gear tops out at level 90 (80 + OP10).
+- **Per-gun stat overrides** are keyed by the weapon's `UniqueId`. That only works if the game keeps UniqueIds across a save and reload. Overrides saved by older RTSE versions couldn't tell identical guns apart. They're kept as *legacy* entries that apply to every identical copy until you edit one. The old `overrides.json` is backed up to `overrides.v1.bak.json` the first time it's upgraded.
+- **SDU**: the number of backpack and bank upgrades (9 each), and which call reports the bank size.
+- **Ammo pools** are matched to the game's exact `D_Resourcepools.AmmoPools.*` definitions. A pool matched only by its name is marked unverified.
+- **Part effects**: attribute labels come from a hand-written table.
+
+The debug dumps on each page (Character, Ammo, Upgrades, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
+
 RTSE isn't affiliated with Gearbox or 2K. Skill names and descriptions in `rtse/skilltrees.json` come from the game's own files.
