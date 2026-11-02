@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from rtse import api
+from rtse import gear_parts
 
 META = Path(__file__).resolve().parents[2] / "rtse" / "web" / "meta.js"
 
@@ -33,7 +33,7 @@ META = Path(__file__).resolve().parents[2] / "rtse" / "web" / "meta.js"
     ],
 )
 def test_part_labels_humanize_keeps_current_behaviour(raw: str, expected: str) -> None:
-    assert api._humanize(raw) == expected  # noqa: SLF001
+    assert gear_parts._humanize(raw) == expected  # noqa: SLF001
 
 
 # --- _effect_view: exact fields ------------------------------------------------------------------
@@ -54,7 +54,7 @@ def _exact_summary(constant: float, scale: float) -> dict:
 
 def test_effect_view_reads_exact_fields() -> None:
     summary = _exact_summary(1.5, 2.0)
-    view = api._effect_view(summary)  # noqa: SLF001
+    view = gear_parts._effect_view(summary)  # noqa: SLF001
     assert view["fields_found"] is True
     assert view["verified"] is False  # the value is constant x scale, not confirmed in game
     assert view["constant"] == 1.5 and view["scale"] == 2.0
@@ -71,7 +71,7 @@ def test_effect_view_exact_value_none_when_scale_missing() -> None:
         "ModifierType": "MT_PreAdd",
         "BaseModifierValue": {"BaseValueConstant": 4.0},
     }
-    view = api._effect_view(summary)  # noqa: SLF001
+    view = gear_parts._effect_view(summary)  # noqa: SLF001
     assert view["fields_found"] is True and view["verified"] is False
     assert view["constant"] == 4.0 and view["scale"] is None
     assert view["value"] is None  # not both plain numbers, so no value is guessed
@@ -81,7 +81,7 @@ def test_effect_view_exact_value_none_when_scale_missing() -> None:
 def test_effect_view_attribute_label_humanized_when_not_in_table() -> None:
     summary = _exact_summary(1.0, 1.0)
     summary["AttributeToModify"] = "D_Attributes.Weapon.ReloadSpeedBonus"
-    view = api._effect_view(summary)  # noqa: SLF001
+    view = gear_parts._effect_view(summary)  # noqa: SLF001
     assert view["fields_found"] is True
     assert view["attribute_label"] == "Reload Speed Bonus"
 
@@ -91,7 +91,7 @@ def test_effect_view_attribute_label_humanized_when_not_in_table() -> None:
 
 def test_effect_view_falls_back_to_key_scan() -> None:
     summary = {"SomeAttributeRef": "D_Attributes.Weapon.FireRate", "EffectType": "Scale", "ValueX": 1.25}
-    view = api._effect_view(summary)  # noqa: SLF001
+    view = gear_parts._effect_view(summary)  # noqa: SLF001
     assert view["fields_found"] is False and view["verified"] is False
     assert view["constant"] is None and view["scale"] is None
     assert view["attribute"] == "D_Attributes.Weapon.FireRate"
@@ -101,7 +101,7 @@ def test_effect_view_falls_back_to_key_scan() -> None:
 
 
 def test_effect_view_unknown_keys_give_nothing_but_still_fields_found_false() -> None:
-    view = api._effect_view({"Mystery": 1})  # noqa: SLF001
+    view = gear_parts._effect_view({"Mystery": 1})  # noqa: SLF001
     assert view["fields_found"] is False
     assert view["attribute"] is None
     assert view["attribute_label"] is None
@@ -112,7 +112,7 @@ def test_effect_view_unknown_keys_give_nothing_but_still_fields_found_false() ->
 def test_effect_view_not_exact_when_only_struct_is_partial() -> None:
     # ModifierType and AttributeToModify present but no value fields: the exact path must not claim success
     summary = {"AttributeToModify": "D_Attributes.Weapon.Spread", "ModifierType": "MT_PostAdd", "BaseModifierValue": {}}
-    assert api._effect_view(summary)["fields_found"] is False  # noqa: SLF001
+    assert gear_parts._effect_view(summary)["fields_found"] is False  # noqa: SLF001
 
 
 # --- _ref_dict: label present / absent ------------------------------------------------------------
@@ -120,25 +120,25 @@ def test_effect_view_not_exact_when_only_struct_is_partial() -> None:
 
 def test_ref_dict_label_from_name_part(monkeypatch: pytest.MonkeyPatch) -> None:
     part = SimpleNamespace(Class=SimpleNamespace(Name="WeaponNamePartDefinition"), PartName="Logan's Gun")
-    monkeypatch.setattr(api, "find_object", lambda cls, path: part)
-    ref = api.PartRef("Pkg.Names.Logan", "WeaponNamePartDefinition")
-    assert api._ref_dict(ref)["label"] == "Logan's Gun"  # noqa: SLF001
+    monkeypatch.setattr(gear_parts, "find_object", lambda cls, path: part)
+    ref = gear_parts.PartRef("Pkg.Names.Logan", "WeaponNamePartDefinition")
+    assert gear_parts._ref_dict(ref)["label"] == "Logan's Gun"  # noqa: SLF001
 
 
 def test_ref_dict_label_none_when_name_part_text_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     part = SimpleNamespace(Class=SimpleNamespace(Name="ItemNamePartDefinition"), PartName="  ")
-    monkeypatch.setattr(api, "find_object", lambda cls, path: part)
-    ref = api.PartRef("Pkg.Names.Blank", "ItemNamePartDefinition")
-    assert api._ref_dict(ref)["label"] is None  # noqa: SLF001
+    monkeypatch.setattr(gear_parts, "find_object", lambda cls, path: part)
+    ref = gear_parts.PartRef("Pkg.Names.Blank", "ItemNamePartDefinition")
+    assert gear_parts._ref_dict(ref)["label"] is None  # noqa: SLF001
 
 
 def test_ref_dict_label_none_for_gun_part_without_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     def must_not_be_called(cls: str, path: str) -> None:
         raise AssertionError("gun parts have no display name, so the scan must not look them up")
 
-    monkeypatch.setattr(api, "find_object", must_not_be_called)
-    ref = api.PartRef("Pkg.Barrel_Hyperion", "WeaponPartDefinition", ("Barrel_Hyperion",))
-    out = api._ref_dict(ref)  # noqa: SLF001
+    monkeypatch.setattr(gear_parts, "find_object", must_not_be_called)
+    ref = gear_parts.PartRef("Pkg.Barrel_Hyperion", "WeaponPartDefinition", ("Barrel_Hyperion",))
+    out = gear_parts._ref_dict(ref)  # noqa: SLF001
     assert out["label"] is None
     assert out["name"] == "Barrel_Hyperion"
     assert out["group"] == "Pkg"
@@ -149,9 +149,9 @@ def test_ref_dict_label_none_when_lookup_fails(monkeypatch: pytest.MonkeyPatch) 
     def broken(cls: str, path: str) -> None:
         raise RuntimeError("object is gone")
 
-    monkeypatch.setattr(api, "find_object", broken)
-    ref = api.PartRef("Pkg.Names.Gone", "WeaponNamePartDefinition")
-    assert api._ref_dict(ref)["label"] is None  # noqa: SLF001
+    monkeypatch.setattr(gear_parts, "find_object", broken)
+    ref = gear_parts.PartRef("Pkg.Names.Gone", "WeaponNamePartDefinition")
+    assert gear_parts._ref_dict(ref)["label"] is None  # noqa: SLF001
 
 
 # --- meta.js: server label first, token fallback (only when node is installed) -------------------

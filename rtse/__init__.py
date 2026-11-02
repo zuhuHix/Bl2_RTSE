@@ -6,7 +6,7 @@ from typing import Any
 from mods_base import build_mod, hook, keybind
 from unrealsdk import logging, unreal
 
-from . import api, gamethread, server, stats
+from . import gamethread, gear_inventory, server, stats
 
 # How often (in game ticks) equipped weapons are checked against their stat overrides. This is the
 # safety net for anything that recomputes stats without going through a hooked function.
@@ -54,7 +54,7 @@ def on_tick(
     if not _periodic_enabled or not stats.has_overrides():
         return
     try:
-        stats.reapply_all(api.equipped_weapons(), reason="a periodic check")
+        stats.reapply_all(gear_inventory.equipped_weapons(), reason="a periodic check")
     except Exception as ex:  # noqa: BLE001
         # Stop rather than log the same failure 60 times a second
         _periodic_enabled = False

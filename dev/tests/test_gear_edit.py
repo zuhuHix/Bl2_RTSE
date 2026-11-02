@@ -17,8 +17,9 @@ from typing import Any
 import pytest
 from unrealsdk import unreal
 
-from rtse import api, stats
-from rtse.api import ApiError, PartRef, Slot
+from rtse import gear_edit, gear_inventory, gear_parts, stats
+from rtse.gear_parts import PartRef, Slot
+from rtse.routing import ApiError
 
 
 class Part(unreal.UObject):
@@ -94,8 +95,8 @@ def make_gun(
 
 
 def use(monkeypatch: pytest.MonkeyPatch, item: Any, slots: list[Slot] | None = None) -> None:
-    monkeypatch.setattr(api, "_find_item", lambda _params: (item, api.EQUIPPED))
-    monkeypatch.setattr(api, "_slots", lambda _item, _mode: list(slots or []))
+    monkeypatch.setattr(gear_edit, "_find_item", lambda _params: (item, gear_inventory.EQUIPPED))
+    monkeypatch.setattr(gear_edit, "_slots", lambda _item, _mode: list(slots or []))
 
 
 def state_of(item: Any) -> dict[str, Any]:
@@ -106,7 +107,7 @@ def state_of(item: Any) -> dict[str, Any]:
 def overrides_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
     path = tmp_path / "overrides.json"
     monkeypatch.setattr(stats, "OVERRIDES_FILE", path)
-    monkeypatch.setattr(api, "_id_aliases", {})
+    monkeypatch.setattr(gear_inventory, "_id_aliases", {})
     stats.load()
     yield path
     stats.load()  # Clears the module store before monkeypatch restores the real path
@@ -125,7 +126,7 @@ def test_set_part_applies_the_part_and_the_gun_gets_a_new_uid(game, monkeypatch)
     item = make_gun(uid=7)
     use(monkeypatch, item, gun_slot([PartRef("Barrel.New", "WeaponPartDefinition")]))
 
-    result = api.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+    result = gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
     assert item.DefinitionData.BarrelPartDefinition is new_part
     assert item.DefinitionData.UniqueId == 1007
@@ -147,7 +148,7 @@ def test_set_part_rebuild_error_restores_every_field_uid_title_and_level(game, m
     before = state_of(item)
 
     with pytest.raises(ApiError) as caught:
-        api.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+        gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
     assert caught.value.status == 409
     assert "previous parts were restored" in str(caught.value)
@@ -170,7 +171,7 @@ def test_set_part_readback_mismatch_is_restored_and_reported(game, monkeypatch):
     before = state_of(item)
 
     with pytest.raises(ApiError) as caught:
-        api.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+        gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
     assert caught.value.status == 409
     assert "the Barrel slot holds 'Barrel.A', not 'Barrel.New'" in str(caught.value)
@@ -188,7 +189,7 @@ def test_set_part_restore_failure_is_500_and_logged(game, monkeypatch):
     use(monkeypatch, item, gun_slot([PartRef("Barrel.New", "WeaponPartDefinition")]))
 
     with pytest.raises(ApiError) as caught:
-        api.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+        gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
     assert caught.value.status == 500
     assert "restoring failed - reload the save before playing" in str(caught.value)
@@ -201,7 +202,7 @@ def test_set_part_moves_the_guns_own_overrides_and_reapplies_them(game, monkeypa
     use(monkeypatch, item, gun_slot([PartRef("Barrel.New", "WeaponPartDefinition")]))
     stats.set_override(item, "ClipSize", 20)
 
-    api.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+    gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
     assert item.DefinitionData.UniqueId == 1007
     assert stats.overrides_for(item) == {"ClipSize": 20}
@@ -221,7 +222,7 @@ def test_failed_set_part_does_not_move_overrides(game, monkeypatch, overrides_fi
     saved_before = overrides_file.read_bytes()
 
     with pytest.raises(ApiError):
-        api.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+        gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
     assert item.DefinitionData.UniqueId == 7
     assert stats.overrides_for(item) == {"ClipSize": 20}
@@ -243,7 +244,7 @@ def test_set_level_accepts_the_gear_max_from_the_game(game, monkeypatch):
     item = make_gun(stage=5)
     use(monkeypatch, item)
 
-    result = api.set_level({"id": "x", "level": 90})
+    result = gear_edit.set_level({"id": "x", "level": 90})
 
     assert item.ExpLevel == 90
     assert item.DefinitionData.GameStage == 90
@@ -260,7 +261,7 @@ def test_set_level_rejects_above_the_gear_max_and_names_the_range(game, monkeypa
     before = state_of(item)
 
     with pytest.raises(ApiError) as caught:
-        api.set_level({"id": "x", "level": 91})
+        gear_edit.set_level({"id": "x", "level": 91})
 
     assert caught.value.status == 400
     message = str(caught.value)
@@ -274,9 +275,9 @@ def test_set_level_uses_the_fallback_range_when_the_game_cannot_be_asked(game, m
     item = make_gun(stage=5)
     use(monkeypatch, item)
 
-    assert api.set_level({"id": "x", "level": 90})["limits"]["max"] == 90
+    assert gear_edit.set_level({"id": "x", "level": 90})["limits"]["max"] == 90
     with pytest.raises(ApiError) as caught:
-        api.set_level({"id": "x", "level": 91})
+        gear_edit.set_level({"id": "x", "level": 91})
     assert caught.value.status == 400
 
 
@@ -291,7 +292,7 @@ def test_set_level_readback_mismatch_is_restored(game, monkeypatch):
     before = state_of(item)
 
     with pytest.raises(ApiError) as caught:
-        api.set_level({"id": "x", "level": 90})
+        gear_edit.set_level({"id": "x", "level": 90})
 
     assert caught.value.status == 409
     assert "GameStage is 5, not 90" in str(caught.value)
@@ -312,7 +313,7 @@ def test_set_level_grade_reset_by_the_rebuild_is_caught_and_restored(game, monke
     before = state_of(item)
 
     with pytest.raises(ApiError) as caught:
-        api.set_level({"id": "x", "level": 90})
+        gear_edit.set_level({"id": "x", "level": 90})
 
     assert caught.value.status == 409
     assert "ManufacturerGradeIndex is 5, not 90" in str(caught.value)
@@ -334,7 +335,7 @@ def test_set_level_rebuild_error_restores_everything(game, monkeypatch):
     before = state_of(item)
 
     with pytest.raises(ApiError) as caught:
-        api.set_level({"id": "x", "level": 90})
+        gear_edit.set_level({"id": "x", "level": 90})
 
     assert caught.value.status == 409
     assert state_of(item) == before
@@ -348,7 +349,7 @@ def test_set_level_moves_a_legacy_override_onto_the_gun_at_its_new_level(game, m
     stats.load()
     use(monkeypatch, item)
 
-    api.set_level({"id": "x", "level": 6})
+    gear_edit.set_level({"id": "x", "level": 6})
 
     assert stats.override_scope(item) == "own"
     assert stats.overrides_for(item) == {"ClipSize": 15}
@@ -362,7 +363,7 @@ def test_detail_reports_limits_and_overpower(game, monkeypatch):
     item = make_gun(stage=88)
     use(monkeypatch, item)
 
-    detail = api._detail(item, api.EQUIPPED, "legal")
+    detail = gear_edit._detail(item, gear_inventory.EQUIPPED, "legal")
 
     assert detail["overpower"] == 8
     assert detail["limits"]["max"] == 90
@@ -375,14 +376,14 @@ def test_detail_has_no_overpower_for_ordinary_gear(game, monkeypatch):
     item = make_gun(stage=75)
     use(monkeypatch, item)
 
-    assert api._detail(item, api.EQUIPPED, "legal")["overpower"] == 0
+    assert gear_edit._detail(item, gear_inventory.EQUIPPED, "legal")["overpower"] == 0
 
 
 def test_snapshot_skips_fields_this_build_does_not_have(game):
     item = make_gun()
     del item.DefinitionData.Accessory2PartDefinition
 
-    snapshot = api._snapshot(item)
+    snapshot = gear_edit._snapshot(item)
 
     assert "Accessory2PartDefinition" not in snapshot
     assert snapshot["BarrelPartDefinition"].path == "Barrel.A"
@@ -396,10 +397,10 @@ def test_snapshot_skips_fields_this_build_does_not_have(game):
 def test_clearing_a_stat_moves_the_guns_own_overrides_to_its_new_uid(game, monkeypatch):
     item = make_gun(uid=7, clip=10, fire=0.5)
     use(monkeypatch, item)
-    api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
-    api.set_stat({"id": "x", "stat": "FireInterval", "value": 0.25})
+    gear_edit.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+    gear_edit.set_stat({"id": "x", "stat": "FireInterval", "value": 0.25})
 
-    api.set_stat({"id": "x", "stat": "ClipSize", "value": None})
+    gear_edit.set_stat({"id": "x", "stat": "ClipSize", "value": None})
 
     assert item.DefinitionData.UniqueId == 1007
     assert stats.overrides_for(item) == {"FireInterval": 0.25}
@@ -418,13 +419,13 @@ def test_set_stat_and_set_level_report_a_save_warning_in_warnings(game, monkeypa
         raise OSError("disk full (test)")
 
     monkeypatch.setattr(stats, "_save", boom)
-    result = api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+    result = gear_edit.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
     assert len(result["warnings"]) == 1 and "could not be saved" in result["warnings"][0]
     assert "warning" not in result["applied"]
 
     monkeypatch.setattr(stats, "_save", real_save)
-    assert api.set_stat({"id": "x", "stat": "ClipSize", "value": 25})["warnings"] == []
-    assert api.set_level({"id": "x", "level": 6})["warnings"] == []
+    assert gear_edit.set_stat({"id": "x", "stat": "ClipSize", "value": 25})["warnings"] == []
+    assert gear_edit.set_level({"id": "x", "level": 6})["warnings"] == []
 
 
 def test_set_stat_maps_a_failed_write_to_409_or_500(game, monkeypatch):
@@ -437,7 +438,7 @@ def test_set_stat_maps_a_failed_write_to_409_or_500(game, monkeypatch):
 
     monkeypatch.setattr(stats, "set_override", refused)
     with pytest.raises(ApiError) as info:
-        api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+        gear_edit.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
     assert info.value.status == 409
 
     def half(*_args, **_kwargs):
@@ -445,5 +446,5 @@ def test_set_stat_maps_a_failed_write_to_409_or_500(game, monkeypatch):
 
     monkeypatch.setattr(stats, "set_override", half)
     with pytest.raises(ApiError) as info:
-        api.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
+        gear_edit.set_stat({"id": "x", "stat": "ClipSize", "value": 20})
     assert info.value.status == 500
