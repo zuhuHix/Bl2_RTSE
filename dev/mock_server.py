@@ -183,7 +183,10 @@ def slots_for(item: Item, mode: str) -> list[dict]:
         if current:
             by_id.setdefault(current["id"], current)
         ordered = sorted(by_id.values(), key=lambda p: (p["name"].lower(), p["id"]))
-        out.append({"slot": slot, "current": current, "options": ordered})
+        legal = {p["id"] for p in PARTS[item.key][slot]} if item.key else set()
+        weapon = item.kind == "weapon"
+        current = VALIDATION.decorate(slot, [current], legal, weapon)[0] if current else None
+        out.append({"slot": slot, "current": current, "options": VALIDATION.decorate(slot, ordered, legal, weapon)})
     return out
 
 
@@ -282,6 +285,7 @@ def discover_feature_mocks(directory: Path) -> list:
 
 
 FEATURE_MOCKS = discover_feature_mocks(Path(__file__).resolve().parent)
+VALIDATION = next(m for m in FEATURE_MOCKS if m.__name__ == "mock_validation")  # part status, save checks: dev/mock_validation.py
 
 
 # Same shape as limits.gear_level_cap(): gear level = character cap (80) + Overpower levels (10)
@@ -304,7 +308,7 @@ def detail(item: Item, mode: str) -> dict:
         "grade": item.level, "game_stage": item.level, "stats": stats,
         # demo: one gun is pretended to hold overrides saved before per-gun copies existed ("legacy")
         "override_scope": "legacy" if "Dahl" in item.name else ("own" if item.overrides else None),
-        "slots": slots_for(item, mode), "hide_bones": item.hide,
+        "slots": slots_for(item, mode), "hide_bones": item.hide, "dlc": VALIDATION.item_dlc(item.id),
     }
 
 
@@ -390,9 +394,11 @@ class Handler(BaseHTTPRequestHandler):
 
             item = find(params["id"])
             mode = params.get("mode", "legal")
+            before = VALIDATION.snapshot(item, STATS)  # what the item was before this edit (applied.kept)
             if path == "/api/item/set_part":
                 item.parts[params["slot"]] = BY_ID.get(params["part"]) if params.get("part") else None
                 applied = {"what": f"{params['slot']} ({item.location})", "requested": params.get("part"), "before": "-", "after": {}}
+                applied["kept"] = VALIDATION.kept(before, item, STATS, params["slot"])
             elif path == "/api/item/set_level":
                 requested = int(params["level"])
                 if not GEAR_LIMITS["min"] <= requested <= GEAR_LIMITS["max"]:
@@ -403,6 +409,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 item.level = requested
                 applied = {"what": f"level ({item.location})", "requested": item.level, "before": {}, "after": {"exp_level": item.level}}
+                applied["kept"] = VALIDATION.kept(before, item, STATS)
             elif path == "/api/item/set_stat":
                 if params.get("value") is None:
                     item.overrides.pop(params["stat"], None)
