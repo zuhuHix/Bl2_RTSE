@@ -3,26 +3,119 @@
   "width": 1440,
   "height": 900,
   "steps": [
-    {"wait": 800},
-    {"clickText": "Earnest Logan"},
-    {"wait": 500},
-    {"click": ".leg[data-slot=\"Barrel\"]"},
-    {"wait": 500},
-    {"clickText": "Any gun"},
-    {"wait": 900},
-    {"shot": "dev/out/validation_a_picker_any_chips.png"},
-    {"eval": "(() => { const c = [...document.querySelectorAll('.picker .card')].find((x) => x.querySelector('.pstat')?.textContent === 'DLC'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"},
-    {"wait": 1000},
-    {"shot": "dev/out/validation_b_check_dlc.png"},
-    {"eval": "(() => { const c = [...document.querySelectorAll('.picker .card')].find((x) => x.querySelector('.pstat')?.textContent === 'Unsupported'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"},
-    {"wait": 1000},
-    {"shot": "dev/out/validation_c_check_unsupported.png"},
-    {"eval": "(() => { const b = [...document.querySelectorAll('.picker .preview button')].find((x) => x.textContent.includes('Save validation dump')); if (!b) return 'NOT FOUND'; b.click(); return 'ok'; })()"},
-    {"wait": 600},
-    {"eval": "(() => { const c = [...document.querySelectorAll('.picker .card:not(.cur)')].find((x) => x.querySelector('.pstat')?.textContent === 'Custom'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"},
-    {"wait": 1000},
-    {"clickText": "Bolt on this"},
-    {"wait": 1200},
-    {"shot": "dev/out/validation_d_kept_panel.png"}
+    {
+      "wait": 800
+    },
+    {
+      "clickText": "Earnest Logan"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "click": ".leg[data-slot=\"Barrel\"]"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "clickText": "Any gun"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card')].find((x) => x.querySelector('.pstat')?.textContent === 'DLC'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+    },
+    {
+      "wait": 1000
+    },
+    {
+      "shot": "dev/out/validation_a_picker_equipped.png"
+    },
+    {
+      "eval": "(() => { const b = [...document.querySelectorAll('.picker .preview button')].find((x) => x.textContent.includes('Save validation dump')); if (!b) return 'NOT FOUND'; b.click(); return 'ok'; })()"
+    },
+    {
+      "wait": 600
+    },
+    {
+      "clickText": "Close"
+    },
+    {
+      "wait": 400
+    },
+    {
+      "clickText": "Slag Storm"
+    },
+    {
+      "wait": 700
+    },
+    {
+      "click": ".leg[data-slot=\"Barrel\"]"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "clickText": "Any gun"
+    },
+    {
+      "wait": 700
+    },
+    {
+      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card:not(.cur)')].find((x) => x.querySelector('.pstat')?.textContent === 'Custom'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "clickText": "Run save check"
+    },
+    {
+      "wait": 1400
+    },
+    {
+      "shot": "dev/out/validation_b_save_check_backpack.png"
+    },
+    {
+      "eval": "(() => { const c = document.querySelector('.picker .card[title^=\"GD_Weap_SniperRifles.Barrel.SR_Barrel_Hyperion\"]'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "clickText": "Run save check"
+    },
+    {
+      "wait": 1400
+    },
+    {
+      "shot": "dev/out/validation_c_restored_warning.png"
+    },
+    {
+      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card:not(.cur)')].find((x) => x.querySelector('.pstat')?.textContent === 'Custom'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "clickText": "Bolt on this"
+    },
+    {
+      "wait": 1400
+    },
+    {
+      "shot": "dev/out/validation_d_kept_panel.png"
+    },
+    {
+      "clickText": "Run save check"
+    },
+    {
+      "wait": 1400
+    },
+    {
+      "shot": "dev/out/validation_e_kept_save_check.png"
+    }
   ]
 }

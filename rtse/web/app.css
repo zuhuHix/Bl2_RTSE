@@ -353,3 +353,19 @@ h1, h2, h3 { margin: 0; font-weight: 400; font-family: var(--display); letter-sp
 .kept td { padding: 5px 10px 5px 0; border-top: 1px solid var(--line); }
 .kept .tick { color: var(--good); display: inline-flex; align-items: center; gap: 5px; }
 .kept .warn { color: var(--blaze); display: inline-flex; align-items: center; gap: 5px; }
+.kept-muted { color: var(--muted); }
+.kept-bad { color: var(--blaze); font-weight: 700; }
+.kept-qc { flex: 1 1 320px; min-width: 0; }
+.kept-qc li .unv { grid-column: 1 / -1; justify-self: start; margin: 2px 0 0; }
+.kept-save { display: grid; gap: 8px; }
+
+/* The experimental save check: the button and its note in the picker, the warning above a result that restored the item, and the decoder line. */
+.chk-run { display: grid; gap: 6px; justify-items: start; }
+.chk-note { color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.35; }
+.chk-result { display: grid; gap: 8px; }
+.chk-restored { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 3px solid #000; background: var(--blaze); color: var(--ink); font-weight: 700; line-height: 1.35; box-shadow: 3px 3px 0 #000; }
+.chk-restored .icon { flex: none; margin-top: 1px; }
+.chk-decoder { font-size: 12px; font-weight: 600; color: var(--muted); }
+
+/* Part list scan age under the picker's mode bar, with its Rescan button. */
+.scan-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 12.5px; font-weight: 600; }

@@ -1,7 +1,8 @@
-"""Part status (natural / DLC / custom / unsupported), save checks and part checks.
+"""Part status (natural / DLC / custom / unsupported), the automatic quick check, the explicit save check, the inherited
+and weighted part lists, and the part caches.
 
 Every game call here is a fake (see unreal_stub.py and test_gear_edit.py), so these tests pin RTSE's own logic only:
-they say nothing about what the real game does. The DLC and serial calls are UNVERIFIED in game.
+they say nothing about what the real game does. Every serial, weight and DLC call is UNVERIFIED in game.
 """
 
 from __future__ import annotations
@@ -36,10 +37,26 @@ def _fresh_caches_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
 # --- fakes for balances, DLC sets and items -----------------------------------------------------
 
 
+def part_list(*entries: Any, enabled: bool = True) -> SimpleNamespace:
+    """A <Slot>PartData struct: its WeightedParts entries and bEnabled."""
+    return SimpleNamespace(WeightedParts=list(entries), bEnabled=enabled)
+
+
+def entry(part: Any, *, weight: int | None = None, manufacturers: list[tuple[Any, int]] | None = None) -> Any:
+    """One WeightedParts entry. Fields that are not given are left off the struct, as an old build would."""
+    fields: dict[str, Any] = {"Part": part}
+    if weight is not None:
+        fields["DefaultWeightIndex"] = weight
+    if manufacturers is not None:
+        fields["Manufacturers"] = [SimpleNamespace(Manufacturer=m, DefaultWeightIndex=w) for m, w in manufacturers]
+    return SimpleNamespace(**fields)
+
+
 class FakeBalance:
     """A weapon or item balance definition as far as RTSE reads it: a path, its part lists and DLC links.
 
-    `dlc_reads` counts how often the DlcItemSet field is read, so the cache tests can see it.
+    `data` replaces whole <Slot>PartData structs (for bEnabled, weights and manufacturers). `dlc_reads` counts how often
+    the DlcItemSet field is read, so the cache tests can see it.
     """
 
     def __init__(
@@ -47,6 +64,7 @@ class FakeBalance:
         path: str,
         *,
         parts: dict[str, list[Any]] | None = None,
+        data: dict[str, SimpleNamespace] | None = None,
         dlc: Any = None,
         base: Any = None,
         item: bool = False,
@@ -63,12 +81,15 @@ class FakeBalance:
             found = parts.get(slot)
             return SimpleNamespace(WeightedParts=[SimpleNamespace(Part=p) for p in found]) if found else None
 
+        collection = SimpleNamespace(**{f"{s}PartData": weighted(s) for s in (ITEM_SLOTS if item else WEAPON_SLOTS)})
+        for slot, struct in (data or {}).items():
+            setattr(collection, f"{slot}PartData", struct)
         if item:
             self.InventoryDefinition = None
             self.RuntimePartListCollection = None
-            self.PartListCollection = SimpleNamespace(**{f"{s}PartData": weighted(s) for s in ITEM_SLOTS})
+            self.PartListCollection = collection
         else:
-            self.RuntimePartListCollection = SimpleNamespace(**{f"{s}PartData": weighted(s) for s in WEAPON_SLOTS})
+            self.RuntimePartListCollection = collection
             self.PartListCollection = None
 
     @property
@@ -100,6 +121,7 @@ class FakeDlc:
 
 
 ORCHID_NAME = "Captain Scarlett and Her Pirate's Booty"
+WEIGHT_ZERO = "In this item's own Barrel list, but with weight index 0, so it probably never drops (unverified)"
 
 
 def make_item(balance: FakeBalance) -> SimpleNamespace:
@@ -123,7 +145,7 @@ def make_item(balance: FakeBalance) -> SimpleNamespace:
 
 @pytest.fixture
 def weapon_world(game):
-    """Weapon balances covering each status. Returns (the gun, its parts by short name)."""
+    """Weapon balances covering each status. Returns (the gun, its parts by short name, the balances)."""
     game.pc = SimpleNamespace()  # a player, so IsLicensed() runs
     dlc = FakeDlc(ORCHID_NAME)
     parts = {
@@ -145,9 +167,12 @@ def weapon_world(game):
     return gun, parts, {"own": own, "orchid": orchid, "child": child, "dlc": dlc}
 
 
+def slot_named(gun: Any, mode: str, name: str) -> Slot:
+    return next(s for s in gear_parts._slots(gun, mode) if s.name == name)  # noqa: SLF001
+
+
 def barrel_statuses(gun: Any) -> dict[str, dict[str, Any]]:
-    slot = next(s for s in gear_parts._slots(gun, "everything") if s.name == "Barrel")  # noqa: SLF001
-    return slot.statuses or {}
+    return slot_named(gun, "everything", "Barrel").statuses or {}
 
 
 # --- part status ----------------------------------------------------------------------------------
@@ -251,10 +276,104 @@ def test_one_odd_part_does_not_break_the_slot(game, monkeypatch):
         return real_status(ref, **kwargs)
 
     monkeypatch.setattr(gear_parts, "part_status", picky)
-    barrel = next(s for s in gear_parts._slots(gun, "legal") if s.name == "Barrel")  # noqa: SLF001
+    barrel = slot_named(gun, "legal", "Barrel")
     assert "Barrel.Good" in (barrel.statuses or {})
     assert "Barrel.Odd" not in (barrel.statuses or {})
     assert "Barrel.Odd" in [o.id for o in barrel.options]  # still offered, just without a status
+
+
+# --- inherited and weighted part lists (Fix 3; class data, UNVERIFIED in game) --------------------
+
+
+def test_a_disabled_child_slot_inherits_the_parents_barrel(game):
+    parent = FakeBalance("Balance.ParentGun", parts={"Barrel": [Part("Barrel.Parent")]})
+    child = FakeBalance("Balance.ChildGun", data={"Barrel": part_list(enabled=False)}, base=parent)
+    game.all["WeaponBalanceDefinition"] = [parent, child]
+    gun = make_gun()
+    gun.DefinitionData.BalanceDefinition = child
+
+    barrel = slot_named(gun, "legal", "Barrel")
+
+    assert "Barrel.Parent" in [o.id for o in barrel.options]
+    assert barrel.statuses["Barrel.Parent"]["status"] == "natural"
+
+
+def test_an_enabled_child_slot_does_not_inherit_the_parents_barrel(game):
+    parent = FakeBalance("Balance.ParentGun", parts={"Barrel": [Part("Barrel.Parent")]})
+    child = FakeBalance("Balance.ChildGun", data={"Barrel": part_list(entry(Part("Barrel.Child")))}, base=parent)
+    game.all["WeaponBalanceDefinition"] = [parent, child]
+    gun = make_gun()
+    gun.DefinitionData.BalanceDefinition = child
+
+    ids = [o.id for o in slot_named(gun, "legal", "Barrel").options]
+
+    assert "Barrel.Child" in ids
+    assert "Barrel.Parent" not in ids
+
+
+def test_an_own_entry_with_weight_index_zero_is_custom_with_the_weight_reason(game):
+    zero, ok = Part("Barrel.Zero"), Part("Barrel.Ok")
+    balance = FakeBalance("Balance.Pistol", data={"Barrel": part_list(entry(zero, weight=0), entry(ok, weight=3))})
+    game.all["WeaponBalanceDefinition"] = [balance]
+    gun = make_gun()
+    gun.DefinitionData.BalanceDefinition = balance
+
+    statuses = slot_named(gun, "legal", "Barrel").statuses or {}
+
+    assert statuses["Barrel.Ok"]["status"] == "natural"
+    assert statuses["Barrel.Zero"] == {"status": "custom", "status_reason": WEIGHT_ZERO, "dlc": None}
+
+
+def test_an_own_entry_for_another_manufacturer_is_custom_and_one_for_this_manufacturer_is_natural(game):
+    jakobs = Part("Manufacturer.Jakobs", "ManufacturerDefinition")  # the gun's manufacturer (make_gun)
+    bandit = Part("Manufacturer.Bandit", "ManufacturerDefinition")
+    balance = FakeBalance(
+        "Balance.Pistol",
+        data={
+            "Barrel": part_list(
+                entry(Part("Barrel.Bandit"), manufacturers=[(bandit, 1)]),
+                entry(Part("Barrel.Both"), manufacturers=[(jakobs, 2), (bandit, 0)]),
+                entry(Part("Barrel.JakobsOff"), manufacturers=[(jakobs, 0)]),
+            ),
+        },
+    )
+    game.all["WeaponBalanceDefinition"] = [balance]
+    gun = make_gun()
+    gun.DefinitionData.BalanceDefinition = balance
+
+    statuses = slot_named(gun, "legal", "Barrel").statuses or {}
+
+    assert statuses["Barrel.Bandit"] == {
+        "status": "custom",
+        "status_reason": "In this item's own Barrel list, but only for other manufacturers (Bandit)",
+        "dlc": None,
+    }
+    assert statuses["Barrel.Both"]["status"] == "natural"
+    assert statuses["Barrel.JakobsOff"]["status"] == "custom"
+    assert statuses["Barrel.JakobsOff"]["status_reason"] == (
+        "In this item's own Barrel list, but with weight index 0 for this manufacturer, "
+        "so it probably never drops (unverified)"
+    )
+
+
+# --- DLC for parts in balances that have no DlcItemSet (Fix 4) ------------------------------------
+
+
+def test_a_balance_without_a_dlc_set_in_a_dlc_package_counts_as_dlc_by_name(game):
+    balance = FakeBalance("GD_Orchid_Weapons.Balance.X", parts={"Barrel": [Part("GD_Orchid_Weapons.Barrel.Y")]})
+    game.all["WeaponBalanceDefinition"] = [balance]
+
+    status = barrel_statuses(make_gun())["GD_Orchid_Weapons.Barrel.Y"]
+
+    assert status["status"] == "dlc"
+    assert status["dlc"] == {"name": ORCHID_NAME, "licensed": None, "source": "package name (guess)"}
+
+
+def test_a_base_package_balance_without_a_dlc_set_is_custom(game):
+    balance = FakeBalance("GD_Weap_Pistol.Balance.X", parts={"Barrel": [Part("GD_Weap_Pistol.Barrel.Z")]})
+    game.all["WeaponBalanceDefinition"] = [balance]
+
+    assert barrel_statuses(make_gun())["GD_Weap_Pistol.Barrel.Z"]["status"] == "custom"
 
 
 # --- DLC caching ----------------------------------------------------------------------------------
@@ -279,40 +398,86 @@ def test_balance_dlc_is_read_once_until_a_rescan(game):
     assert dlc.calls == 2
 
 
-# --- _detail carries the statuses -----------------------------------------------------------------
+# --- part caches: map changes and the age shown to the player (Fix 5) -----------------------------
 
 
-def test_detail_options_carry_the_status_keys(weapon_world):
-    gun, _parts, _balances = weapon_world
-    detail = gear_edit._detail(gun, gear_inventory.EQUIPPED, "everything")  # noqa: SLF001
-
-    barrel = next(s for s in detail["slots"] if s["slot"] == "Barrel")
-    orch = next(o for o in barrel["options"] if o["id"] == "Barrel.Orch")
-    assert orch["status"] == "dlc"
-    assert orch["dlc"]["name"] == ORCHID_NAME
-    assert barrel["current"]["id"] == "Barrel.A"
-    assert barrel["current"]["status"] == "custom"  # the gun's own barrel is not in its balance list here
-    assert detail["dlc"] is None  # the gun's own balance is base game
+def set_map(game: Any, name: Any) -> None:
+    """A player whose world reports `name` as its map."""
+    game.pc = SimpleNamespace(WorldInfo=SimpleNamespace(GetMapName=lambda _flag=False: name))
 
 
-def test_detail_reports_the_items_own_dlc(weapon_world):
-    gun, _parts, balances = weapon_world
-    gun.DefinitionData.BalanceDefinition = balances["child"]
-    detail = gear_edit._detail(gun, gear_inventory.EQUIPPED, "legal")  # noqa: SLF001
-    assert detail["dlc"] == {"name": ORCHID_NAME, "licensed": True, "source": "DlcItemSet"}
+def test_the_map_name_is_read_as_text_and_is_none_without_a_player(game):
+    set_map(game, ("Map_C", 0))  # a tuple comes back from the game call
+    assert gear_parts._map_name() == "Map_C"  # noqa: SLF001
+    game.pc = None
+    assert gear_parts._map_name() is None  # noqa: SLF001
 
 
-def test_options_without_statuses_still_work(game, monkeypatch):
+def test_a_map_change_rebuilds_the_part_caches(game):
+    dlc = FakeDlc(ORCHID_NAME)
+    balance = FakeBalance("Balance.Orchid", parts={"Barrel": [Part("Barrel.Orch")]}, dlc=dlc)
+    game.all["WeaponBalanceDefinition"] = [balance]
+    set_map(game, "Map_A")
+
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001
+    assert balance.dlc_reads == 1
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001 - same map: still cached
+    assert balance.dlc_reads == 1
+
+    set_map(game, "Map_B")
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001 - new map: every cache is rebuilt
+    assert balance.dlc_reads == 2
+    assert gear_parts.parts_cache_info(weapon=True)["map"] == "Map_B"
+
+
+def test_an_unreadable_map_keeps_the_part_caches(game):
+    balance = FakeBalance("Balance.Orchid", parts={"Barrel": [Part("Barrel.Orch")]}, dlc=FakeDlc(ORCHID_NAME))
+    game.all["WeaponBalanceDefinition"] = [balance]
+    set_map(game, "Map_A")
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001
+
+    game.pc = None  # no player: the map cannot be read
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001
+    game.pc = SimpleNamespace()  # a player with no world info: still unreadable
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001
+
+    assert balance.dlc_reads == 1
+    assert gear_parts.parts_cache_info(weapon=True)["map"] == "Map_A"
+
+
+def test_the_item_detail_reports_its_part_cache(game, monkeypatch):
+    set_map(game, "Map_A")
     gun = make_gun()
-    use(monkeypatch, gun, [Slot("Barrel", "BarrelPartDefinition", [PartRef("Barrel.New", "WeaponPartDefinition")])])
-    detail = gear_edit._detail(gun, gear_inventory.EQUIPPED, "legal")  # noqa: SLF001
-    option = detail["slots"][0]["options"][0]
-    assert option["id"] == "Barrel.New"
-    assert "status" not in option
-    assert detail["slots"][0]["current"]["id"] == "Barrel.A"
+    use(monkeypatch, gun)
+
+    assert gear_edit._detail(gun, gear_inventory.EQUIPPED, "legal")["parts_cache"] == {  # noqa: SLF001
+        "scanned": False,
+        "age_s": None,
+        "map": None,
+    }
+
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001
+    cache = gear_edit._detail(gun, gear_inventory.EQUIPPED, "everything")["parts_cache"]  # noqa: SLF001
+    assert cache["scanned"] is True
+    assert cache["map"] == "Map_A"
+    assert isinstance(cache["age_s"], float)
 
 
-# --- save checks ----------------------------------------------------------------------------------
+def test_a_rescan_forgets_the_map_and_the_age(game):
+    set_map(game, "Map_A")
+    gear_parts._part_universe(weapon=True)  # noqa: SLF001
+
+    gear_parts.rescan_parts({})
+
+    assert gear_parts.parts_cache_info(weapon=True) == {"scanned": False, "age_s": None, "map": None}
+
+
+# --- the automatic quick check and the explicit save check ----------------------------------------
+
+NATIVE_NAMES = (
+    "CheckDefMatch", "SerialNumberMatchesDef", "CanBeSaved", "CreateSerialNumber", "PackSerialNumber",
+    "UnpackSerialNumber", "IsDLCRequirementMet", "GetDLCRestrictedMessage",
+)  # fmt: skip
 
 
 def serial_item(
@@ -321,12 +486,11 @@ def serial_item(
     can_save: bool | None = True,
     match: bool = True,
     unpack_mode: str = "tuple",
-    seeds: list[Any] | None = None,
 ) -> SimpleNamespace:
     """A gun with fake serial functions. Unpacking gives back the definition the serial came from, minus `drop`.
 
-    unpack_mode: "tuple" returns (True, definition); "seed" needs an out parameter (a TypeError without one);
-    "bare" returns True with no definition. The seeds list records the out parameter a "seed" unpack was given.
+    unpack_mode: "tuple" returns (True, definition); "bare" returns True and fills the seed in (an out parameter).
+    CreateSerialNumber is present but must never be called: the spy tests record every call.
     """
     item = make_gun(uid=7)
     fields = gear_edit._def_fields(item)  # noqa: SLF001
@@ -340,21 +504,18 @@ def serial_item(
             values[field] = None
         return SimpleNamespace(**values)
 
-    if unpack_mode == "seed":
-        def unpack(serial: dict[str, Any], seed: Any) -> tuple[bool, SimpleNamespace]:
-            if seeds is not None:
-                seeds.append(seed)
-            return True, values_of(serial)
-    elif unpack_mode == "bare":
-        def unpack(serial: dict[str, Any]) -> bool:
-            return True
-    else:
-        def unpack(serial: dict[str, Any]) -> tuple[bool, SimpleNamespace]:
-            return True, values_of(serial)
+    def unpack_tuple(serial: dict[str, Any], _seed: Any) -> tuple[bool, SimpleNamespace]:
+        return True, values_of(serial)
+
+    def unpack_bare(serial: dict[str, Any], seed: Any) -> bool:
+        filled = values_of(serial)
+        for field, value in vars(filled).items():
+            setattr(seed, field, value)
+        return True
 
     item.CreateSerialNumber = lambda: pack(item.DefinitionData)
     item.PackSerialNumber = pack
-    item.UnpackSerialNumber = unpack
+    item.UnpackSerialNumber = unpack_bare if unpack_mode == "bare" else unpack_tuple
     item.SerialNumberMatchesDef = lambda _serial, _definition, _short, _unique: match
     item.CheckDefMatch = lambda _a, _b, _short, _unique: True
     if can_save is not None:
@@ -362,174 +523,307 @@ def serial_item(
     return item
 
 
-def test_save_check_survives_a_round_trip_that_keeps_everything():
-    item = serial_item()
-    check = gear_edit.save_check(item)
-    assert check["survives"] is True
-    assert check["verified"] is False
-    assert check["lost"] == []
-    assert check["summary"] == "Survived a serial round-trip (unverified)"
-    assert [c["name"] for c in check["checks"]] == [
-        "serial round-trip",
-        "SerialNumberMatchesDef",
-        "CheckDefMatch",
-        "CanBeSaved",
-    ]
+def spy(item: Any, calls: list[tuple[str, tuple[Any, ...]]]) -> list[tuple[str, tuple[Any, ...]]]:
+    """Wraps every game function the item has so each call (name, arguments) is recorded. The functions still run."""
+
+    def recording(name: str, function: Any) -> Any:
+        def recorded(*args: Any) -> Any:
+            calls.append((name, args))
+            return function(*args)
+
+        return recorded
+
+    for name in NATIVE_NAMES:
+        function = getattr(item, name, None)
+        if callable(function):
+            setattr(item, name, recording(name, function))
+    return calls
 
 
-def test_can_be_saved_false_means_does_not_survive():
-    check = gear_edit.save_check(serial_item(can_save=False))
-    assert check["survives"] is False
-    assert check["summary"] == "CanBeSaved() returned False (unverified meaning)"
+def calls_named(calls: list[tuple[str, tuple[Any, ...]]], name: str) -> list[tuple[Any, ...]]:
+    return [args for called, args in calls if called == name]
 
 
-def test_a_tuple_unpack_result_is_read_as_ok_and_definition():
-    check = gear_edit.save_check(serial_item(unpack_mode="tuple"))
-    round_trip = check["checks"][0]
-    assert round_trip == {"name": "serial round-trip", "ok": True, "detail": "nothing lost"}
+def use_backpack(monkeypatch: pytest.MonkeyPatch, item: Any, slots: list[Slot] | None = None) -> None:
+    """Like test_gear_edit.use, but the item is in the backpack (not equipped), so the save check may run."""
+    monkeypatch.setattr(gear_edit, "_find_item", lambda _params: (item, gear_inventory.BACKPACK))
+    monkeypatch.setattr(gear_edit, "_slots", lambda _item, _mode: list(slots or []))
 
 
-def test_unpack_that_needs_an_out_parameter_gets_a_copy_never_the_live_struct():
-    seeds: list[Any] = []
-    item = serial_item(unpack_mode="seed", seeds=seeds)
-    live = item.DefinitionData
-    check = gear_edit.save_check(item)
-    assert len(seeds) == 1
-    assert seeds[0] is not live
-    assert check["survives"] is True
-
-
-def test_bare_unpack_result_has_no_definition_to_compare():
-    check = gear_edit.save_check(serial_item(unpack_mode="bare"))
-    assert check["checks"][0]["ok"] is None
-    assert check["survives"] is None
-
-
-def test_an_exception_in_serial_number_matches_def_is_one_unknown_check(game):
-    item = serial_item()
-
-    def boom(*_args: Any) -> bool:
-        raise RuntimeError("boom")
-
-    item.SerialNumberMatchesDef = boom
-    check = gear_edit.save_check(item)  # must not raise
-    matches = next(c for c in check["checks"] if c["name"] == "SerialNumberMatchesDef")
-    assert matches["ok"] is None
-    assert "the game raised RuntimeError('boom')" in matches["detail"]
-    assert check["survives"] is True  # the round-trip itself still kept everything
-
-
-def test_a_serial_that_does_not_match_does_not_survive():
-    check = gear_edit.save_check(serial_item(match=False))
-    assert check["survives"] is False
-    assert check["summary"] == "SerialNumberMatchesDef() returned False (unverified)"
-
-
-def test_save_check_on_nothing_is_unchecked_and_does_not_raise():
-    check = gear_edit.save_check(None)
-    assert check["survives"] is None
-    assert check["verified"] is False
-
-
-def test_item_without_serial_functions_is_unchecked():
-    check = gear_edit.save_check(make_gun())
-    assert check["survives"] is None
-    assert all(c["ok"] is None for c in check["checks"])
-    assert check["checks"][0]["detail"] == "not available on this object"
-
-
-# --- check_part -----------------------------------------------------------------------------------
+def run_check(monkeypatch: pytest.MonkeyPatch, item: Any, slots: list[Slot] | None = None, **params: Any) -> dict:
+    use_backpack(monkeypatch, item, slots)
+    return gear_edit.save_check_route({"id": "x", **params})
 
 
 def barrel_option(part: Any) -> list[Slot]:
     return [Slot("Barrel", "BarrelPartDefinition", [PartRef(part.path, "WeaponPartDefinition")])]
 
 
-def test_check_part_survives_when_the_round_trip_keeps_the_part(game, monkeypatch):
+def test_the_explicit_save_check_never_touches_the_live_struct(game, monkeypatch):
     new_part = Part("Barrel.New")
     game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
     item = serial_item()
-    use(monkeypatch, item, barrel_option(new_part))
-
-    result = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
-
-    assert result["slot"] == "Barrel"
-    assert result["part"] == "Barrel.New"
-    assert result["save_check"]["survives"] is True
-    assert result["save_check"]["verified"] is False
-
-
-def test_check_part_reports_a_part_the_round_trip_drops(game, monkeypatch):
-    new_part = Part("Barrel.New")
-    game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
-    item = serial_item(drop=("BarrelPartDefinition",))
-    use(monkeypatch, item, barrel_option(new_part))
-
-    check = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})["save_check"]
-
-    assert check["survives"] is False
-    assert [d["field"] for d in check["lost"]] == ["BarrelPartDefinition"]
-    assert check["lost"][0] == {"field": "BarrelPartDefinition", "expected": "Barrel.New", "got": None}
-    assert check["summary"] == "Lost in a serial round-trip: BarrelPartDefinition (unverified)"
-
-
-def test_check_part_without_serial_functions_is_unchecked(game, monkeypatch):
-    new_part = Part("Barrel.New")
-    game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
-    use(monkeypatch, make_gun(), barrel_option(new_part))
-
-    check = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})["save_check"]
-
-    assert check["survives"] is None
-    assert check["checks"][0]["detail"] == "not available on this object"
-
-
-def test_check_part_never_changes_the_live_item(game, monkeypatch):
-    new_part = Part("Barrel.New")
-    game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
-    item = serial_item(drop=("BarrelPartDefinition",))
-    data_before = item.DefinitionData
+    calls = spy(item, [])
+    live = item.DefinitionData
     before = state_of(item)
-    use(monkeypatch, item, barrel_option(new_part))
 
-    gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
-    gear_edit.check_part({"id": "x", "slot": "Barrel", "part": ""})  # removal
+    result = run_check(monkeypatch, item, barrel_option(new_part), slot="Barrel", part="Barrel.New")
 
-    assert item.DefinitionData is data_before
+    assert result["save_check"]["survives"] is True
+    assert result["save_check"]["restored"] is False
+    names = [name for name, _args in calls]
+    assert "PackSerialNumber" in names
+    assert "UnpackSerialNumber" in names
+    assert "CreateSerialNumber" not in names
+    for name, args in calls:
+        assert all(arg is not live for arg in args), f"{name} was given the live struct"
+    seed = calls_named(calls, "UnpackSerialNumber")[0][1]
+    assert seed is not live
+    assert item.DefinitionData is live
     assert state_of(item) == before
 
 
-def test_check_part_removal_checks_the_slot_without_its_part(monkeypatch):
-    item = serial_item()
-    use(monkeypatch, item, [Slot("Barrel", "BarrelPartDefinition", [])])
-
-    result = gear_edit.check_part({"id": "x", "slot": "Barrel"})
-
-    assert result["part"] is None
-    assert result["status"] is None
-    assert result["save_check"]["survives"] is True  # no barrel went in, and no barrel came back out
-    assert item.DefinitionData.BarrelPartDefinition is not None  # the live gun keeps its barrel
-
-
-def test_copy_that_hands_back_the_live_struct_is_put_back_and_then_unchecked(game, monkeypatch):
-    class AliasingData(SimpleNamespace):
-        def __copy__(self) -> Any:
-            return self  # copy.copy gives back the live struct itself
-
+def test_a_native_that_changes_the_live_item_is_put_back_and_reported(game, monkeypatch):
     new_part = Part("Barrel.New")
     game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
+    item = serial_item()
+    real_pack = item.PackSerialNumber
+
+    def pack_and_mutate(definition: Any) -> dict[str, Any]:
+        item.DefinitionData.BarrelPartDefinition = Part("Barrel.Mutated")  # written to the LIVE struct
+        return real_pack(definition)
+
+    item.PackSerialNumber = pack_and_mutate
+    before = state_of(item)
+
+    check = run_check(monkeypatch, item, barrel_option(new_part), slot="Barrel", part="Barrel.New")["save_check"]
+
+    assert check["restored"] is True
+    assert check["survives"] is None
+    assert check["summary"] == (
+        "The check changed the live item, so RTSE put it back. Please send the validation dump (unverified)"
+    )
+    assert state_of(item) == before
+
+
+def test_a_copy_that_shares_the_live_struct_is_caught_by_the_sentinel_even_with_no_changes(game, monkeypatch):
+    monkeypatch.delattr(sys.modules["unrealsdk"], "make_struct", raising=False)
+    item = serial_item()
+    item.DefinitionData = SharingData(**vars(item.DefinitionData))
+    data = item.DefinitionData
+    before = dict(vars(data))
+
+    check = run_check(monkeypatch, item)["save_check"]
+
+    assert check["survives"] is None
+    assert check["restored"] is False  # the sentinel put the live UniqueId back before anything else ran
+    assert vars(data) == before
+    assert data.UniqueId == 7
+    assert "shared the live struct" in str(gear_edit._probe_log["struct copy"]["last_error"])  # noqa: SLF001
+
+
+def test_a_copy_that_is_the_live_struct_is_refused_and_unchecked(game, monkeypatch):
+    monkeypatch.delattr(sys.modules["unrealsdk"], "make_struct", raising=False)
     item = serial_item()
     item.DefinitionData = AliasingData(**vars(item.DefinitionData))
     data = item.DefinitionData
     before = dict(vars(data))
-    use(monkeypatch, item, barrel_option(new_part))
 
-    result = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+    check = run_check(monkeypatch, item)["save_check"]
 
-    assert result["save_check"]["survives"] is None  # no make_struct in the stub, so nothing could be checked
-    assert "make_struct" in str(gear_edit._probe_log["struct copy"]["last_error"])  # noqa: SLF001
-    assert item.DefinitionData is data
+    assert check["survives"] is None
     assert vars(data) == before
+    assert "returned the live struct" in str(gear_edit._probe_log["struct copy"]["last_error"])  # noqa: SLF001
+
+
+def test_make_struct_is_preferred_so_copy_copy_is_never_tried(game, monkeypatch):
+    def fake_make_struct(_name: str, **values: Any) -> SimpleNamespace:
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(sys.modules["unrealsdk"], "make_struct", fake_make_struct, raising=False)
+    monkeypatch.setattr(SharingData, "copies", 0)
+    item = serial_item()
+    item.DefinitionData = SharingData(**vars(item.DefinitionData))
+    data = item.DefinitionData
+    before = dict(vars(data))
+
+    check = run_check(monkeypatch, item)["save_check"]
+
+    assert SharingData.copies == 0
+    assert vars(data) == before
+    assert gear_edit._probe_log["struct copy"]["last_result"] == "make_struct"  # noqa: SLF001
+    assert check["survives"] is True
+
+
+def test_the_explicit_check_refuses_equipped_gear_and_calls_nothing(game, monkeypatch):
+    item = serial_item()
+    calls = spy(item, [])
+    use(monkeypatch, item)  # equipped
+
+    with pytest.raises(ApiError) as caught:
+        gear_edit.save_check_route({"id": "x"})
+
+    assert caught.value.status == 409
+    assert "unequip it first" in str(caught.value)
+    assert calls == []
+
+
+def test_the_explicit_check_rejects_an_unknown_slot(monkeypatch):
+    use_backpack(monkeypatch, make_gun(), [Slot("Barrel", "BarrelPartDefinition", [])])
+    with pytest.raises(ApiError) as caught:
+        gear_edit.save_check_route({"id": "x", "slot": "Scope", "part": ""})
+    assert caught.value.status == 400
+
+
+def test_the_explicit_check_rejects_a_part_that_is_not_an_option(monkeypatch):
+    use_backpack(monkeypatch, make_gun(), [Slot("Barrel", "BarrelPartDefinition", [])])
+    with pytest.raises(ApiError) as caught:
+        gear_edit.save_check_route({"id": "x", "slot": "Barrel", "part": "Barrel.Nope"})
+    assert caught.value.status == 400
+    assert "not available in this mode" in str(caught.value)
+
+
+def test_a_part_that_is_not_loaded_is_unchecked_with_a_plain_reason(monkeypatch):
+    ghost = PartRef("Barrel.Ghost", "WeaponPartDefinition")
+    use_backpack(monkeypatch, make_gun(), [Slot("Barrel", "BarrelPartDefinition", [ghost], None)])
+
+    result = gear_edit.save_check_route({"id": "x", "slot": "Barrel", "part": "Barrel.Ghost"})
+
+    assert result["experimental"] is True
+    assert result["part"] == "Barrel.Ghost"
+    assert result["save_check"]["survives"] is None
+    assert result["save_check"]["summary"] == (
+        "Could not check: the part is not loaded right now - try rescanning parts"
+    )
+
+
+def test_removing_a_part_checks_the_slot_without_its_part(monkeypatch):
+    item = serial_item()
+    calls = spy(item, [])
+
+    result = run_check(monkeypatch, item, [Slot("Barrel", "BarrelPartDefinition", [])], slot="Barrel", part="")
+
+    assert result["part"] is None
+    assert result["save_check"]["survives"] is True  # no barrel went in, and no barrel came back out
+    assert calls_named(calls, "PackSerialNumber")[0][0].BarrelPartDefinition is None
+    assert item.DefinitionData.BarrelPartDefinition.path == "Barrel.A"  # the live gun keeps its barrel
+
+
+def test_a_part_the_round_trip_drops_is_reported_as_lost(game, monkeypatch):
+    new_part = Part("Barrel.New")
+    game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
+    item = serial_item(drop=("BarrelPartDefinition",))
+
+    check = run_check(monkeypatch, item, barrel_option(new_part), slot="Barrel", part="Barrel.New")["save_check"]
+
+    assert check["survives"] is False
+    assert check["lost"] == [{"field": "BarrelPartDefinition", "expected": "Barrel.New", "got": None}]
+    assert check["summary"] == "Lost in a serial round-trip: BarrelPartDefinition (unverified)"
+
+
+def test_the_whole_item_check_runs_can_be_saved_and_a_slot_check_does_not(game, monkeypatch):
+    new_part = Part("Barrel.New")
+    game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
+
+    whole = run_check(monkeypatch, serial_item())["save_check"]
+    slot = run_check(monkeypatch, serial_item(), barrel_option(new_part), slot="Barrel", part="Barrel.New")
+
+    assert [c["name"] for c in whole["checks"]] == [
+        "serial round-trip",
+        "SerialNumberMatchesDef",
+        "CheckDefMatch",
+        "CanBeSaved",
+    ]
+    assert whole["survives"] is True
+    assert whole["summary"] == "Survived a serial round-trip (unverified)"
+    assert whole["decoder"] == "UnpackSerialNumber (native)"
+    assert whole["verified"] is False
+    assert "CanBeSaved" not in [c["name"] for c in slot["save_check"]["checks"]]
+
+
+def test_can_be_saved_false_on_the_whole_item_means_does_not_survive(monkeypatch):
+    check = run_check(monkeypatch, serial_item(can_save=False))["save_check"]
+    assert check["survives"] is False
+    assert check["summary"] == "CanBeSaved() returned False (unverified meaning)"
+
+
+def test_a_tuple_unpack_result_is_read_as_ok_and_definition(monkeypatch):
+    check = run_check(monkeypatch, serial_item(unpack_mode="tuple"))["save_check"]
+    assert check["checks"][0] == {"name": "serial round-trip", "ok": True, "detail": "nothing lost"}
+
+
+def test_a_bare_unpack_result_is_not_compared_against_the_seed(monkeypatch):
+    # The seed is a copy of the item as it is now: comparing it would report a candidate part as lost.
+    check = run_check(monkeypatch, serial_item(unpack_mode="bare"))["save_check"]
+    assert check["checks"][0] == {
+        "name": "serial round-trip", "ok": None, "detail": "the game gave no definition back to compare",
+    }
+    assert check["survives"] is None
+
+
+def test_an_unpack_that_takes_no_seed_is_called_once_and_not_retried(game, monkeypatch):
+    item = serial_item()
+    attempts: list[int] = []
+
+    def one_argument(*args: Any) -> tuple[bool, SimpleNamespace]:
+        attempts.append(len(args))
+        if len(args) != 1:
+            raise TypeError("takes 1 argument")
+        return True, SimpleNamespace(**args[0])
+
+    item.UnpackSerialNumber = one_argument
+
+    check = run_check(monkeypatch, item)["save_check"]
+
+    assert attempts == [2]  # the one call, with the seed; no second attempt without it
+    assert check["checks"][0]["ok"] is None
+    assert "TypeError" in check["checks"][0]["detail"]
+    assert check["survives"] is None
+
+
+def test_an_offline_decoder_is_used_before_the_native_unpack(monkeypatch):
+    item = serial_item()
+    calls = spy(item, [])
+    monkeypatch.setattr(gear_edit, "_decode_offline", lambda serial, _item: SimpleNamespace(**serial))
+
+    check = run_check(monkeypatch, item)["save_check"]
+
+    assert check["decoder"] == "offline (rtse.item_serial)"
+    assert calls_named(calls, "UnpackSerialNumber") == []
+    assert check["survives"] is True
+
+
+def test_an_exception_in_serial_number_matches_def_is_one_unknown_check(monkeypatch):
+    item = serial_item()
+
+    def boom(*_args: Any) -> bool:
+        raise RuntimeError("boom")
+
+    item.SerialNumberMatchesDef = boom
+    check = run_check(monkeypatch, item)["save_check"]  # must not raise
+    matches = next(c for c in check["checks"] if c["name"] == "SerialNumberMatchesDef")
+    assert matches["ok"] is None
+    assert "the game raised RuntimeError('boom')" in matches["detail"]
+    assert check["survives"] is True  # the round-trip itself still kept everything
+
+
+def test_a_serial_that_does_not_match_does_not_survive(monkeypatch):
+    check = run_check(monkeypatch, serial_item(match=False))["save_check"]
+    assert check["survives"] is False
+    assert check["summary"] == "SerialNumberMatchesDef() returned False (unverified)"
+
+
+def test_an_item_without_serial_functions_is_unchecked(monkeypatch):
+    check = run_check(monkeypatch, make_gun())["save_check"]
+    assert check["survives"] is None
+    assert all(c["ok"] is None for c in check["checks"])
+    assert check["checks"][0]["detail"] == "not available on this object"
+
+
+def test_the_run_never_raises_even_with_nothing_to_check(game):
+    check = gear_edit._run_experimental(None, {}, whole_item=True)  # noqa: SLF001
+    assert check["survives"] is None
+    assert check["verified"] is False
 
 
 class SharedCopy:
@@ -553,69 +847,83 @@ class SharingData(SimpleNamespace):
         return SharedCopy(self)
 
 
-def test_make_struct_is_preferred_so_the_live_struct_is_never_written(game, monkeypatch):
-    def fake_make_struct(_name: str, **values: Any) -> SimpleNamespace:
-        return SimpleNamespace(**values)
+class AliasingData(SimpleNamespace):
+    def __copy__(self) -> Any:
+        return self  # copy.copy gives back the live struct itself
 
+
+# --- automatic paths: quick check only -------------------------------------------------------------
+
+
+def test_item_detail_and_set_part_call_only_can_be_saved(game, monkeypatch):
     new_part = Part("Barrel.New")
     game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
-    monkeypatch.setattr(sys.modules["unrealsdk"], "make_struct", fake_make_struct, raising=False)
-    monkeypatch.setattr(SharingData, "copies", 0)
     item = serial_item()
-    item.DefinitionData = SharingData(**vars(item.DefinitionData))
-    data = item.DefinitionData
-    before = dict(vars(data))
-    use(monkeypatch, item, barrel_option(new_part))
+    calls = spy(item, [])
+    use_backpack(monkeypatch, item, barrel_option(new_part))
 
-    result = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+    gear_edit.item_detail({"id": "x"})
+    result = gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
 
-    assert SharingData.copies == 0  # copy.copy was never tried
-    assert vars(data) == before
-    assert gear_edit._probe_log["struct copy"]["last_result"] == "make_struct"  # noqa: SLF001
-    assert result["save_check"]["survives"] is True
+    assert {name for name, _args in calls} == {"CanBeSaved"}
+    kept = result["applied"]["kept"]
+    assert kept["quick_checks"] == [{"name": "CanBeSaved", "ok": True, "detail": "returned True"}]
+    assert kept["save_check_available"] is True
+    assert "save_check" not in kept
 
 
-def test_copy_that_shares_storage_is_put_back_and_unchecked_without_make_struct(game, monkeypatch):
+def test_set_part_on_equipped_gear_says_the_save_check_is_not_available(game, monkeypatch):
     new_part = Part("Barrel.New")
     game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
-    monkeypatch.delattr(sys.modules["unrealsdk"], "make_struct", raising=False)
     item = serial_item()
-    item.DefinitionData = SharingData(**vars(item.DefinitionData))
-    data = item.DefinitionData
-    before = dict(vars(data))
+    calls = spy(item, [])
     use(monkeypatch, item, barrel_option(new_part))
 
-    result = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})
+    kept = gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})["applied"]["kept"]
 
-    assert vars(data) == before  # the live struct was put back
-    assert result["save_check"]["survives"] is None
-    assert "shared the live struct" in result["save_check"]["summary"]
-
-
-def test_check_part_rejects_an_unknown_slot(monkeypatch):
-    use(monkeypatch, make_gun(), [Slot("Barrel", "BarrelPartDefinition", [])])
-    with pytest.raises(ApiError) as caught:
-        gear_edit.check_part({"id": "x", "slot": "Scope", "part": ""})
-    assert caught.value.status == 400
+    assert kept["save_check_available"] is False
+    assert kept["quick_checks"][0]["name"] == "CanBeSaved"
+    assert {name for name, _args in calls} == {"CanBeSaved"}
 
 
-def test_check_part_rejects_a_part_that_is_not_an_option(game, monkeypatch):
-    use(monkeypatch, make_gun(), [Slot("Barrel", "BarrelPartDefinition", [])])
-    with pytest.raises(ApiError) as caught:
-        gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.Nope"})
-    assert caught.value.status == 400
-    assert "not available in this mode" in str(caught.value)
+def test_set_level_calls_only_can_be_saved_and_reports_the_quick_check(game, monkeypatch):
+    game.pc = SimpleNamespace(GetMaximumPossiblePlayerLevelCap=lambda: 80, GetMaxOverpowerLevel=lambda: 10)
+    item = serial_item()
+    calls = spy(item, [])
+    use_backpack(monkeypatch, item)
+
+    kept = gear_edit.set_level({"id": "x", "level": 6})["applied"]["kept"]
+
+    assert {name for name, _args in calls} == {"CanBeSaved"}
+    assert kept["quick_checks"] == [{"name": "CanBeSaved", "ok": True, "detail": "returned True"}]
+    assert kept["save_check_available"] is True
 
 
-def test_check_part_for_a_part_that_is_not_loaded_is_unsupported_and_unchecked(game, monkeypatch):
-    ghost = PartRef("Barrel.Ghost", "WeaponPartDefinition")
-    use(monkeypatch, make_gun(), [Slot("Barrel", "BarrelPartDefinition", [ghost], None)])
+def test_the_quick_check_is_empty_for_items_that_are_not_weapons():
+    assert gear_edit._quick_checks(make_item(FakeBalance("Balance.Shield", item=True))) == []  # noqa: SLF001
 
-    result = gear_edit.check_part({"id": "x", "slot": "Barrel", "part": "Barrel.Ghost"})
 
-    assert result["status"] == "unsupported"
-    assert result["status_reason"] == "Not loaded right now - try rescanning parts"
-    assert result["save_check"]["survives"] is None
+def test_the_debug_dump_runs_no_serial_function(game, monkeypatch, tmp_path):
+    target = tmp_path / "debug_validation.json"
+    monkeypatch.setattr(gear_edit, "DEBUG_VALIDATION_FILE", target)
+    item = serial_item()
+    calls = spy(item, [])
+    use_backpack(monkeypatch, item)
+
+    result = gear_edit.debug_validation({"id": "x"})
+
+    assert result["saved_to"] == str(target)
+    assert result["functions"]["CheckDefMatch"] is True
+    assert result["functions"]["IsDLCRequirementMet"] is False
+    assert {name for name, _args in calls} <= {"CanBeSaved"}
+    dump = json.loads(target.read_text(encoding="utf-8"))
+    assert "unverified" in dump["note"]
+    assert "save_check" not in dump
+    assert dump["quick_checks"] == [{"name": "CanBeSaved", "ok": True, "detail": "returned True"}]
+    assert "parts_cache" in dump
+    assert "status_counts" in dump
+    assert "CreateSerialNumber" not in dump["probe_log"]
+    assert "PackSerialNumber" not in dump["probe_log"]
 
 
 # --- set_part and set_level report what the game kept ---------------------------------------------
@@ -628,7 +936,7 @@ def test_set_part_reports_what_the_game_kept(game, monkeypatch):
         uid=7,
         on_init=lambda data: setattr(item, "ClipSize", 12) if data.BarrelPartDefinition.path == "Barrel.New" else None,
     )
-    use(monkeypatch, item, barrel_option(new_part))
+    use_backpack(monkeypatch, item, barrel_option(new_part))
 
     kept = gear_edit.set_part({"id": "x", "slot": "Barrel", "part": "Barrel.New"})["applied"]["kept"]
 
@@ -640,7 +948,9 @@ def test_set_part_reports_what_the_game_kept(game, monkeypatch):
     assert not any(p["edited"] for p in kept["parts"] if p["slot"] != "Barrel")
     label = next(s.label for s in stats.WEAPON_STATS if s.name == "ClipSize")
     assert kept["stats"] == [{"name": "ClipSize", "label": label, "before": 10, "after": 12}]
-    assert kept["save_check"]["survives"] is None  # this fake gun has no serial functions
+    assert kept["quick_checks"] == [{"name": "CanBeSaved", "ok": None, "detail": "not available on this object"}]
+    assert kept["save_check_available"] is True
+    assert "save_check" not in kept
 
 
 def test_set_level_reports_what_the_game_kept(game, monkeypatch):
@@ -654,7 +964,8 @@ def test_set_level_reports_what_the_game_kept(game, monkeypatch):
     assert len(kept["parts"]) == len(WEAPON_SLOTS)
     assert not any(p["changed"] or p["edited"] for p in kept["parts"])
     assert kept["stats"] == []
-    assert "save_check" in kept
+    assert kept["save_check_available"] is False  # equipped
+    assert "quick_checks" in kept
 
 
 def test_a_failed_before_capture_gives_an_error_not_a_broken_edit(game, monkeypatch):
@@ -673,30 +984,15 @@ def test_a_failed_before_capture_gives_an_error_not_a_broken_edit(game, monkeypa
     assert item.ExpLevel == 6
 
 
-# --- debug dump and routes ------------------------------------------------------------------------
-
-
-def test_debug_validation_writes_the_dump_and_says_where(game, monkeypatch, tmp_path):
-    target = tmp_path / "debug_validation.json"
-    monkeypatch.setattr(gear_edit, "DEBUG_VALIDATION_FILE", target)
-    new_part = Part("Barrel.New")
-    game.objects[("WeaponPartDefinition", "Barrel.New")] = new_part
-    item = serial_item()
-    use(monkeypatch, item, barrel_option(new_part))
-
-    result = gear_edit.debug_validation({"id": "x"})
-
-    assert result["saved_to"] == str(target)
-    assert result["functions"]["CheckDefMatch"] is True
-    assert result["functions"]["IsDLCRequirementMet"] is False
-    dump = json.loads(target.read_text(encoding="utf-8"))
-    assert "unverified" in dump["note"]
-    assert dump["save_check"]["survives"] is True
-    assert "CreateSerialNumber" in dump["probe_log"]
-    assert "status_counts" in dump
+# --- routes ---------------------------------------------------------------------------------------
 
 
 def test_the_new_paths_are_declared_once_and_by_gear_edit():
-    for path in ("/api/item/check_part", "/api/debug/validation"):
+    for path in ("/api/item/save_check", "/api/debug/validation"):
         owners = [m.__name__ for m in api.ROUTE_MODULES if path in m.GET_ROUTES]
         assert owners == ["rtse.gear_edit"], path
+
+
+def test_the_removed_check_part_route_is_gone():
+    assert "/api/item/check_part" not in api.GET_ROUTES
+    assert "/api/item/check_part" not in api.POST_ROUTES

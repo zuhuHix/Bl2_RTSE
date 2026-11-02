@@ -308,7 +308,7 @@ def detail(item: Item, mode: str) -> dict:
         "grade": item.level, "game_stage": item.level, "stats": stats,
         # demo: one gun is pretended to hold overrides saved before per-gun copies existed ("legacy")
         "override_scope": "legacy" if "Dahl" in item.name else ("own" if item.overrides else None),
-        "slots": slots_for(item, mode), "hide_bones": item.hide, "dlc": VALIDATION.item_dlc(item.id),
+        "slots": slots_for(item, mode), "hide_bones": item.hide, "dlc": VALIDATION.item_dlc(item.id), "parts_cache": VALIDATION.parts_cache(mode),
     }
 
 
@@ -354,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, path: str, params: dict) -> None:
         try:
             for feature in FEATURE_MOCKS:
-                if (reply := feature.handle(path, params, {"CHAR": CHAR, "AMMO": AMMO})) is not None:
+                if (reply := feature.handle(path, params, {"CHAR": CHAR, "AMMO": AMMO, "find": find})) is not None:
                     return self.send_json(200, reply)
             if path == "/api/ping":
                 return self.send_json(200, {"ok": True, "in_game": True})
@@ -421,6 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {**detail(item, mode), "applied": applied})
         except LookupError as ex:
             return self.send_json(404, {"error": str(ex)})
+        except VALIDATION.MockConflict as ex:
+            return self.send_json(409, {"error": str(ex)})
         except KeyError as ex:
             return self.send_json(400, {"error": f"missing {ex}"})
         except ValueError as ex:
