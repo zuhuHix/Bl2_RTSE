@@ -42,6 +42,11 @@ STATIC_TYPES = {
     ".json": "application/json",
 }
 
+class _Server(ThreadingHTTPServer):
+    # The page asks for a dozen module files at once; the default listen backlog (5) refuses some of them.
+    request_queue_size = 32
+
+
 _server: ThreadingHTTPServer | None = None
 _thread: threading.Thread | None = None
 token: str = ""
@@ -174,9 +179,9 @@ def start() -> str:
     if _server is None:
         token = secrets.token_urlsafe(24)
         try:
-            _server = ThreadingHTTPServer((HOST, DEFAULT_PORT), Handler)
+            _server = _Server((HOST, DEFAULT_PORT), Handler)
         except OSError:
-            _server = ThreadingHTTPServer((HOST, 0), Handler)
+            _server = _Server((HOST, 0), Handler)
         _server.daemon_threads = True
         port = _server.server_address[1]
         _thread = threading.Thread(target=_server.serve_forever, name="RTSE-http", daemon=True)
