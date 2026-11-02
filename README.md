@@ -111,9 +111,11 @@ The closest thing to the raw tab in the Gibbed editor, except it shows the live 
 Two halves:
 
 - **A/B compare.** Pick a weapon and press **Snapshot A**. Swap parts right there (the part pickers use the same edit as the Gear page, so the change is real), then press **Snapshot B**, or skip B to compare A with the gun as it is now. The table lists every stat with A, B, the change and the % change, and which parts differ. The two bottom rows, damage per shot and "card DPS", are worked out from the stats (damage x pellets / fire interval), so they're marked **estimated**.
-- **Measured damage.** Press **Start**, shoot something, press **Stop**. While it records, the page shows hits, crits and crit rate, total damage, DPS, average and max hit, crit vs non-crit, shots, pellets per shot, per-pellet damage, hits per shot and kills, plus a chart of every hit (crits in red) and the damage in the last second. Pick a **Target** to see one enemy only. **Only this weapon** ignores hits while you hold anything else. Every hit is kept up to the **Cap** (default 2,000; the oldest drop off after that), and **Reset** clears them without stopping.
+- **Measured damage.** Press **Start**, shoot something, press **Stop**. While it records, the page shows hits, crits and crit rate, total damage, DPS, average and max hit, crit vs non-crit, shots, pellets per shot, per-pellet damage, hits per shot and kills, plus a chart of every hit (crits in red) and the damage in the last second. Pick a **Target** to see one enemy only: its DPS is timed over that enemy's hits, and the shot-based tiles (shots, pellets, per pellet, hits per shot) read "all targets only", since a shot can't be tied to an enemy. **Only this weapon** skips hits and shots from your other guns. Every hit is kept up to the **Cap** (default 2,000; the oldest drop off after that), and **Reset** clears them without stopping.
 
-Where the numbers come from: each hit is the game's own damage summary for that hit, read when the game tells the player controller it dealt damage (`NotifyDamageDealt`). Shots are counted when your gun uses ammo (`ConsumeAmmo`). If the first never fires, RTSE falls back to the damage passed to each enemy's `TakeDamage`, which is before armour and resistances, and the page then says every damage number is an estimate. Tiles that are arithmetic over the readings (crit multiplier, per-pellet, hits per shot, kills) are always marked **estimated**. The hooks only do any work while a recording is running.
+Where the numbers come from: each hit is the game's own damage summary for that hit, read when the game tells the player controller it dealt damage (`NotifyDamageDealt`). Shots are counted when your gun uses ammo (`ConsumeAmmo`). If the first never fires, RTSE falls back to the damage passed to each enemy's `TakeDamage`, which is before armour and resistances, and the page then says every damage number is an estimate. Each hit is recorded once: as soon as the first source works, the fallback stops recording.
+
+Which gun a hit belongs to comes from the game's `DamageCauser` on `TakeDamage`: the gun itself for bullets, or the gun that owns the projectile for rockets and grenades from a launcher. When the game gives no causer, the hit is credited to the gun you're holding when it lands. That's approximate (a rocket or burn landing after you swap guns counts for the new gun), so the page says how many hits were credited that way, and **Only this weapon** keeps them rather than guess. Tiles that are arithmetic over the readings (crit multiplier, per-pellet, hits per shot, kills) are always marked **estimated**. The hooks only do any work while a recording is running.
 
 **In-game test checklist** (nobody has run this in the game yet; please try it and send the lab dump):
 
@@ -123,10 +125,11 @@ Where the numbers come from: each hit is the game's own damage summary for that 
 4. Compare a few hits with the damage numbers floating in the game. Shoot a weak spot: those hits should be counted as crits.
 5. Hit a shielded enemy: **Total damage** should mention "shield absorbed".
 6. Kill something and check **Kills** goes up.
-7. Shoot with another gun with **Only this weapon** ticked: nothing should be recorded.
-8. Watch the "Hooks" line: `NotifyDamageDealt` should be counting. If only `TakeDamage` counts, the page shows the "pre-mitigation estimate" banner. Note that down.
-9. Press **Save lab dump** and send `rtse/debug_lab.json` (it holds the raw damage summary fields of the first 20 hits).
-10. Press F8 twice and toggle the mod off and on in the mod menu, then record again. Hits must not be counted twice.
+7. Tick **Only this weapon**, then shoot with another gun: Shots shouldn't move and no hits should be added. If hits still appear, check the "credited to the held weapon" note: those hits had no causer.
+8. Fire a rocket or a slow projectile and swap guns before it lands: the hit should still count for the launcher. If the page says those hits were "credited to the held weapon", the causer isn't reaching RTSE. Note that down.
+9. Watch the "Hooks" line: `NotifyDamageDealt` should be counting. If only `TakeDamage` counts, the page shows the "pre-mitigation estimate" banner. Note that down.
+10. Press **Save lab dump** and send `rtse/debug_lab.json` (it holds the raw damage summary fields of the first 20 hits).
+11. Press F8 twice and toggle the mod off and on in the mod menu, then record again. Hits must not be counted twice.
 
 ## Heads up before you start
 
@@ -224,7 +227,7 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
 - **SDU**: the number of backpack and bank upgrades (9 each), and which call reports the bank size.
 - **Ammo pools** are matched to the game's exact `D_Resourcepools.AmmoPools.*` definitions. A pool matched only by its name is marked unverified.
 - **Part effects**: attribute labels come from a hand-written table.
-- **Weapon lab damage**: the hooks (`WillowPlayerController.NotifyDamageDealt`, `WillowPawn.TakeDamage` as a fallback, `WillowWeapon.ConsumeAmmo`) and the damage summary fields exist in the game's class data, but nobody has seen them fire yet. Also unconfirmed: whether `DamageDealtToShields` is the shield damage of that hit, and whether every pellet counts as a hit. DPS uses the PC's clock, not the game's, so pausing during a recording stretches it.
+- **Weapon lab damage**: the hooks (`WillowPlayerController.NotifyDamageDealt`, `WillowPawn.TakeDamage` as a fallback, `WillowWeapon.ConsumeAmmo`) and the damage summary fields exist in the game's class data, but nobody has seen them fire yet. Also unconfirmed: whether `DamageDealtToShields` is the shield damage of that hit, and whether every pellet counts as a hit. DPS uses the PC's clock, not the game's, so pausing during a recording stretches it. Exact weapon attribution relies on `NotifyDamageDealt` being called inside `TakeDamage` and on projectiles being owned by their gun; neither is confirmed.
 
 The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
 

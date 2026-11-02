@@ -132,6 +132,8 @@ def _shot(index: int) -> None:
         "initial": round(s["base"] * (CRIT_MULTIPLIER if crit else 1.0), 2),
         "critical": crit, "kill": rng.random() < KILL_CHANCE,
         "target": target, "target_id": target_id, "source": s["weapon"],
+        # demo: one hit in five has no causer, so it is credited to the held weapon (approximate)
+        "attribution": "held" if index % 5 == 4 else "weapon",
         "via": VIA, "estimated": VIA == "take_damage",
     })
 
@@ -163,7 +165,8 @@ def _session() -> dict:
     kept = min(recorded, s["cap"])
     return {
         "active": s["active"], "id": s["id"], "elapsed": round(_elapsed(), 3), "cap": s["cap"], "weapon": s["weapon"],
-        "recorded": recorded, "kept": kept, "dropped": recorded - kept, "shots": s["shots"],
+        "recorded": recorded, "kept": kept, "dropped": recorded - kept, "shots": s["shots"], "pending": 0,
+        "approximate": sum(1 for h in _kept() if h["attribution"] == "held"),
         "via": VIA if recorded else None,
     }
 
@@ -178,7 +181,7 @@ def _summary(target: str | None) -> dict:
     total = sum(amounts)
     avg_crit, avg_noncrit = _mean(crits), _mean(plain)
     times = [h["t"] for h in kept]
-    if s["shots"]:
+    if s["shots"] and target is None:
         times += [0.0, (s["shots"] - 1) / RATE]  # the first and the last shot count as events too
     duration = round(max(times) - min(times), 3) if times else None
     dps = total / duration if duration is not None and duration >= 0.5 else None
@@ -189,7 +192,7 @@ def _summary(target: str | None) -> dict:
         row = per_target.setdefault(h["target_id"], {"target_id": h["target_id"], "target": h["target"], "hits": 0, "total": 0.0})
         row["hits"] += 1
         row["total"] = round(row["total"] + h["amount"], 2)
-    return {
+    out = {
         "hits": len(kept), "crits": len(crits), "crit_rate": len(crits) / len(kept) if kept else None,
         "total": round(total, 2), "shield": round(sum(h["shield"] for h in kept), 2),
         "kills": sum(1 for h in kept if h["kill"]),
@@ -202,7 +205,16 @@ def _summary(target: str | None) -> dict:
         "per_pellet": total / pellets_fired if pellets_fired and target is None else None,
         "targets": sorted(per_target.values(), key=lambda row: -row["total"])[:10],
         "estimated": sorted(set(["crit_multiplier", "per_pellet", "hits_per_shot", "kills"] + (DAMAGE_FIELDS if VIA == "take_damage" else []))),
+        "approximate": sum(1 for h in kept if h["attribution"] == "held"),
+        "scope": "session" if target is None else "target",
+        "session_wide": list(SESSION_WIDE) if target is not None else [],
     }
+    if target is not None:  # shots cannot be tied to a target (same as rtse/damage.py)
+        out.update(dict.fromkeys(SESSION_WIDE))
+    return out
+
+
+SESSION_WIDE = ("shots", "pellets_per_shot", "pellets_fired", "hits_per_shot", "per_pellet")
 
 
 def _hooks() -> dict:
@@ -320,8 +332,10 @@ def _compare(params: dict) -> dict:
 def _hits(params: dict) -> dict:
     after = _opt_int(params.get("after"), -1)
     limit = min(2000, max(1, _opt_int(params.get("limit"), 500)))
+    tail = min(2000, max(0, _opt_int(params.get("tail"), 0)))
     target = params.get("target") or None
-    rows = [h for h in _kept(target) if h["seq"] > after][:limit]
+    matching = _kept(target)
+    rows = matching[-tail:] if tail else [h for h in matching if h["seq"] > after][:limit]
     every = _kept()
     return {"session": _S["id"], "hits": rows, "last": every[-1]["seq"] if every else -1}
 

@@ -220,12 +220,15 @@ for owner, attribute in skills.TREE_SOURCES:
     check("skills", owner, attribute)
 
 # ---- damage lab (rtse/damage.py): the hooked functions, and the fields read inside the hooks ----
-for path, _fn in damage.HOOKS:
+for path in damage.HOOK_PATHS:
     cls, _, function = path.split(".", 1)[1].partition(":")
     hit = ix.function(cls, function)
     rows.append(("damage.hooks", f"{cls}.{function}()", "REAL" if hit else "MISSING", str(hit)))
 struct_check("damage", "DamagePipeline.DamageEventSummary", damage.RAW_FIELDS)
-for cls, names in (("WillowPawn", ("bWasLastDamageACriticalHit", "GetHumanReadableName")), ("WillowWeapon", ("Owner", "ProjectilesPerShot", "ShotCost")), ("Pawn", ("Weapon",))):
+hit = ix.function("WillowPawn", "TakeDamage")
+rows.append(("damage", "WillowPawn.TakeDamage(DamageCauser, InstigatedBy, Damage)",
+             "REAL" if hit and all(any(p.endswith(" " + n) for p in hit[0]) for n in ("DamageCauser", "InstigatedBy", "Damage")) else "MISSING", str(hit)))
+for cls, names in (("WillowPawn", ("bWasLastDamageACriticalHit", "GetHumanReadableName")), ("WillowProjectile", ("Owner",)), ("WillowWeapon", ("Owner", "ProjectilesPerShot", "ShotCost")), ("Pawn", ("Weapon",))):
     for name in names:
         hit = ix.field(cls, name) or ix.function(cls, name)
         rows.append(("damage", f"{cls}.{name}", "REAL" if hit else "MISSING", str(hit)))

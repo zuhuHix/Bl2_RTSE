@@ -118,3 +118,18 @@ def test_unknown_paths_are_not_ours_and_unknown_lab_paths_are_404(lab):
     assert mod.handle("/api/debug/lab", {}, {}) == {"saved_to": "(mock) rtse/debug_lab.json"}
     with pytest.raises(LookupError):
         mod.handle("/api/lab/nope", {}, {})
+
+
+def test_tail_and_target_scope_match_the_backend(lab):
+    mod, clock = lab
+    mod.handle("/api/lab/session/start", {}, {})
+    clock["now"] += 5.0
+    everything = mod.handle("/api/lab/hits", {}, {})["hits"]
+    assert mod.handle("/api/lab/hits", {"tail": "3"}, {})["hits"] == everything[-3:]
+    target = everything[0]["target_id"]
+    scoped = mod.handle("/api/lab", {"target": target}, {})["summary"]
+    assert scoped["scope"] == "target"
+    assert scoped["shots"] is None and scoped["per_pellet"] is None and "shots" in scoped["session_wide"]
+    mine = [h["t"] for h in everything if h["target_id"] == target]
+    assert scoped["duration"] == round(max(mine) - min(mine), 3)
+    assert {h["attribution"] for h in everything} == {"weapon", "held"}

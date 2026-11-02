@@ -22,8 +22,10 @@ Thread-safe: the subscriber table is guarded by a lock, but callbacks run outsid
 Topics (payloads are plain JSON-able dicts; the hooks that publish them are written by Wave 1 streams):
   DAMAGE           "game.damage"   {"seq": int, "t": float, "amount": float, "shield": float, "initial": float | None,
                                     "critical": bool, "kill": bool, "target": str, "target_id": str,
-                                    "source": str | None, "via": "notify" | "take_damage", "estimated": bool}
-                                   published by rtse/damage.py only while a weapon lab session is active
+                                    "source": str | None, "attribution": "weapon" | "projectile" | "held",
+                                    "via": "notify" | "take_damage", "estimated": bool}
+                                   published by rtse/damage.py, once per hit, only while a weapon lab session runs.
+                                   attribution "held" = the weapon held when the hit landed (approximate).
   PICKUP           "game.pickup"   {"item": str, "kind": "weapon" | "item" | "ammo" | "money" | ..., "amount": float | None}
   MISSION_CHANGED  "game.mission"  {"mission": str, "status": str, "objective": str | None}
   EDIT_APPLIED     "rtse.edit"     {"route": str, "ok": bool}   published by the route registry after each write
