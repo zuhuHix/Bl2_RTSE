@@ -178,6 +178,17 @@ node dev/shot.mjs dev/steps_pages.json # screenshots through headless Edge; any 
 
 While iterating, run only the tests for what you touched: `python -I -m pytest dev/tests -k <module>` (e.g. `-k stats`, `-k idempotency`).
 
+### Adding a feature
+
+Every feature is a backend module, a page and a mock. None of them needs edits to shared files beyond one line each:
+
+1. **Backend:** write `rtse/<feature>.py`. At its bottom, declare `ROUTE_ERROR` (your exception class, with a `.status`), `GET_ROUTES` and `POST_ROUTES` (`{"/api/<feature>...": function(params: dict) -> dict}`). Add the module to `ROUTE_MODULES` in `rtse/api.py`. That one line is all `api.py` needs. Every POST you declare automatically goes through `session_guard.can_write()` and runs inside a `journal.transaction()`, and an `events.EDIT_APPLIED` event is published after it. Inside your write functions, call `journal.record(kind, target, before, after, undo)` with the values you read back from the game.
+2. **Page:** write `rtse/web/page_<feature>.js` (exporting `load(ctx)` and `render(root, ctx)`, plus an optional `pin(ctx)`) and optionally `page_<feature>.css`. Then add one entry to `PAGES` in `rtse/web/pages.js`. The server already serves `page_*.js` and `page_*.css`, and `index.html` doesn't change.
+3. **Mock:** write `dev/mock_<feature>.py` with `handle(path, params, shared) -> dict | None` (`None` means "not my route"; raise `LookupError` for 404, `ValueError` for 400). `dev/mock_server.py` picks it up automatically.
+4. **Tests:** put them in `dev/tests/test_<feature>.py`. The game modules are already stubbed, and the `game` fixture lets you set `game.pc` and the objects `find_object` returns. Run them with `python -I -m pytest dev/tests -k <feature>`.
+
+Shared building blocks: `rtse/events.py` (`subscribe` / `publish` for game.damage, game.pickup, game.mission and rtse.edit), `rtse/journal.py` (the edit history; a no-op for now), `rtse/session_guard.py` (`can_write(route) -> (bool, reason)`; always allows for now) and `rtse/limits.py` (level caps). Their docstrings are the contracts.
+
 ### What is not verified in a live game
 
 Tests and `audit_names.py` prove that names exist and that the logic does what it says with fake game objects. They can't prove what the game does at runtime. These are still unconfirmed, and the UI marks them **unverified**:

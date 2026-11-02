@@ -442,6 +442,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.route(urlsplit(self.path).path, params)
 
 
+class MockServer(ThreadingHTTPServer):
+    request_queue_size = 32  # the page loads a dozen modules at once; the default backlog of 5 refuses some
+
+
 if __name__ == "__main__":
     print(f"mock RTSE on http://127.0.0.1:{PORT}/?t={TOKEN}")
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    MockServer(("127.0.0.1", PORT), Handler).serve_forever()
