@@ -222,7 +222,7 @@ def _hooks() -> dict:
     return {
         "installed": list(HOOKS), "failed": {},
         "fired": {HOOKS[0]: seen if VIA == "notify" else 0, HOOKS[1]: seen if VIA == "take_damage" else 0, HOOKS[2]: _S["shots"]},
-        "errors": 0, "last_error": None,
+        "errors": 0, "last_error": None, "primary_ever": VIA == "notify" and bool(seen), "unpaired": 0, "stale_ticks": 0,
     }
 
 

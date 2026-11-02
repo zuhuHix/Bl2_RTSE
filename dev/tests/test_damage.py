@@ -294,11 +294,11 @@ def test_a_primary_report_after_the_call_discards_the_waiting_fallback(world, cl
     seen: list[dict[str, Any]] = []
     events.subscribe(events.DAMAGE, seen.append)
     start()
-    take(world, 999.0)
+    take(world, 100.0)  # pre-mitigation 100 ...
     clock.tick(0.05)
-    notify(world, 40.0)  # the same hit, reported after TakeDamage returned
+    notify(world, 40.0)  # ... the same hit (InitialDamage 100, FinalDamage 40), reported after TakeDamage returned
     clock.tick(5)
-    take(world, 999.0)  # once the primary works, the fallback stands down for the session
+    take(world, 999.0)  # once the primary has fired, the fallback is off
     clock.tick(5)
     assert [h["via"] for h in damage._active_hits()] == ["notify"]
     assert len(seen) == 1
@@ -794,3 +794,97 @@ def test_hits_tail_returns_the_newest_hits(world):
     assert hits_route(tail=2)["last"] == 10
     with pytest.raises(ApiError):
         hits_route(tail=5000)
+
+
+# --- Call frames (PRE/POST pairing) ------------------------------------------------------------------------------------
+
+
+def test_a_nested_untracked_call_does_not_steal_the_players_frame(world):
+    start()
+    stranger = Fake("PlayerController.Other")
+
+    def body():
+        take(world, 5.0, instigator=stranger)  # an untracked TakeDamage on the same victim, inside the player's call
+        notify(world, 40.0)
+
+    take(world, 100.0, causer=world.gun, inside=body)
+    hit = damage._active_hits()[0]
+    assert (hit["source"], hit["attribution"]) == ("WillowWeapon.Pistol", "weapon")
+    assert damage._calls == []
+    assert damage._hooks_state()["unpaired"] == 0
+
+
+def test_a_frame_whose_post_never_ran_is_dropped_at_the_next_tick(world):
+    start()
+    args = SimpleNamespace(Damage=1.0, InstigatedBy=world.pc, DamageCauser=world.gun)
+    world.pre[damage.FALLBACK](world.enemy, args, None, None)  # PRE only: the POST never comes
+    world.hooks[damage.TICK](None, None, None, None)
+    assert damage._calls == []
+    assert damage._hooks_state()["stale_ticks"] == 1
+    world.pawn.Weapon = Fake("WillowWeapon.Other", Class=SimpleNamespace(Name="WillowWeapon"))
+    notify(world, 10.0)  # outside any call now: must not look exactly attributed to the stale frame's gun
+    hit = damage._active_hits()[0]
+    assert (hit["source"], hit["attribution"]) == ("WillowWeapon.Other", "held")
+
+
+def test_a_post_that_finds_another_victims_frame_clears_the_stack(world):
+    start()
+    other = Fake("Enemy.Rakk", Class=SimpleNamespace(Name="Rakk"))
+    args = SimpleNamespace(Damage=1.0, InstigatedBy=world.pc, DamageCauser=world.gun)
+    world.pre[damage.FALLBACK](world.enemy, args, None, None)
+    world.hooks[damage.FALLBACK](other, args, None, None)
+    assert damage._calls == []
+    assert damage._hooks_state()["unpaired"] == 1
+
+
+def test_session_start_and_stop_clear_the_stack(world):
+    start()
+    damage._calls.append({"victim": world.enemy, "player": True, "weapon": "X", "how": "weapon", "notified": False})
+    api.POST_ROUTES["/api/lab/session/stop"]({})
+    assert damage._calls == []
+    damage._calls.append({"victim": world.enemy, "player": True, "weapon": "X", "how": "weapon", "notified": False})
+    start()
+    assert damage._calls == []
+
+
+def test_the_tick_hook_is_free_with_an_empty_stack(world):
+    world.hooks[damage.TICK](Boom(), Boom(), None, None)
+    assert damage._hooks_state()["stale_ticks"] == 0
+
+
+# --- One source per mod lifetime ---------------------------------------------------------------------------------------
+
+
+def test_once_the_primary_has_fired_the_fallback_is_off_in_later_sessions(world, clock):
+    start()
+    notify(world, 40.0)
+    api.POST_ROUTES["/api/lab/session/stop"]({})
+    start()
+    take(world, 80.0)
+    clock.tick(5)
+    assert damage._active_hits() == []
+    assert damage.state()["hooks"]["primary_ever"] is True
+
+
+def test_pending_fallback_hits_the_primary_does_not_report_are_kept(world, clock):
+    seen: list[dict[str, Any]] = []
+    events.subscribe(events.DAMAGE, seen.append)
+    start()
+    other = Fake("Enemy.Rakk", Class=SimpleNamespace(Name="Rakk"))
+    take(world, 80.0, target=other)  # a hit the primary never reports
+    take(world, 100.0)
+    clock.tick(0.05)
+    notify(world, 40.0)  # reports only the 100 on the bandit
+    clock.tick(5)
+    hits = damage._active_hits()
+    assert sorted((h["via"], h["target_id"]) for h in hits) == [("notify", "Enemy.Bandit"), ("take_damage", "Enemy.Rakk")]
+    assert len(seen) == 2
+
+
+def test_a_pending_hit_with_a_different_amount_is_not_taken_as_the_same_hit(world, clock):
+    start()
+    take(world, 300.0)
+    clock.tick(0.05)
+    notify(world, 40.0)  # InitialDamage 100: a different hit on the same target
+    clock.tick(5)
+    assert sorted(h["via"] for h in damage._active_hits()) == ["notify", "take_damage"]
