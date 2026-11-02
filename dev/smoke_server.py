@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.client
+import json
 import sys
 from pathlib import Path
 
@@ -112,6 +113,22 @@ try:
             check(f"{route} refuses without confirm", 0, 400, "no error raised")
         except server.api.ApiError as ex:
             check(f"{route} refuses without confirm", ex.status, 400)
+    # Idempotency-Key: a malformed key is refused before anything is queued.
+    key_headers = {"X-RTSE-Token": token, "Idempotency-Key": "bad key!"}
+    check("post with invalid idempotency key -> 400", request("POST", "/api/item/set_level", key_headers, b"{}")[0], 400)
+    check(
+        "post with idempotency key but no token -> 403",
+        request("POST", "/api/item/set_level", {"Idempotency-Key": "abcdefgh-01"}, b"{}")[0],
+        403,
+    )
+    # This script never pumps the game thread, so a keyed POST is still queued when the wait times out:
+    # it must be cancelled (503, applied false), not left to run later.
+    server.GAME_THREAD_TIMEOUT = 0.2
+    status, body = request(
+        "POST", "/api/item/set_level", {"X-RTSE-Token": token, "Idempotency-Key": "abcdefgh-02"}, b"{}"
+    )
+    check("queued keyed post times out -> 503", status, 503, body)
+    results.append(("queued keyed post reports applied false", json.loads(body).get("applied") is False, body))
 finally:
     server.stop()
 
