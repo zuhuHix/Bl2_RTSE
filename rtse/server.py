@@ -144,15 +144,29 @@ class Handler(BaseHTTPRequestHandler):
         params = {k: v[0] for k, v in parse_qs(split.query).items() if k != "t"}
         self._dispatch(split.path, route, params, mutating=False)
 
+    def _refuse_post(self, status: int, error: str) -> None:
+        """Answers a POST that is refused before its body was read. The body is read (and dropped) first, up to
+        MAX_BODY_BYTES: closing a socket with unread data makes Windows reset the connection, so the client could get
+        a connection error instead of this answer. A larger body is not read; the connection is closed instead."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if 0 < length <= MAX_BODY_BYTES:
+            self.rfile.read(length)
+        elif length != 0:
+            self.close_connection = True
+        self._json(status, {"error": error})
+
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorized(header_only=True):
-            self._json(403, {"error": "forbidden"})
+            self._refuse_post(403, "forbidden")
             return
 
         route_path = urlsplit(self.path).path
         route = api.POST_ROUTES.get(route_path)
         if route is None:
-            self._json(404, {"error": "not found"})
+            self._refuse_post(404, "not found")
             return
 
         try:
