@@ -1,0 +1,134 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 900,
+  "steps": [
+    {
+      "wait": 1200
+    },
+    {
+      "clickText": "Bank, item codes, import"
+    },
+    {
+      "wait": 1200
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_1_bank.png"
+    },
+    {
+      "eval": "[...document.querySelectorAll('.bk-seg button')].find(b => b.textContent.trim() === 'Backpack').click(); 'tab Backpack'"
+    },
+    {
+      "wait": 700
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_2_backpack.png"
+    },
+    {
+      "eval": "[...document.querySelectorAll('.bk-actions .danger')][0].click(); 'armed'"
+    },
+    {
+      "wait": 300
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_3_delete_armed.png"
+    },
+    {
+      "eval": "document.querySelector('.bk-armed').click(); 'deleted'"
+    },
+    {
+      "wait": 1000
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_4_deleted.png"
+    },
+    {
+      "eval": "[...document.querySelectorAll('.bk-seg button')].find(b => b.textContent.trim() === 'Import codes').click(); 'tab Import codes'"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "type": ".bk-text",
+      "text": "Hyperion pistol: BL2(eyJ2IjoxLCJjIjoiV2lsbG93V2VhcG9uIiwibiI6Ikh5cGVyaW9uIDI2IEVhcm5lc3QgUGlzdG9sIiwiayI6IndlYXBvbiIsImtleSI6IlBpc3RvbCIsImwiOjI2LCJyIjo0LCJ1Ijo0MDAxLCJwIjp7IkJvZHkiOiJHRF9XZWFwX1Bpc3RvbC5Cb2R5LlBpc3RvbF9Cb2R5X0h5cGVyaW9uIiwiR3JpcCI6IkdEX1dlYXBfUGlzdG9sLkdyaXAuUGlzdG9sX0dyaXBfSHlwZXJpb24iLCJCYXJyZWwiOiJHRF9XZWFwX1Bpc3RvbC5CYXJyZWwuUGlzdG9sX0JhcnJlbF9IeXBlcmlvbiIsIlNpZ2h0IjoiR0RfV2VhcF9QaXN0b2wuU2lnaHQuUGlzdG9sX1Njb3BlX0h5cGVyaW9uIiwiQWNjZXNzb3J5MSI6IkdEX1dlYXBfUGlzdG9sLkFjY2Vzc29yeTEuQWNjX0JhcnJlbF9MYXNlciJ9LCJoIjpbXX0=)\njunk: BL2(!!!)\nHyperion Equipped - BL2(eyJ2IjoxLCJjIjoiV2lsbG93V2VhcG9uIiwibiI6Ikh5cGVyaW9uIElOVkFMSUQgMzQgRWFybmVzdCBMb2dhbidzIEd1biIsImsiOiJ3ZWFwb24iLCJrZXkiOiJQaXN0b2wiLCJsIjozNCwiciI6OSwidSI6NDAwOSwicCI6eyJCb2R5IjoiR0RfV2VhcF9QaXN0b2wuQm9keS5QaXN0b2xfQm9keV9IeXBlcmlvbiIsIkdyaXAiOiJHRF9XZWFwX1Bpc3RvbC5HcmlwLlBpc3RvbF9HcmlwX0h5cGVyaW9uIiwiQmFycmVsIjoiR0RfV2VhcF9QaXN0b2wuQmFycmVsLlBpc3RvbF9CYXJyZWxfSHlwZXJpb24iLCJTaWdodCI6IkdEX1dlYXBfUGlzdG9sLlNpZ2h0LlBpc3RvbF9TY29wZV9IeXBlcmlvbiIsIkFjY2Vzc29yeTEiOiJHRF9XZWFwX1Bpc3RvbC5BY2Nlc3NvcnkxLkFjY19CYXJyZWxfTGFzZXIifSwiaCI6W119)\nBL2(QUJDREVGR0hJ)\nBL2(not valid)"
+    },
+    {
+      "wait": 300
+    },
+    {
+      "eval": "[...document.querySelectorAll('.bk-row button')].find(b => b.textContent.trim() === 'Preview').click(); 'preview'"
+    },
+    {
+      "wait": 1000
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_5_preview.png"
+    },
+    {
+      "eval": "[...document.querySelectorAll('.bk-foot button.primary')][0].click(); 'import'"
+    },
+    {
+      "wait": 1000
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_6_imported.png"
+    },
+    {
+      "eval": "[...document.querySelectorAll('.bk-seg button')].find(b => b.textContent.trim() === 'Export / JSON').click(); 'tab Export / JSON'"
+    },
+    {
+      "wait": 600
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_7_export.png"
+    },
+    {
+      "eval": "(async () => { const text = await (await fetch('/api/inventory/export?t=mock')).text(); const dt = new DataTransfer(); dt.items.add(new File([text], 'rtse-inventory.json', { type: 'application/json' })); const input = document.querySelector('.bk-file'); input.files = dt.files; input.dispatchEvent(new Event('change')); return 'file loaded'; })()"
+    },
+    {
+      "wait": 1400
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_8_json_preview.png"
+    },
+    {
+      "eval": "document.querySelector('.bk-check input').click(); 'replace on'"
+    },
+    {
+      "wait": 300
+    },
+    {
+      "eval": "document.querySelector('.bk-foot .danger').click(); 'armed replace'"
+    },
+    {
+      "wait": 300
+    },
+    {
+      "scroll": {
+        "selector": "#workspace",
+        "top": 3000
+      }
+    },
+    {
+      "wait": 200
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_9_replace_armed.png"
+    },
+    {
+      "eval": "[...document.querySelectorAll('.drop > summary')].find(s => s.textContent.includes('Dev tools')).click(); 'dev tools'"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "eval": "[...document.querySelectorAll('.drop button')].find(b => b.textContent.includes('Save codes dump')).click(); 'dump'"
+    },
+    {
+      "wait": 800
+    },
+    {
+      "shot": "C:/Users/yorad/.t3/worktrees/Bl2_RTSE/feature-inventory/dev/out/bank_10_devtools.png"
+    }
+  ]
+}
