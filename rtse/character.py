@@ -24,7 +24,7 @@ from typing import Any
 from mods_base import get_pc
 from unrealsdk import logging, unreal
 
-from . import limits
+from . import journal, limits
 from .routing import Route
 
 DEBUG_CHARACTER_FILE = Path(__file__).parent / "debug_character.json"
@@ -387,6 +387,7 @@ def set_field(params: dict[str, Any]) -> dict[str, Any]:
                             "before": {"level": before["level"], "xp": before["xp"]},
                             "after": {"level": after["level"], "xp": after["xp"]}, "restored": None})
     logging.info(f"RTSE: character {applied}")
+    journal.record(f"character.{field}", target=field, before=applied["before"], after=applied["after"])
     return {**after, "applied": applied}
 
 
