@@ -1,11 +1,16 @@
 """The player's character: level, experience, skill points and currencies.
 
-Names were checked against the game's own class definitions (they exist, with these types): level, skill points
-and name are fields of the PlayerReplicationInfo; currency is GetCurrencyOnHand/AddCurrencyOnHand/SetCurrencyOnHand
-on the PlayerReplicationInfo (NOT the controller); experience has no plain field - it is read with the controller's
-GetExpPoints() and lives in an ExperienceResourcePool. None of this has run in a live game, so every field still
-lists the places it might live (candidates) and reports which one worked. Run the character dump from the web UI
-if something reads as "unavailable".
+Names were checked against the game's own class definitions (dev/class_index.py): level, skill points and name are
+fields of the PlayerReplicationInfo; currency is GetCurrencyOnHand/AddCurrencyOnHand/SetCurrencyOnHand on the
+PlayerReplicationInfo; experience is read with the controller's GetExpPoints() and written to the experience resource
+pool (D_Resourcepools.PlayerPools.ExperiencePool, Startup.upk). The XP needed per level comes from the controller's
+GetExpPointsRequiredForLevel(Level). None of this has run in a live game; reads are defensive and every value that
+could not be settled from the game's data is listed in the JSON's "unverified" dict.
+
+Settled from the game's data (dev/upk.py, dev/audit_names.py):
+  - currency indexes: WillowInventoryDefinition.ECurrencyType (Engine.upk) value names in order: CURRENCY_Credits 0,
+    CURRENCY_Eridium 1, CURRENCY_SeraphCrystals 2, CURRENCY_Reserved_A 3, ... No entry is named for Torgue tokens.
+  - level cap: limits.character_level_cap (GetMaximumPossiblePlayerLevelCap on the controller).
 """
 
 from __future__ import annotations
@@ -19,21 +24,28 @@ from typing import Any
 from mods_base import get_pc
 from unrealsdk import logging, unreal
 
+from . import limits
+
 DEBUG_CHARACTER_FILE = Path(__file__).parent / "debug_character.json"
 
 MIN_LEVEL = 1
-MAX_LEVEL = 80
 MAX_CURRENCY = 2_000_000_000  # stay inside a signed 32-bit integer
 MAX_SKILL_POINTS = 999
+MAX_XP = 2_000_000_000
+# The game's experience resource pool (Startup.upk; its Resource is D_Resources.Experience).
+EXPERIENCE_POOL = "D_Resourcepools.PlayerPools.ExperiencePool"
 
-# key, label, the game's currency index (ECurrencyType: 0 Credits, 1 Eridium, 2 SeraphCrystals are real;
-# that Torgue Tokens are the next slot, 3 "Reserved_A", is a guess)
+# key, label, ECurrencyType index (see the module docstring). Index 3 is CURRENCY_Reserved_A in the enum: it is the
+# only slot left after Seraph Crystals, but nothing in the game data names it Torgue Tokens, so it stays unverified.
 CURRENCIES = (
     ("money", "Cash", 0),
     ("eridium", "Eridium", 1),
     ("seraph", "Seraph Crystals", 2),
     ("torgue", "Torgue Tokens", 3),
 )
+UNVERIFIED_CURRENCY = {
+    "torgue": "currency index 3 is CURRENCY_Reserved_A in ECurrencyType; no game data ties it to Torgue Tokens",
+}
 
 # Where each plain value might live: (owner, attribute). The first one that exists is used. All real.
 # Experience is not here: it has no field (see _xp).
@@ -51,7 +63,7 @@ class CharacterError(Exception):
 
 
 def xp_for_level(level: int) -> int:
-    """Experience points needed to reach a level (level 2 = 358, level 3 = 1241, ...)."""
+    """FALLBACK ONLY (unverified): XP needed to reach a level, used when the game's own table can't be asked."""
     return 0 if level <= 1 else math.ceil(60 * (level**2.8 - 1))
 
 
@@ -160,18 +172,21 @@ def _currency(owners: dict[str, Any], index: int) -> int | None:
 
 
 def _xp_pool(owners: dict[str, Any]) -> Any:
-    """The player's ExperienceResourcePool (D_Resourcepools.PlayerPools.ExperiencePool), or None."""
+    """The player's ExperiencePool resource pool (exact definition path first), or None."""
     manager = getattr(owners["pc"], "ResourcePoolManager", None)
     pools = getattr(manager, "ResourcePools", None) if manager is not None else None
+    fallback = None
     for pool in pools or ():
         if pool is None:
             continue
         try:
-            if pool.Class.Name == "ExperienceResourcePool" or "ExperiencePool" in pool.Definition._path_name():  # noqa: SLF001
+            if pool.Definition._path_name() == EXPERIENCE_POOL:  # noqa: SLF001 - exact, from the game data
                 return pool
+            if fallback is None and pool.Class.Name == "ExperienceResourcePool":  # noqa: SLF001 - the real class
+                fallback = pool
         except Exception:  # noqa: BLE001, S112
             continue
-    return None
+    return fallback
 
 
 def _xp(owners: dict[str, Any]) -> tuple[int | None, str | None]:
@@ -191,8 +206,20 @@ def _xp(owners: dict[str, Any]) -> tuple[int | None, str | None]:
     return None, None
 
 
+def _xp_required(owners: dict[str, Any], level: int) -> tuple[int, str]:
+    """XP needed to reach `level`: the controller's GetExpPointsRequiredForLevel(Level) (real, the game's own table),
+    else the guessed formula (unverified)."""
+    try:
+        value = _number(_call(owners["pc"], "GetExpPointsRequiredForLevel", {"Level": level}, level))
+        if value is not None:
+            return value, "pc.GetExpPointsRequiredForLevel()"
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return xp_for_level(level), "fallback formula (unverified)"
+
+
 def _write_xp(owners: dict[str, Any], value: int) -> str:
-    """Sets experience through the experience resource pool, then reads it back."""
+    """Sets experience through the experience resource pool (real: ResourcePool.SetCurrentValue(Float))."""
     pool = _xp_pool(owners)
     if pool is None:
         raise CharacterError(501, "this game build has no experience pool I can find - run the character dump")
@@ -205,29 +232,45 @@ def _write_xp(owners: dict[str, Any], value: int) -> str:
 
 def read() -> dict[str, Any]:
     owners = _owners()
-    pc = owners["pc"]
     sources: dict[str, str | None] = {}
     values: dict[str, Any] = {}
     for key in FIELDS:
         values[key], sources[key] = _read(owners, key)
     values["xp"], sources["xp"] = _xp(owners)
 
+    cap, cap_source = limits.character_level_cap(owners["pc"])
     level = values["level"]
+    this_xp = next_xp = None
+    if level is not None:
+        this_xp, sources["xp_this_level"] = _xp_required(owners, level)
+        next_xp, sources["xp_next_level"] = _xp_required(owners, level + 1)
     class_key, class_source = _character_class(owners)
+
+    unverified: dict[str, str] = dict(UNVERIFIED_CURRENCY)
+    if cap_source.startswith("fallback"):
+        unverified["limits.level"] = f"the game didn't report the level cap; using the fallback {cap} (unverified)"
+    for key in ("xp_this_level", "xp_next_level"):
+        if (sources.get(key) or "").startswith("fallback"):
+            unverified[key] = "the game's GetExpPointsRequiredForLevel() couldn't be read; using the guessed XP formula"
+
     return {
         "class_key": class_key,
         "class_source": class_source,
         "name": None if values["name"] is None else str(values["name"]),
         "level": level,
         "xp": values["xp"],
-        "xp_this_level": None if level is None else xp_for_level(level),
-        "xp_next_level": None if level is None else xp_for_level(level + 1),
+        "xp_this_level": this_xp,
+        "xp_next_level": next_xp,
         "skill_points": values["skill_points"],
         "currencies": [
             {"key": key, "label": label, "index": index, "value": _currency(owners, index)} for key, label, index in CURRENCIES
         ],
-        "limits": {"level": [MIN_LEVEL, MAX_LEVEL], "currency": MAX_CURRENCY, "skill_points": MAX_SKILL_POINTS},
+        "limits": {
+            "level": [MIN_LEVEL, cap], "level_source": cap_source,
+            "currency": MAX_CURRENCY, "skill_points": MAX_SKILL_POINTS,
+        },
         "sources": sources,
+        "unverified": unverified,
     }
 
 
@@ -241,23 +284,53 @@ def _whole(raw: Any, low: int, high: int, what: str) -> int:
     return value
 
 
+_last_write: dict[str, Any] = {}
+
+
+def _restore(owners: dict[str, Any], xp: int | None, level: int | None) -> None:
+    """Puts back the values read before a write that didn't stick. Best effort: a failure here is only logged."""
+    if xp is not None:
+        try:
+            _write_xp(owners, xp)
+        except CharacterError as ex:
+            logging.error(f"RTSE: could not restore XP {xp}: {ex}")
+    if level is not None:
+        try:
+            _write(owners, "level", level)
+        except CharacterError as ex:
+            logging.error(f"RTSE: could not restore level {level}: {ex}")
+
+
 def set_field(params: dict[str, Any]) -> dict[str, Any]:
     field = params.get("field")
     owners = _owners()
-    pc = owners["pc"]
     before = read()
     where: dict[str, str] = {}
 
     if field == "level":
-        level = _whole(params.get("value"), MIN_LEVEL, MAX_LEVEL, "level")
-        # Level and XP are stored separately; keep them in step or the game snaps the level back.
-        try:
-            where["xp"] = _write_xp(owners, xp_for_level(level))
-        except CharacterError:
-            where["xp"] = None  # no experience pool found: still set the level below
+        cap, _cap_source = limits.character_level_cap(owners["pc"])
+        level = _whole(params.get("value"), MIN_LEVEL, cap, "level")
+        target_xp, xp_source = _xp_required(owners, level)
+        # Level and XP are stored separately and must move together, XP first. If no experience pool can be written,
+        # no alternative sets a level to a chosen value: WillowPlayerController.ExpLevelUp(bCheated) only adds one level
+        # from the XP already held, and nothing else in the class data writes XP or level, so refuse and change nothing.
+        where["xp"] = _write_xp(owners, target_xp)
         where["level"] = _write(owners, "level", level)
+        check = read()
+        if check["level"] != level or check["xp"] != target_xp:
+            _restore(owners, before["xp"], before["level"])
+            restored = read()
+            _last_write.update({"field": field, "requested": level, "xp_requested": target_xp, "xp_source": xp_source,
+                                "before": {"level": before["level"], "xp": before["xp"]},
+                                "after": {"level": check["level"], "xp": check["xp"]},
+                                "restored": {"level": restored["level"], "xp": restored["xp"]}})
+            raise CharacterError(
+                409,
+                f"the game didn't keep level {level} with {target_xp} XP (it reads level {check['level']}, XP {check['xp']}); "
+                "the old level and XP were put back",
+            )
     elif field == "xp":
-        where["xp"] = _write_xp(owners, _whole(params.get("value"), 0, 2_000_000_000, "experience"))
+        where["xp"] = _write_xp(owners, _whole(params.get("value"), 0, MAX_XP, "experience"))
     elif field == "skill_points":
         where["skill_points"] = _write(owners, "skill_points", _whole(params.get("value"), 0, MAX_SKILL_POINTS, "skill points"))
     elif field in {key for key, _label, _index in CURRENCIES}:
@@ -281,6 +354,11 @@ def set_field(params: dict[str, Any]) -> dict[str, Any]:
 
     after = read()
     applied = {"field": field, "requested": params.get("value"), "via": where, "before": _brief(before, field), "after": _brief(after, field)}
+    if field == "level":
+        _last_write.clear()
+        _last_write.update({"field": field, "requested": applied["requested"], "xp_requested": target_xp, "xp_source": xp_source,
+                            "before": {"level": before["level"], "xp": before["xp"]},
+                            "after": {"level": after["level"], "xp": after["xp"]}, "restored": None})
     logging.info(f"RTSE: character {applied}")
     return {**after, "applied": applied}
 
@@ -310,11 +388,39 @@ def _scalars(obj: Any) -> dict[str, Any]:
 
 
 def debug_dump() -> dict[str, Any]:
-    """Saves every field of the player controller, its replication info and pawn, to find real names."""
+    """Saves every field of the player controller, its replication info and pawn, to find real names, plus the
+    evidence behind each unverified value: the currency probe, the level cap and XP table, the experience pool's
+    definition path and the level/XP before and after the last level write."""
     owners = _owners()
     out: dict[str, Any] = {name: _scalars(obj) for name, obj in owners.items() if obj is not None}
+    cap, cap_source = limits.character_level_cap(owners["pc"])
+    pool = _xp_pool(owners)
     out["currency_probe"] = {str(i): _currency(owners, i) for i in range(8)}
     out["candidates"] = {key: _read(owners, key) for key in FIELDS}
-    out["xp"] = {"read": _xp(owners), "pool": _xp_pool(owners) is not None}
+    out["xp"] = {
+        "read": _xp(owners),
+        "pool_found": pool is not None,
+        "pool_definition": _definition_path_or_none(pool),
+        "pool_definition_expected": EXPERIENCE_POOL,
+    }
+    out["level_cap"] = {"value": cap, "source": cap_source}
+    out["xp_required"] = {str(level): _xp_required(owners, level) for level in range(1, cap + 2)}
+    out["currency_table"] = {"enum": "WillowInventoryDefinition.ECurrencyType", "rows": list(CURRENCIES)}
+    out["last_level_write"] = dict(_last_write)
     DEBUG_CHARACTER_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
-    return {"saved_to": str(DEBUG_CHARACTER_FILE), "currency_probe": out["currency_probe"], "candidates": {k: v[1] for k, v in out["candidates"].items()}}
+    return {
+        "saved_to": str(DEBUG_CHARACTER_FILE),
+        "currency_probe": out["currency_probe"],
+        "candidates": {k: v[1] for k, v in out["candidates"].items()},
+        "xp_pool_definition": out["xp"]["pool_definition"],
+        "level_cap": out["level_cap"],
+    }
+
+
+def _definition_path_or_none(pool: Any) -> str | None:
+    if pool is None:
+        return None
+    try:
+        return pool.Definition._path_name()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None

@@ -12,8 +12,8 @@ def _linear(base: int, step: int, levels: int) -> tuple[int, ...]:
     return tuple(base + step * level for level in range(levels + 1))
 
 
-BACKPACK_TABLE = _linear(12, 3, 9)  # slots 12-39
-BANK_TABLE = _linear(6, 2, 9)  # slots 6-24
+BACKPACK_TABLE = _linear(12, 3, 9)  # slots 12-39; 9 upgrades is unverified (not in the game data)
+BANK_TABLE = _linear(6, 2, 9)  # slots 6-24; 9 upgrades is unverified
 
 
 # kind -> (label, group, unit, table, ammo index in the shared AMMO dict)
@@ -59,13 +59,36 @@ def _entry(kind: str, shared: dict) -> dict:
     if not hidden:
         sources = {
             "level": "inferred from capacity table" if inferred or kind in ("backpack", "bank") else "pool.GetUpgradeLevel()",
-            "capacity": "invmgr.InventorySlotMax_Misc" if kind == "backpack" else "pc.GetBankUpgradeSlots()" if kind == "bank" else "pool.GetMaxValue()",
+            "capacity": "invmgr.InventorySlotMax_Misc" if kind == "backpack" else "pc.GetBankUpgradeSlots()" if kind == "bank" else "pool.GetMaxValue(bWantBaseValue=False)",
         }
+    # the mock's word-matched pool: grenades pretend to be found by name, not by their pool definition
+    pool_match = None if index is None or hidden else ("word" if kind == "ammo_grenade" else "definition")
     return {
         "key": kind, "group": group, "label": label, "unit": unit, "level": level, "level_inferred": inferred and not hidden,
         "max_level": len(table) - 1, "capacity": capacity,
-        "expected": None if level is None else table[level], "table": list(table), "pool_id": index, "sources": sources,
+        "expected": None if level is None else table[level], "table": list(table), "pool_id": index, "pool_match": pool_match,
+        "sources": sources,
     }
+
+
+def _unverified(kinds: list) -> dict:
+    """Mirrors rtse/sdu.py: why a kind's numbers aren't fully settled yet. Empty when everything is settled."""
+    out = {}
+    for kind in kinds:
+        reasons = []
+        if kind["key"] == "backpack":
+            reasons.append("upgrade count (9) is not in the game data; the table assumes it")
+            reasons.append("no stored backpack level in the game; level is inferred from the capacity")
+        if kind["key"] == "bank":
+            reasons.append("upgrade count (9) is not in the game data; the table assumes it")
+            reasons.append("bank size getter/setter not confirmed to mean total slots (GetBankUpgradeSlots / ClientSetBankSlots)")
+        if kind.get("pool_match") == "word":
+            reasons.append("ammo pool matched by name words, not by its pool definition")
+        if kind["level_inferred"] and kind["key"].startswith("ammo_"):
+            reasons.append("stored upgrade level not readable; inferred from the capacity")
+        if reasons:
+            out[kind["key"]] = "; ".join(reasons)
+    return out
 
 
 def _state(shared: dict) -> dict:
@@ -76,7 +99,7 @@ def _state(shared: dict) -> dict:
         warnings.append(f"this game build didn't expose: {', '.join(missing)}")
     return {
         "kinds": kinds, "limits": {"ammo_capacity": MAX_AMMO_CAPACITY, "slots": 255},
-        "sources": {k["key"]: k["sources"] for k in kinds}, "warnings": warnings,
+        "sources": {k["key"]: k["sources"] for k in kinds}, "warnings": warnings, "unverified": _unverified(kinds),
     }
 
 
@@ -148,7 +171,7 @@ def handle(path: str, params: dict, shared: dict) -> dict | None:
         before = _brief(kind, shared)
         _apply_ammo_capacity(kind, value, shared)
         applied = {
-            "kind": kind, "label": KINDS[kind][0], "requested": value, "via": {"capacity": "data.MaxValue", "refresh": []},
+            "kind": kind, "label": KINDS[kind][0], "requested": value, "via": {"capacity": "pool.SetMaxValueFromProfile(Value)", "refresh": []},
             "before": before, "after": _brief(kind, shared),
         }
         return {**_state(shared), "applied": applied}

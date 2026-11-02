@@ -150,10 +150,12 @@ def fake_effects(pid: str) -> list[dict]:
     digest = hashlib.sha256(pid.encode()).digest()
     effects = []
     for i in range(1 + digest[0] % 3):
-        attr = STATS[digest[1 + i] % len(STATS)][0]
+        attr, attr_label = STATS[digest[1 + i] % len(STATS)][:2]
         kind = ["MT_Scale", "MT_PreAdd", "MT_PostAdd"][digest[5 + i] % 3]
         value = round(0.5 + (digest[9 + i] % 25) / 10, 2) if kind == "MT_Scale" else (digest[9 + i] % 40) - 10
-        effects.append({"source": "WeaponAttributeEffects", "attribute": attr, "type": kind, "value": value, "raw": {}})
+        exact = i % 2 == 0  # alternate, so both the exact and the token-fallback paths get exercised in the UI
+        effects.append({"source": "WeaponAttributeEffects", "attribute": attr, "attribute_label": attr_label if exact else None,
+                        "type": kind, "value": value, "raw": {}, "exact": exact})
     return effects
 
 
@@ -221,16 +223,38 @@ def character() -> dict:
         "xp_this_level": xp_for_level(CHAR["level"]), "xp_next_level": xp_for_level(CHAR["level"] + 1),
         "skill_points": CHAR["skill_points"],
         "currencies": [{"key": k, "label": label, "index": i, "value": CHAR[k]} for k, label, i in CURRENCY_DEFS],
-        "limits": {"level": [1, 80], "currency": 2_000_000_000, "skill_points": 999},
-        "sources": {"level": "pri.ExpLevel", "xp": "pri.ExpPoints", "skill_points": "pri.GeneralSkillPoints", "name": "pri.PlayerName"},
+        "limits": {"level": [1, 80], "level_source": "pc.GetMaximumPossiblePlayerLevelCap()", "currency": 2_000_000_000, "skill_points": 999},
+        "sources": {"level": "pri.ExpLevel", "xp": "pc.GetExpPoints()", "skill_points": "pri.GeneralSkillPoints", "name": "pri.PlayerName",
+                    "xp_this_level": "pc.GetExpPointsRequiredForLevel()", "xp_next_level": "pc.GetExpPointsRequiredForLevel()"},
+        # example of what the UI shows for a guessed value: the Torgue Tokens index is not confirmed by the game data
+        "unverified": {"torgue": "currency index 3 is CURRENCY_Reserved_A in ECurrencyType; no game data ties it to Torgue Tokens"},
     }
 
 
 AMMO = {0: ["Pistol", 312, 600], 1: ["SMG", 880, 1200], 2: ["Assault Rifle", 410, 800], 3: ["Shotgun", 64, 150], 4: ["Sniper Rifle", 28, 60], 5: ["Launcher", 9, 24], 6: ["Grenades", 3, 5]}
 
 
+AMMO_KEYS = ["pistol", "smg", "rifle", "shotgun", "sniper", "launcher", "grenade"]  # same order as rtse/ammo.py ORDER
+AMMO_DEFINITIONS = {
+    "pistol": "D_Resourcepools.AmmoPools.Ammo_Repeater_Pistol_Pool", "smg": "D_Resourcepools.AmmoPools.Ammo_Patrol_SMG_Pool",
+    "rifle": "D_Resourcepools.AmmoPools.Ammo_Combat_Rifle_Pool", "shotgun": "D_Resourcepools.AmmoPools.Ammo_Combat_Shotgun_Pool",
+    "sniper": "D_Resourcepools.AmmoPools.Ammo_Sniper_Rifle_Pool", "launcher": "D_Resourcepools.AmmoPools.Ammo_Rocket_Launcher_Pool",
+    "grenade": "D_Resourcepools.AmmoPools.Ammo_Grenade_Protean_Pool",
+}
+
+
 def ammo() -> dict:
-    return {"pools": [{"id": i, "key": v[0].lower(), "label": v[0], "value": v[1], "max": v[2]} for i, (k, v) in enumerate(AMMO.items())], "limit": 100000}
+    pools = []
+    for i, (_k, v) in enumerate(AMMO.items()):
+        key = AMMO_KEYS[i]
+        # example: the grenade pool is pretended to be matched by its name, which the UI should show as unverified
+        matched = "word" if key == "grenade" else "definition"
+        pools.append({"id": i, "key": key, "label": v[0], "value": v[1], "max": v[2], "matched": matched,
+                      "definition": AMMO_DEFINITIONS[key]})
+    return {
+        "pools": pools, "limit": 100000,
+        "unverified": {"grenade": "matched by words in the pool's name, not by its pool definition"},
+    }
 
 
 # Feature mocks: dev/mock_<feature>.py, each exporting handle(path, params, shared) -> dict | None
@@ -245,6 +269,13 @@ for _name in ("sdu", "skills", "world", "inspect"):
         FEATURE_MOCKS.append(_module)
 
 
+# Same shape as limits.gear_level_cap(): gear level = character cap (80) + Overpower levels (10)
+GEAR_LIMITS = {
+    "min": 1, "max": 90, "character_max": 80, "overpower_max": 10,
+    "sources": {"character_max": "mock", "overpower_max": "mock"},
+}
+
+
 def detail(item: Item, mode: str) -> dict:
     stats = []
     if item.kind == "weapon":
@@ -253,7 +284,9 @@ def detail(item: Item, mode: str) -> dict:
             stats.append({"name": name, "label": label, "value": value, "base": base, "override": item.overrides.get(name)})
     return {
         "id": item.id, "location": item.location, "mode": mode, "class": item.cls, "name": item.name,
-        "level": item.level, "grade": item.level, "game_stage": item.level, "stats": stats,
+        "level": item.level, "overpower": max(0, item.level - GEAR_LIMITS["character_max"]), "limits": GEAR_LIMITS,
+        "grade": item.level, "game_stage": item.level, "stats": stats,
+        "override_scope": "own" if item.overrides else None,
         "slots": slots_for(item, mode), "hide_bones": item.hide,
     }
 
@@ -315,7 +348,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/item":
                 return self.send_json(200, detail(find(params["id"]), params.get("mode", "legal")))
             if path == "/api/part":
-                return self.send_json(200, {"id": params["id"], "effects": fake_effects(params["id"])})
+                return self.send_json(200, {"id": params["id"], "label": None, "effects": fake_effects(params["id"])})
             if path == "/api/ammo":
                 return self.send_json(200, ammo())
             if path == "/api/ammo/set":
@@ -344,7 +377,14 @@ class Handler(BaseHTTPRequestHandler):
                 item.parts[params["slot"]] = BY_ID.get(params["part"]) if params.get("part") else None
                 applied = {"what": f"{params['slot']} ({item.location})", "requested": params.get("part"), "before": "-", "after": {}}
             elif path == "/api/item/set_level":
-                item.level = int(params["level"])
+                requested = int(params["level"])
+                if not GEAR_LIMITS["min"] <= requested <= GEAR_LIMITS["max"]:
+                    raise ValueError(
+                        f"level must be {GEAR_LIMITS['min']}-{GEAR_LIMITS['max']} (gear is level "
+                        f"{GEAR_LIMITS['character_max']} + OP n, so {GEAR_LIMITS['max']} = level "
+                        f"{GEAR_LIMITS['character_max']} OP{GEAR_LIMITS['overpower_max']})"
+                    )
+                item.level = requested
                 applied = {"what": f"level ({item.location})", "requested": item.level, "before": {}, "after": {"exp_level": item.level}}
             elif path == "/api/item/set_stat":
                 if params.get("value") is None:
