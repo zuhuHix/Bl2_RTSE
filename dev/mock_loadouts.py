@@ -12,6 +12,8 @@ import base64
 import copy
 import hashlib
 import json
+import secrets
+import time
 import zlib
 from datetime import datetime, timezone
 
@@ -20,6 +22,12 @@ SCHEMA_VERSION = 1
 MAX_PRESETS = 100
 MAX_STEPS = 600
 MAX_NAME = 64
+LINK_LIMIT_STORED = 56000  # a stored build's own link must fit this (the server refuses a bigger one)
+LINK_LIMIT_IMPORT = 62000  # an import link may be this long
+CHUNK = 4  # steps per apply request
+CHUNK_DELAY = 0.9  # seconds a continuation waits, so the progress shows in the screenshots
+MIN_XP = {70: 1100000, 72: 1234567}  # the game's minimum XP for a level: a level step sets it (side_effect)
+UNREADABLE = ("torgue", "Torgue Tokens couldn't be read, so it's left out")  # the currency the mock cannot read
 CLASSES = ("assassin", "siren", "soldier", "mercenary", "mechromancer", "psycho")
 SECTIONS = ("character", "skills", "gear")
 CHAR_FIELDS = ("level", "xp", "skill_points", "money", "eridium", "seraph", "torgue")
@@ -85,6 +93,11 @@ LOADED.update({
     "GD_Weap_AssaultRifle.Barrel.Barrel_04": "legal",
     "GD_Weap_SniperRifles.Stock.Stock_03": "same_slot",
     "GD_Weap_SniperRifles.Sight.Sight_Scope_04": "everything",
+    "GD_Weap_Shotgun.Body.Body_01": "legal",
+    "GD_Weap_Shotgun.Barrel.Barrel_02": "legal",
+    "GD_Weap_Pistol.Body.Body_01": "legal",
+    "GD_Weap_Pistol.Grip.Grip_02": "legal",
+    "GD_Weap_Pistol.Barrel.Barrel_02": "legal",
 })
 
 
@@ -93,6 +106,7 @@ class _Refused(Exception):
 
 
 LAST: dict = {"report": None}
+RUNS: dict[str, dict] = {}  # run_id -> the apply run in progress or finished (the last 20 are kept)
 
 
 # ---- helpers ----
@@ -139,8 +153,10 @@ def _live(item_id: str) -> dict:
 
 def _summary(preset: dict) -> dict:
     gear = preset.get("gear") or []
+    left_out = list(preset.get("left_out") or [])
     return {
         "name": preset["name"], "kind": preset["kind"], "class_key": preset.get("class_key"), "created": preset.get("created"),
+        "partial": bool(left_out), "left_out": left_out,
         "counts": {
             "gear": len(gear),
             "equipped": sum(1 for g in gear if g["location"] == "Equipped"),
@@ -208,6 +224,9 @@ def _check(data) -> dict:
         raise ValueError("kind must be loadout or character")
     if data.get("class_key") not in (None, *CLASSES):
         raise ValueError(f"unknown class {data.get('class_key')!r}")
+    left_out = data.get("left_out", [])
+    if not isinstance(left_out, list) or len(left_out) > 20 or any(not isinstance(s, str) or len(s) > 200 for s in left_out):
+        raise ValueError("left_out is up to 20 lines of up to 200 characters")
     checked = dict(data)
     checked["name"] = _clean_name(data.get("name"))
     return checked
@@ -219,6 +238,9 @@ def _store(preset: dict, overwrite: bool) -> dict:
         raise ValueError(f'a build named "{preset["name"]}" already exists')
     if index is None and len(PRESETS) >= MAX_PRESETS:
         raise ValueError(f"at most {MAX_PRESETS} builds can be saved")
+    size = len(to_link(preset))
+    if size > LINK_LIMIT_STORED:
+        raise ValueError(f"this build's link is {size:,} characters; a saved build's link is limited to {LINK_LIMIT_STORED:,}")
     if index is None:
         PRESETS.append(preset)
     else:
@@ -226,7 +248,8 @@ def _store(preset: dict, overwrite: bool) -> dict:
     return {"preset": _summary(preset), "presets": _summaries()}
 
 
-def _capture(name: str, include: dict, kind: str = "loadout") -> dict:
+def _capture(name: str, include: dict, kind: str = "loadout", unreadable: bool = False) -> dict:
+    """The open save as a preset. `unreadable` leaves out the one currency the mock cannot read, and says so in left_out."""
     everything = kind == "character"
     preset = {"format": "rtse.loadout", "version": SCHEMA_VERSION, "kind": kind, "name": name, "created": _now(), "class_key": CLASS_KEY}
     if everything:
@@ -238,7 +261,10 @@ def _capture(name: str, include: dict, kind: str = "loadout") -> dict:
         if include.get("currencies"):
             wanted |= set(CURRENCY_FIELDS)
     if wanted:
-        preset["character"] = {f: CHARACTER[f] for f in CHAR_FIELDS if f in wanted}
+        skip = UNREADABLE[0] if unreadable else None
+        preset["character"] = {f: CHARACTER[f] for f in CHAR_FIELDS if f in wanted and f != skip}
+        if skip in wanted:
+            preset["left_out"] = [UNREADABLE[1]]
     if everything or include.get("skills"):
         preset["skills"] = [{"path": path, "level": info["level"]} for path, info in TREE.items()]
     if everything or include.get("equipped") or include.get("backpack"):
@@ -299,9 +325,9 @@ def _plan(name: str, sections=None, over_max: bool = False, skip=()) -> dict:
     missing: list[dict] = []
     blocked: list[dict] = []
 
-    def add(section, kind, label, target, before, after, params, entry=None):
+    def add(section, kind, label, target, before, after, params, entry=None, side_effect=None):
         steps.append({"n": len(steps) + 1, "section": section, "kind": kind, "label": label, "target": target,
-                      "before": before, "after": after, "params": params, "entry": entry})
+                      "before": before, "after": after, "params": params, "entry": entry, "side_effect": side_effect})
 
     def block(section, label, reason, kind):
         blocked.append({"section": section, "label": label, "reason": reason, "kind": kind})
@@ -319,7 +345,11 @@ def _plan(name: str, sections=None, over_max: bool = False, skip=()) -> dict:
             elif field == "level" and want > LEVEL_CAP:
                 block("character", CHAR_LABEL[field], f"level {want} is above the cap of {LEVEL_CAP}", "level")
             else:
-                add("character", f"character.{field}", CHAR_LABEL[field], field, have, want, {"field": field, "value": want})
+                side = None
+                if field == "level" and want in MIN_XP:
+                    side = f"Experience becomes {MIN_XP[want]:,} (the game's minimum for level {want})"
+                add("character", f"character.{field}", CHAR_LABEL[field], field, have, want, {"field": field, "value": want},
+                    side_effect=side)
 
     if "skills" in chosen and match is False:
         block("skills", "Skills", f"this build is for {_cap(cls)}, you are {_cap(CLASS_KEY)}", "class")
@@ -411,6 +441,8 @@ def _write(step: dict, value) -> None:
     kind, p = step["kind"], step["params"]
     if kind.startswith("character."):
         CHARACTER[p["field"]] = value
+        if p["field"] == "level" and value in MIN_XP:  # the game sets the minimum XP with the level (side_effect)
+            CHARACTER["xp"] = MIN_XP[value]
     elif kind == "skills.level":
         TREE[p["id"]]["level"] = value
     elif kind == "gear.part":
@@ -419,7 +451,46 @@ def _write(step: dict, value) -> None:
         _live(p["id"])["level"] = value
 
 
-def _apply(params: dict) -> dict:
+def _drifted(step: dict) -> bool:
+    """True when the game no longer holds what the plan saw before this step (or the thing is gone)."""
+    try:
+        return _read(step) != step["before"]
+    except LookupError:
+        return True
+
+
+def _reply(run: dict) -> dict:
+    """The reply shape the page reads: the whole run, every step, the chunk this request ran."""
+    rows = run["rows"]
+    keys = ("ok", "failed", "rolled_back", "rollback_failed", "not_run", "pending")
+    return {
+        "run_id": run["id"], "name": run["name"], "on_failure": run["on_failure"], "state": run["state"],
+        "ok": run["ok"], "done": run["state"] != "running", "total": len(rows), "cursor": run["cursor"],
+        "chunk": run["chunk"], "chunk_from": run["chunk_from"], "chunk_to": run["chunk_to"], "chunks": run["chunks"],
+        "rolled_back": run["rolled_back"], "message": run["message"], "steps": rows,
+        "summary": {k: sum(1 for r in rows if r["status"] == k) for k in keys},
+        "missing": run["missing"], "blocked": run["blocked"],
+    }
+
+
+def _finish(run: dict) -> None:
+    """The run is over: steps that never ran are not_run, and the run is the last report."""
+    for row in run["rows"]:
+        if row["status"] == "pending":
+            row["status"] = "not_run"
+    LAST["report"] = {"name": run["name"], **_reply(run)}
+
+
+def _earlier(number: int) -> str:
+    if number <= 1:
+        return ""
+    if number == 2:
+        return " Chunk 1 stays applied and can be undone from History."
+    return f" Chunks 1 to {number - 1} stay applied and can be undone from History."
+
+
+def _start(params: dict) -> dict:
+    """POST /api/loadouts/apply with a name: plans the run, then runs its first chunk."""
     name = params["name"]
     plan = _plan(name, _list_param(params.get("sections")), _truthy(params.get("over_max")), _int_list(params.get("skip")))
     if params.get("plan_id") != plan["plan_id"]:
@@ -428,40 +499,95 @@ def _apply(params: dict) -> dict:
     if on_failure not in ("rollback", "keep"):
         raise ValueError("on_failure is rollback or keep")
     steps = plan["steps"]
-    # mock rule: a build whose name contains "fail" is refused at its third step (its last one, if it has fewer)
-    refuse_at = min(2, len(steps) - 1) if steps and "fail" in name.lower() else None
-    rows = [{"n": s["n"], "label": s["label"], "status": "not_run", "before": s["before"], "after": s["after"], "error": None} for s in steps]
-    done: list[int] = []
+    run = {
+        "id": secrets.token_hex(16), "name": name, "on_failure": on_failure, "steps": steps,
+        # mock rule: a build whose name contains "fail" is refused at its sixth step (its last one, if it has fewer)
+        "refuse_at": min(5, len(steps) - 1) if steps and "fail" in name.lower() else None,
+        "rows": [{"n": s["n"], "label": s["label"], "status": "pending", "before": s["before"], "after": s["after"], "error": None}
+                 for s in steps],
+        "done": [], "state": "running" if steps else "done", "ok": True, "cursor": 0, "chunk": 0, "chunk_from": 0,
+        "chunk_to": 0, "chunks": [], "rolled_back": False, "missing": plan["missing"], "blocked": plan["blocked"],
+        "message": "Nothing to apply: the save already matches this build." if not steps else "",
+    }
+    RUNS[run["id"]] = run
+    while len(RUNS) > 20:
+        RUNS.pop(next(iter(RUNS)))
+    if not steps:
+        _finish(run)
+        return _reply(run)
+    return _chunk(run)
+
+
+def _continue(params: dict) -> dict:
+    """POST /api/loadouts/apply with run_id and cursor: runs the next chunk of that run."""
+    run = RUNS.get(str(params.get("run_id", "")))
+    if run is None:
+        raise LookupError("that run is unknown or has expired")
+    time.sleep(CHUNK_DELAY)
+    return _chunk(run, int(params.get("cursor", -1)))
+
+
+def _chunk(run: dict, cursor: int | None = None) -> dict:
+    """Runs one chunk of CHUNK steps from the run's cursor. A game that changed since the plan stops the run first."""
+    if run["state"] != "running":
+        return _reply(run)
+    if cursor is not None and cursor != run["cursor"]:
+        raise ValueError(f"the run is at step {run['cursor']}, not {cursor}; reload the run")
+    total = len(run["rows"])
+    first = run["cursor"]
+    last = min(first + CHUNK, total)
+    number = run["chunk"] + 1
+    run["chunk"], run["chunk_from"], run["chunk_to"] = number, first + 1, last
+    if any(_drifted(run["steps"][i]) for i in range(first, last)):
+        run["state"], run["ok"] = "stopped", False
+        run["message"] = (f"The game changed between chunks, so chunk {number} was not run and nothing more was applied."
+                          + _earlier(number))
+        _finish(run)
+        return _reply(run)
     failed = None
-    for index, step in enumerate(steps):
-        if failed is not None:
-            continue
+    for i in range(first, last):
+        step, row = run["steps"][i], run["rows"][i]
         try:
-            if index == refuse_at:
-                raise _Refused("the game refused the write (mock: a build named *fail* is refused at its third step)")
+            if i == run["refuse_at"]:
+                raise _Refused(f"the game refused the write (mock: a build named *fail* is refused at step {i + 1})")
             _write(step, step["after"])
             if _read(step) != step["after"]:
                 raise _Refused(f"the game reports {_read(step)!r} instead")
         except _Refused as ex:
-            rows[index]["status"] = "failed"
-            rows[index]["error"] = str(ex)
-            failed = index
-            continue
-        rows[index]["status"] = "ok"
-        done.append(index)
-    rolled = failed is not None and on_failure == "rollback"
-    if rolled:
-        for index in reversed(done):
-            _write(steps[index], steps[index]["before"])
-            rows[index]["status"] = "rolled_back"
-    keys = ("ok", "failed", "rolled_back", "rollback_failed", "not_run")
-    report = {
-        "ok": failed is None, "rolled_back": rolled, "on_failure": on_failure, "steps": rows,
-        "summary": {k: sum(1 for r in rows if r["status"] == k) for k in keys},
-        "missing": plan["missing"], "blocked": plan["blocked"],
-    }
-    LAST["report"] = {"name": name, **report}
-    return report
+            row["status"], row["error"] = "failed", str(ex)
+            failed = i
+            break
+        row["status"] = "ok"
+        run["done"].append(i)
+    run["cursor"] = last
+    status = "applied"
+    if failed is not None:
+        run["ok"] = False
+        n = run["steps"][failed]["n"]
+        if run["on_failure"] == "rollback":
+            # only this chunk is undone; the chunks before it stay applied (History can undo them)
+            for i in reversed([j for j in run["done"] if j >= first]):
+                _write(run["steps"][i], run["steps"][i]["before"])
+                run["rows"][i]["status"] = "rolled_back"
+            status = "rolled_back"
+            run["rolled_back"] = True
+            run["message"] = (f"Step {n} failed. The steps that worked were rolled back, and the steps after it did not run."
+                              if number == 1 else
+                              f"Step {n} failed. Chunk {number} was rolled back;{_earlier(number)}")
+        else:
+            status = "kept_partial"
+            run["message"] = (f"Step {n} failed. The steps that worked were kept, and the steps after it did not run."
+                              if number == 1 else
+                              f"Step {n} failed. Chunk {number} kept the steps that worked, and the steps after it did not run;"
+                              f"{_earlier(number)}")
+        run["state"] = "failed"
+    elif last >= total:
+        run["state"] = "done"
+        run["message"] = f"Applied all {total} steps in {number} chunk{'s' if number != 1 else ''}. Not tested in a live game: check the save in game."
+    run["chunks"].append({"chunk": number, "from": first + 1, "to": last, "status": status})
+    if run["state"] != "running":
+        _finish(run)
+    return _reply(run)
 
 
 # ---- seeds: fake saved builds, made from the state above before anything is applied ----
@@ -469,6 +595,14 @@ def _apply(params: dict) -> dict:
 _SNIPER_ENTRY = {
     "kind": "weapon", "class": "WillowWeapon", "name": "Sniper of Hellfire", "location": "Equipped",
     "balance": SNIPER[0], "definition": SNIPER[1], "manufacturer": SNIPER[2],
+}
+_PISTOL_ENTRY = {
+    "kind": "weapon", "class": "WillowWeapon", "name": "Lucky Pistol", "location": "Equipped",
+    "balance": PISTOL[0], "definition": PISTOL[1], "manufacturer": PISTOL[2],
+}
+_SHOTGUN_ENTRY = {
+    "kind": "weapon", "class": "WillowWeapon", "name": "Torgue Shotgun", "location": "Equipped",
+    "balance": SHOTGUN[0], "definition": SHOTGUN[1], "manufacturer": SHOTGUN[2],
 }
 PRESETS: list[dict] = [
     {
@@ -502,11 +636,22 @@ PRESETS: list[dict] = [
         ],
     },
     {
+        # six steps, all on gear the Siren crit build does not touch, so the drill works after that apply too:
+        # step 6 (the pistol's barrel) is the one refused, so chunk 1 stays applied and chunk 2 is rolled back
         "format": "rtse.loadout", "version": 1, "kind": "loadout", "name": "Siren rig - fail drill", "created": "2026-10-31T08:00:00Z",
         "class_key": "siren",
-        "character": {"skill_points": 1, "money": 300000},
-        "skills": [{"path": "GD_Siren_Skills.Phasewalk.Duration", "level": 4}],
-        "gear": [{**_SNIPER_ENTRY, "level": 33, "parts": {"Barrel": "GD_Weap_SniperRifles.Barrel.Barrel_03"}}],
+        "gear": [
+            {**_SHOTGUN_ENTRY, "level": 28, "parts": {"Body": "GD_Weap_Shotgun.Body.Body_01", "Barrel": "GD_Weap_Shotgun.Barrel.Barrel_02"}},
+            {**_PISTOL_ENTRY, "level": 30, "parts": {
+                "Body": "GD_Weap_Pistol.Body.Body_01", "Grip": "GD_Weap_Pistol.Grip.Grip_02", "Barrel": "GD_Weap_Pistol.Barrel.Barrel_02"}},
+        ],
+    },
+    {
+        # stored with the currencies it could not read left out: the list tags it partial
+        "format": "rtse.loadout", "version": 1, "kind": "loadout", "name": "Siren cash run", "created": "2026-10-29T14:20:00Z",
+        "class_key": "siren", "left_out": [UNREADABLE[1]],
+        "character": {"level": 70, "skill_points": 0, "money": 180000, "eridium": 12},
+        "skills": [{"path": "GD_Siren_Skills.Phasewalk.Duration", "level": 3}],
     },
     {
         "format": "rtse.loadout", "version": 1, "kind": "loadout", "name": "Soldier tank build", "created": "2026-10-12T10:00:00Z",
@@ -535,24 +680,37 @@ def handle(path: str, params: dict, shared: dict) -> dict | None:
         return _plan(params["name"], _list_param(params.get("sections")), _truthy(params.get("over_max")), _int_list(params.get("skip")))
     if path == "/api/loadouts/export_character":
         name = f"{CLASS_KEY.capitalize()} L{CHARACTER['level']} {datetime.now(timezone.utc):%Y-%m-%d}"
-        preset = _capture(name, {}, kind="character")
-        return {"preset": preset, "link": to_link(preset)}
+        preset = _capture(name, {}, kind="character", unreadable=True)
+        left_out = list(preset.get("left_out") or [])
+        return {"preset": preset, "link": to_link(preset), "warnings": left_out}
     if path == "/api/loadouts/save":
-        preset = _capture(_clean_name(params["name"]), params.get("include") or {})
-        return _store(preset, _truthy(params.get("overwrite")))
+        include = params.get("include") or {}
+        preset = _capture(_clean_name(params["name"]), include, unreadable=_truthy(include.get("currencies")))
+        left_out = list(preset.get("left_out") or [])
+        if left_out and not _truthy(params.get("allow_partial")):
+            return {"saved": False, "partial": True, "warnings": left_out}  # nothing is stored until the user says so
+        return {"saved": True, **_store(preset, _truthy(params.get("overwrite"))), "warnings": left_out}
     if path == "/api/loadouts/import":
         if ("preset" in params) == ("link" in params):
             raise ValueError("send exactly one of preset or link")
+        if "link" in params and len(str(params["link"])) > LINK_LIMIT_IMPORT:
+            raise ValueError(f"that link is {len(params['link']):,} characters; the limit is {LINK_LIMIT_IMPORT:,}")
         preset = _check(from_link(params["link"]) if "link" in params else params["preset"])
         if params.get("rename"):
             preset["name"] = _clean_name(params["rename"])
-        return _store(preset, _truthy(params.get("overwrite")))
+        return {**_store(preset, _truthy(params.get("overwrite"))), "warnings": list(preset.get("left_out") or [])}
     if path == "/api/loadouts/delete":
         _find(params["name"])
         PRESETS.pop(_index(params["name"]))
         return {"presets": _summaries()}
     if path == "/api/loadouts/apply":
-        return _apply(params)
+        # a request with run_id continues that run by one chunk; one with a name starts a run (and runs its first chunk)
+        return _continue(params) if "run_id" in params else _start(params)
+    if path == "/api/loadouts/run":
+        run = RUNS.get(str(params.get("run_id", "")))
+        if run is None:
+            raise LookupError("that run is unknown or has expired")
+        return _reply(run)
     if path == "/api/loadouts/import_missing":
         _find(params["name"])
         raise ValueError("importing items from codes isn't available yet (needs the item-codes feature)")

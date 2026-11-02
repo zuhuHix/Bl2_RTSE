@@ -66,9 +66,27 @@
 .lo-pill.failed, .lo-pill.rollback_failed { background: var(--blaze); color: var(--ink); }
 .lo-pill.rolled_back { background: var(--hazard); color: var(--ink); }
 .lo-pill.not_run { background: var(--plate-dim); color: var(--bone); }
+.lo-pill.applied { background: var(--good); color: var(--ink); }
+.lo-pill.kept_partial { background: var(--hazard); color: var(--ink); }
+.lo-side { color: var(--muted); font-size: 12px; font-weight: 600; margin-top: 3px; overflow-wrap: anywhere; }
 .lo-report { margin-top: 24px; border-top: 8px solid var(--good); scroll-margin-top: 16px; }
 .lo-report.bad { border-top-color: var(--blaze); }
 .lo-report .warn-banner { margin-top: 12px; }
+.lo-msg { margin: 12px 0 0; font-weight: 700; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.lo-earlier { margin: 10px 0 0; padding: 8px 12px; border: 2px dashed var(--hazard); color: var(--hazard); font-weight: 700; overflow-wrap: anywhere; }
+.lo-chunks { margin-top: 12px; }
+.lo-run { margin-top: 24px; scroll-margin-top: 16px; }
+.lo-bar { height: 18px; margin-top: 14px; border: 3px solid #000; background: var(--ink); }
+.lo-bar i { display: block; height: 100%; background: var(--hazard); transition: width .3s; }
+.lo-run-text { margin-top: 10px; font-weight: 700; letter-spacing: .04em; }
+.lo-notice { display: flex; align-items: flex-start; gap: 12px; margin-top: 18px; padding: 12px 16px; background: var(--panel-2); border: 3px solid #000; box-shadow: 4px 4px 0 #000; }
+.lo-notice > .icon { margin-top: 2px; }
+.lo-notice-body { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.lo-notice-body ul { margin: 6px 0 0; padding-left: 18px; }
+.lo-dialog { position: fixed; z-index: 21; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(520px, calc(100vw - 32px)); max-height: 84vh; overflow: auto; padding: 18px 20px; background: var(--panel); border: 3px solid #000; box-shadow: 6px 6px 0 #000; }
+.lo-dialog-text { color: var(--bone); font-weight: 600; margin: 8px 0 0; overflow-wrap: anywhere; }
+.lo-dialog-list { margin: 8px 0 0; padding-left: 18px; color: var(--bone); font-weight: 600; overflow-wrap: anywhere; }
+.lo-dialog .tools { justify-content: flex-end; }
 @media (max-width: 900px) {
   .lo-grid { grid-template-columns: minmax(0, 1fr); }
   .lo-body { padding: 4px 16px 20px; }

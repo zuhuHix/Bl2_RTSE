@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import time
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -41,9 +42,19 @@ LINK_PREFIX = "RTSE-L1:"
 MAX_PRESETS = 100
 MAX_SKILLS = 200
 MAX_GEAR = 120
-MAX_STEPS = 600
+MAX_STEPS = 300  # a whole run; it is applied in chunks (CHUNK_MAX_STEPS, CHUNK_SECONDS) so the game never stalls
+CHUNK_MAX_STEPS = 20  # writes per apply request; a failed chunk's rollback is bounded by the same number
+CHUNK_SECONDS = 2.0  # a chunk stops starting new steps after this long (measured inside the loop)
+RUN_TTL_SECONDS = 15 * 60  # an unfinished run is forgotten after this
+MAX_RUNS = 8
 MAX_PRESET_BYTES = 256 * 1024
-MAX_LINK_CHARS = 64 * 1024
+# The server's POST body limit is 64 KB (rtse/server.py MAX_BODY_BYTES), and an import arrives as a link inside a JSON
+# body. A stored build must fit LINK_LIMIT as RTSE's own (level 9) link, so it can always be shared and imported again;
+# an import may be up to IMPORT_LINK_LIMIT, the slack covering the browser's weaker compression and the JSON wrapper.
+LINK_LIMIT = 56_000
+IMPORT_LINK_LIMIT = 62_000
+MAX_LEFT_OUT = 20
+LEFT_OUT_LIMIT = 200
 MAX_LEVEL = 100
 NAME_LIMIT = 64
 GEAR_NAME_LIMIT = 120
@@ -59,7 +70,7 @@ SECTIONS = ("character", "skills", "gear")
 SECTION_CHARACTER, SECTION_SKILLS, SECTION_GEAR = SECTIONS
 GEAR_KINDS = ("weapon", "item")
 LOCATIONS = (gear_inventory.EQUIPPED, gear_inventory.BACKPACK)
-PRESET_KEYS = ("format", "version", "kind", "name", "created", "class_key", "character", "skills", "gear")
+PRESET_KEYS = ("format", "version", "kind", "name", "created", "class_key", "left_out", "character", "skills", "gear")
 GEAR_KEYS = ("kind", "class", "name", "location", "balance", "definition", "manufacturer", "level", "parts")
 CHARACTER_KEYS = ("level", "xp", "skill_points", "money", "eridium", "seraph", "torgue")
 CHARACTER_BOUNDS: dict[str, tuple[int, int]] = {
@@ -245,13 +256,26 @@ def validate(data: Any) -> dict[str, Any]:
     if "created" in data:
         out["created"] = _text(data["created"], "created", CREATED_LIMIT, minimum=0)
     out["class_key"] = class_key
+    if "left_out" in data:
+        out["left_out"] = _left_out(data["left_out"])
     if "character" in data:
         out["character"] = _character(data["character"])
     if "skills" in data:
         out["skills"] = _skills(data["skills"])
     if "gear" in data:
         out["gear"] = _gear(data["gear"])
+    length = len(to_link(out))
+    if length > LINK_LIMIT:
+        raise LoadoutError(400, f"this build is too big to share: its link would be {length} characters and the limit is "
+                                f"{LINK_LIMIT} - save fewer items")
     return out
+
+
+def _left_out(raw: Any) -> list[str]:
+    """What a capture couldn't read (a partial build). Shown to the user, never acted on."""
+    if not isinstance(raw, list) or len(raw) > MAX_LEFT_OUT:
+        raise LoadoutError(400, f"left_out must be a list of at most {MAX_LEFT_OUT} notes")
+    return [_text(note, "a left_out note", LEFT_OUT_LIMIT) for note in raw]
 
 
 # --- Compact link ------------------------------------------------------------------------------
@@ -268,8 +292,8 @@ def from_link(text: Any) -> dict[str, Any]:
     if not isinstance(text, str):
         raise LoadoutError(400, "link must be text")
     compact = "".join(text.split())
-    if len(compact) > MAX_LINK_CHARS:
-        raise LoadoutError(400, "that build link is too long")
+    if len(compact) > IMPORT_LINK_LIMIT:
+        raise LoadoutError(400, f"that build link is {len(compact)} characters; the limit is {IMPORT_LINK_LIMIT}")
     if not compact.startswith(LINK_PREFIX):
         raise LoadoutError(400, f"not a build link (it starts with {LINK_PREFIX})")
     body = compact[len(LINK_PREFIX) :]
@@ -393,6 +417,8 @@ def _summary(preset: dict[str, Any]) -> dict[str, Any]:
         "kind": preset["kind"],
         "class_key": preset["class_key"],
         "created": preset.get("created"),
+        "partial": bool(preset.get("left_out")),
+        "left_out": list(preset.get("left_out", [])),
         "counts": {
             "gear": len(gear),
             "equipped": sum(1 for g in gear if g["location"] == gear_inventory.EQUIPPED),
@@ -417,6 +443,7 @@ def _store(preset: dict[str, Any], *, overwrite: bool, warnings: list[str] | Non
     _write_store(presets)
     logging.info(f"RTSE: saved build {preset['name']!r}")
     return {
+        "saved": True,
         "preset": _summary(preset),
         "presets": [_summary(p) for p in presets],
         "warnings": [*load_warnings, *(warnings or [])],
@@ -579,6 +606,8 @@ def capture(name: str | None, include: dict[str, bool], *, whole: bool = False) 
         "class_key": class_key,
         **sections,
     }
+    if warnings:  # a partial capture says so inside the preset itself, so the file and the list show it
+        preset["left_out"] = [note[:LEFT_OUT_LIMIT] for note in warnings[:MAX_LEFT_OUT]]
     return validate(preset), warnings
 
 
@@ -655,9 +684,9 @@ class _Draft:
         self.missing: list[dict[str, Any]] = []
 
     def step(self, section: str, kind: str, label: str, target: Any, before: Any, after: Any, params: dict[str, Any],
-             entry: int | None = None) -> None:
+             entry: int | None = None, side_effect: str | None = None) -> None:
         self.steps.append({"section": section, "kind": kind, "label": label, "target": target, "before": before,
-                           "after": after, "params": params, "entry": entry})
+                           "after": after, "params": params, "entry": entry, "side_effect": side_effect})
 
     def keep(self, section: str, label: str, reason: str) -> None:
         self.unchanged.append({"section": section, "label": label, "reason": reason})
@@ -686,8 +715,26 @@ def _plan_character(draft: _Draft, wanted: dict[str, int], state: dict[str, Any]
         if now == value and not (key == "xp" and level_changes):
             draft.keep(SECTION_CHARACTER, label, f"already {value}")
             continue
-        draft.step(SECTION_CHARACTER, f"character.{key}", label, key, now, value, {"field": key, "value": value})
+        side_effect = _level_side_effect(value, now_values.get("xp"), "xp" in wanted) if key == "level" else None
+        draft.step(SECTION_CHARACTER, f"character.{key}", label, key, now, value, {"field": key, "value": value},
+                   side_effect=side_effect)
         level_changes = level_changes or key == "level"
+
+
+def _xp_threshold(level: int) -> int | None:
+    """The XP the level write will set (character.set_field moves level and XP together, by design)."""
+    try:
+        return character._xp_required(character._owners(), level)[0]  # noqa: SLF001
+    except Exception:  # noqa: BLE001 - only the preview's wording depends on it
+        return None
+
+
+def _level_side_effect(level: int, xp_now: Any, build_sets_xp: bool) -> str:
+    xp = _xp_threshold(level)
+    amount = f"{xp:,}" if isinstance(xp, int) else "the game's amount"
+    now = f" (now {xp_now:,})" if isinstance(xp_now, int) else ""
+    text = f"Experience also changes{now}: it becomes {amount}, the minimum for level {level}"
+    return f"{text}; the next step then sets the build's XP" if build_sets_xp else text
 
 
 def _plan_skills(draft: _Draft, wanted: list[dict[str, Any]], over_max: bool, preset_class: str | None,
@@ -797,11 +844,34 @@ def _class_match(preset_class: str | None, current_class: str | None) -> bool | 
     return preset_class == current_class
 
 
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+
+
+def _basis(sections: list[str]) -> str:
+    """A fingerprint of everything an apply can touch, read from the game now: every character value (XP included,
+    which a level write moves), every skill's level, every item's id, place, level and parts. A plan id includes it,
+    and each apply chunk compares it with the one recorded when the previous chunk ended."""
+    state: dict[str, Any] = {}
+    if SECTION_CHARACTER in sections:
+        c = character.read()
+        state["character"] = [c.get("level"), c.get("xp"), c.get("skill_points"),
+                              [[x["key"], x["value"]] for x in c.get("currencies", [])]]
+    if SECTION_SKILLS in sections:
+        tree = skills.read()
+        if tree.get("available"):
+            state["skills"] = sorted([s.get("path") or "", s.get("level")] for s in tree.get("skills", []))
+        else:
+            state["skills"] = tree.get("reason")
+    if SECTION_GEAR in sections:
+        state["gear"] = sorted([g["id"], g["class"], g["balance"], g["location"], g["level"], sorted(g["parts"].items())]
+                               for g in _live_gear())
+    return _digest(state)
+
+
 def _plan_id(steps: list[dict[str, Any]], blocked: list[dict[str, Any]], missing: list[dict[str, Any]],
-             sections: list[str], over_max: bool, skip: list[int], name: str) -> str:
-    canonical = json.dumps([steps, blocked, missing, sections, over_max, skip, name], sort_keys=True,
-                           separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+             sections: list[str], over_max: bool, skip: list[int], name: str, basis: str) -> str:
+    return _digest([steps, blocked, missing, sections, over_max, skip, name, basis])
 
 
 def plan(preset: dict[str, Any], *, sections: list[str] | None = None, over_max: bool = False,
@@ -826,11 +896,12 @@ def plan(preset: dict[str, Any], *, sections: list[str] | None = None, over_max:
             _plan_skills(draft, preset["skills"], over_max, preset_class, current_class)
         if SECTION_GEAR in chosen:
             _plan_gear(draft, gear, skipped)
+        basis = _basis(chosen)
     if len(draft.steps) > MAX_STEPS:
         raise LoadoutError(400, f"this build would take {len(draft.steps)} steps; the limit is {MAX_STEPS} - split it up")
     steps = [{"n": n, **step} for n, step in enumerate(draft.steps, start=1)]
     return {
-        "plan_id": _plan_id(steps, draft.blocked, draft.missing, chosen, over_max, skipped, preset["name"]),
+        "plan_id": _plan_id(steps, draft.blocked, draft.missing, chosen, over_max, skipped, preset["name"], basis),
         "preset": {"name": preset["name"], "kind": preset["kind"], "class_key": preset_class},
         "class": {"preset": preset_class, "current": current_class, "match": _class_match(preset_class, current_class)},
         "sections": chosen,
@@ -960,44 +1031,234 @@ def _not_run(step: dict[str, Any]) -> dict[str, Any]:
             "error": None}
 
 
-def _roll_back(results: list[dict[str, Any]], steps: list[dict[str, Any]], ids: dict[str, str],
-               context: dict[int, int | None]) -> None:
-    """Undoes every step that went ok, last first. Runs inside a journal transaction that is then aborted, so the
-    journal keeps none of the user action (the route still answers normally)."""
-    try:
-        with journal.transaction("loadouts.apply"):
-            for index in reversed(range(len(results))):
-                result = results[index]
-                half_done = result.pop("_wrote", False)
-                if result["status"] != "ok" and not half_done:
-                    continue
-                try:
-                    _undo(steps[index], ids, context)
-                except Exception as ex:  # noqa: BLE001 - every failed undo is reported, the rest still run
-                    message = str(ex) or ex.__class__.__name__
-                    logging.error(f"RTSE: could not undo build step {steps[index]['n']}: {message}")
-                    prefix = f"{result['error']}; putting it back also failed: " if half_done else ""
-                    result.update(status="rollback_failed", error=f"{prefix}{message} - reload the save before playing")
-                else:
-                    if half_done:
-                        result["error"] = f"{result['error']} (put back)"
-                    else:
-                        result["status"] = "rolled_back"
-            raise _Undone()
-    except _Undone:
-        pass
+def _undo_chunk(results: list[dict[str, Any]], steps: list[dict[str, Any]], indexes: range, ids: dict[str, str],
+                context: dict[int, int | None]) -> None:
+    """Undoes, last first, every step of one chunk that went ok, plus a failed step whose write went through but read
+    back wrong. Each undo uses the same write function as the step; a failed undo is reported and the rest still run."""
+    for index in reversed(indexes):
+        result = results[index]
+        half_done = result.pop("_wrote", False)
+        if result["status"] != "ok" and not half_done:
+            continue
+        try:
+            _undo(steps[index], ids, context)
+        except Exception as ex:  # noqa: BLE001 - every failed undo is reported, the rest still run
+            message = str(ex) or ex.__class__.__name__
+            logging.error(f"RTSE: could not undo build step {steps[index]['n']}: {message}")
+            prefix = f"{result['error']}; putting it back also failed: " if half_done else ""
+            result.update(status="rollback_failed", error=f"{prefix}{message} - reload the save before playing")
+        else:
+            if half_done:
+                result["error"] = f"{result['error']} (put back)"
+            else:
+                result["status"] = "rolled_back"
 
 
 def _counts(results: list[dict[str, Any]]) -> dict[str, int]:
-    counts = dict.fromkeys(("ok", "failed", "rolled_back", "rollback_failed", "not_run"), 0)
+    counts = dict.fromkeys(("ok", "failed", "rolled_back", "rollback_failed", "not_run", "pending"), 0)
     for result in results:
         counts[result["status"]] += 1
     return counts
 
 
-def apply(params: Params) -> dict[str, Any]:
-    """Applies a stored build. `plan_id` must be the one from a fresh preview; otherwise the save changed and nothing runs."""
+class _Run:
+    """One apply of one plan, run a chunk per request. Lives in memory on the game thread (routes run there)."""
+
+    def __init__(self, preset: dict[str, Any], fresh: dict[str, Any], on_failure: str) -> None:
+        self.run_id = os.urandom(12).hex()
+        self.name = preset["name"]
+        self.on_failure = on_failure
+        self.sections: list[str] = fresh["sections"]
+        self.steps: list[dict[str, Any]] = fresh["steps"]
+        self.results = [{**_result(step), "status": "pending"} for step in self.steps]
+        self.missing = fresh["missing"]
+        self.blocked = fresh["blocked"]
+        self.cursor = 0
+        self.chunk = 0
+        self.chunks: list[dict[str, Any]] = []
+        self.ids: dict[str, str] = {}
+        self.context: dict[int, int | None] = {}
+        self.state = "running"
+        self.basis: str | None = None  # the game state when the previous chunk ended
+        self.message = f"Ready to apply {len(self.steps)} steps."
+        self.touched = _clock()
+
+
+_runs: dict[str, _Run] = {}
+_clock = time.monotonic  # tests replace it to simulate slow steps
+
+
+def _forget_old_runs() -> None:
+    now = _clock()
+    for run_id in [r for r, run in _runs.items() if now - run.touched > RUN_TTL_SECONDS]:
+        del _runs[run_id]
+    while len(_runs) >= MAX_RUNS:
+        del _runs[min(_runs, key=lambda r: _runs[r].touched)]
+
+
+def _find_run(raw: Any) -> _Run:
+    run = _runs.get(raw) if isinstance(raw, str) else None
+    if run is None:
+        raise LoadoutError(404, "that apply run is unknown or expired - preview the build again")
+    return run
+
+
+def _steps_text(first: int, last: int) -> str:
+    return f"step {first}" if first == last else f"steps {first}-{last}"
+
+
+def _applied_so_far(run: _Run) -> str:
+    """The chunks that stay applied, as the end of a sentence ("" when none)."""
+    applied = [c for c in run.chunks if c["status"] == "applied"]
+    if not applied:
+        return ""
+    last = applied[-1]
+    which = f"chunk {applied[0]['chunk']}" if len(applied) == 1 else f"chunks {applied[0]['chunk']}-{last['chunk']}"
+    return (f" Earlier {which} ({_steps_text(applied[0]['from'], last['to'])}) stay applied: they are separate entries "
+            "in History, so undo them there if you want them gone.")
+
+
+def _stop_rest(run: _Run, state: str) -> None:
+    run.state = state
+    for result in run.results:
+        if result["status"] == "pending":
+            result["status"] = "not_run"
+
+
+def _label(tx: Any, label: str) -> None:
+    """Names the journal transaction of this request after the build and chunk (it was opened by the route registry
+    with the route path; nested transaction() calls join it, so the label is set on the shared object)."""
+    try:
+        tx.label = label
+    except AttributeError:
+        pass
+
+
+def _run_chunk(run: _Run) -> dict[str, Any]:
+    """Runs the next chunk: at most CHUNK_MAX_STEPS steps, and no new step once CHUNK_SECONDS have passed. Each chunk
+    is one journal transaction. A failure stops the run; with on_failure "rollback" only THIS chunk is undone (its
+    transaction is then discarded), earlier chunks stay applied and committed."""
+    if run.state != "running":
+        raise LoadoutError(409, f"this apply run has already {'finished' if run.state == 'done' else 'stopped'}")
+    run.touched = _clock()
+    if run.basis is not None:  # a continuation: did the game change since the previous chunk ended?
+        try:
+            now = _basis(run.sections)
+        except Exception as ex:  # noqa: BLE001 - unreadable counts as changed
+            now = f"unreadable: {ex}"
+        if now != run.basis:
+            _stop_rest(run, "stopped")
+            run.message = (f"The game changed since chunk {run.chunk} ended, so the build stopped before step "
+                           f"{run.cursor + 1}; nothing more was written.{_applied_so_far(run)}")
+            logging.error(f"RTSE: build {run.name!r} stopped: the game changed between chunks")
+            return _reply(run, ran=None)
+
+    run.chunk += 1
+    first = run.cursor
+    deadline = _clock() + CHUNK_SECONDS
+    # M is the least number of chunks the run can take; a chunk that hits CHUNK_SECONDS early makes it grow.
+    total_chunks = run.chunk - 1 + -(-(len(run.steps) - first) // CHUNK_MAX_STEPS)
+    label = f"Build {run.name!r}: chunk {run.chunk}/{total_chunks}"
+    failed_at: int | None = None
+    index = first
+    try:
+        with journal.transaction(label, {"run_id": run.run_id, "chunk": run.chunk}) as tx:
+            _label(tx, label)
+            while index < len(run.steps) and index - first < CHUNK_MAX_STEPS:
+                if index > first and _clock() >= deadline:
+                    break
+                result = run.results[index]
+                result["status"] = "ok"
+                try:
+                    result["after"] = _forward(run.steps[index], run.ids, run.context)
+                except Exception as ex:  # noqa: BLE001 - any refusal or failed readback is this step's failure
+                    result.update(status="failed", error=str(ex) or ex.__class__.__name__)
+                    if _wrote(result, ex):
+                        result["_wrote"] = True
+                    logging.error(f"RTSE: build step {run.steps[index]['n']} failed: {result['error']}")
+                    failed_at = index
+                    index += 1
+                    break
+                index += 1
+            if failed_at is not None and run.on_failure == "rollback":
+                _undo_chunk(run.results, run.steps, range(first, index), run.ids, run.context)
+                raise _Undone  # aborts this chunk's journal transaction: History keeps none of it
+    except _Undone:
+        pass
+    for result in run.results:
+        result.pop("_wrote", None)
+
+    run.cursor = index
+    chunk = {"chunk": run.chunk, "from": first + 1, "to": index}
+    span = _steps_text(first + 1, index)
+    if failed_at is None:
+        chunk["status"] = "applied"
+        run.chunks.append(chunk)
+        if run.cursor >= len(run.steps):
+            run.state = "done"
+            run.message = f"All {len(run.steps)} steps applied."
+        else:
+            run.message = f"Chunk {run.chunk} applied ({span} of {len(run.steps)})."
+            try:
+                run.basis = _basis(run.sections)
+            except Exception as ex:  # noqa: BLE001 - the next chunk will then stop rather than guess
+                run.basis = f"unreadable: {ex}"
+    else:
+        n = run.steps[failed_at]["n"]
+        chunk["status"] = "rolled_back" if run.on_failure == "rollback" else "kept_partial"
+        earlier = _applied_so_far(run)
+        run.chunks.append(chunk)
+        _stop_rest(run, "failed")
+        if run.on_failure == "rollback":
+            run.message = f"Step {n} failed, so chunk {run.chunk} ({span}) was rolled back.{earlier}"
+        else:
+            run.message = (f"Step {n} failed. The steps before it stay applied (nothing was rolled back); undo them "
+                           "from History if you want them gone.")
+    logging.info(f"RTSE: build {run.name!r} chunk {run.chunk}: {run.message}")
+    return _reply(run, ran=chunk)
+
+
+def _reply(run: _Run, *, ran: dict[str, Any] | None) -> dict[str, Any]:
     global _last_report  # noqa: PLW0603
+    last = ran or (run.chunks[-1] if run.chunks else None)
+    report = {
+        "run_id": run.run_id,
+        "name": run.name,
+        "on_failure": run.on_failure,
+        "state": run.state,
+        "ok": run.state in ("running", "done"),
+        "done": run.state != "running",
+        "total": len(run.steps),
+        "cursor": run.cursor,
+        "chunk": last["chunk"] if last else 0,
+        "chunk_from": last["from"] if last else None,
+        "chunk_to": last["to"] if last else None,
+        "chunks": [dict(c) for c in run.chunks],
+        "rolled_back": bool(ran and ran.get("status") == "rolled_back"),
+        "steps": [dict(r) for r in run.results],
+        "summary": _counts(run.results),
+        "message": run.message,
+        "missing": run.missing,
+        "blocked": run.blocked,
+    }
+    _last_report = report
+    return report
+
+
+def apply(params: Params) -> dict[str, Any]:
+    """Applies a stored build, one chunk per request.
+
+    Start: {name, plan_id, sections?, over_max?, skip?, on_failure?}. `plan_id` must come from a fresh preview, so the
+    run is exactly what the user saw. Continue: {run_id, cursor}, where cursor is the previous reply's. The page loops
+    while the reply's state is "running"; GET /api/loadouts/run answers where a run stands.
+    """
+    if "run_id" in params:
+        run = _find_run(params.get("run_id"))
+        cursor = params.get("cursor")
+        if type(cursor) is not int or cursor != run.cursor:
+            raise LoadoutError(409, f"this run is at step {run.cursor + 1}, not {cursor} - ask /api/loadouts/run where it stands")
+        return _run_chunk(run)
+
     preset = _find_stored(params.get("name"))
     plan_id = params.get("plan_id")
     if not isinstance(plan_id, str) or not plan_id:
@@ -1009,43 +1270,14 @@ def apply(params: Params) -> dict[str, Any]:
     fresh = plan(preset, sections=sections, over_max=over_max, skip=skip)
     if fresh["plan_id"] != plan_id:
         raise LoadoutError(409, "the game changed since the preview - preview again")
-
-    steps = fresh["steps"]
-    ids: dict[str, str] = {}
-    context: dict[int, int | None] = {}
-    results: list[dict[str, Any]] = []
-    failed_at: int | None = None
-    for index, step in enumerate(steps):
-        result = _result(step)
-        results.append(result)
-        try:
-            result["after"] = _forward(step, ids, context)
-        except Exception as ex:  # noqa: BLE001 - any refusal or failed readback is this step's failure
-            result.update(status="failed", error=str(ex) or ex.__class__.__name__)
-            if _wrote(result, ex):
-                result["_wrote"] = True
-            logging.error(f"RTSE: build step {step['n']} failed: {result['error']}")
-            failed_at = index
-            break
-    results.extend(_not_run(step) for step in steps[len(results):])
-
-    if failed_at is not None and on_failure == "rollback":
-        _roll_back(results, steps, ids, context)
-    for result in results:
-        result.pop("_wrote", None)
-    report = {
-        "ok": failed_at is None,
-        "rolled_back": any(r["status"] == "rolled_back" for r in results),
-        "on_failure": on_failure,
-        "name": preset["name"],
-        "steps": results,
-        "summary": _counts(results),
-        "missing": fresh["missing"],
-        "blocked": fresh["blocked"],
-    }
-    _last_report = report
-    logging.info(f"RTSE: build {preset['name']!r} applied: {report['summary']}")
-    return report
+    _forget_old_runs()
+    run = _Run(preset, fresh, on_failure)
+    _runs[run.run_id] = run
+    if not run.steps:
+        run.state = "done"
+        run.message = "Nothing to change."
+        return _reply(run, ran=None)
+    return _run_chunk(run)
 
 
 # --- Options from query strings or JSON bodies -------------------------------------------------
@@ -1135,6 +1367,11 @@ def link(params: Params) -> dict[str, Any]:
     return {"link": to_link(_find_stored(params.get("name")))}
 
 
+def run_route(params: Params) -> dict[str, Any]:
+    """Where an apply run stands, for a page that lost a chunk's answer (a timeout or a dropped connection)."""
+    return _reply(_find_run(params.get("run_id")), ran=None)
+
+
 def plan_route(params: Params) -> dict[str, Any]:
     sections, over_max, skip = _options(params)
     return plan(_find_stored(params.get("name")), sections=sections, over_max=over_max, skip=skip)
@@ -1148,6 +1385,9 @@ def export_character(_params: Params) -> dict[str, Any]:
 def save(params: Params) -> dict[str, Any]:
     name = _text(params.get("name"), "name", NAME_LIMIT)
     preset, warnings = capture(name, _include(params.get("include")))
+    if warnings and not _flag(params.get("allow_partial"), "allow_partial"):
+        # Nothing is stored: the page shows what couldn't be read and asks before saving a partial build.
+        return {"saved": False, "partial": True, "warnings": warnings}
     return _store(preset, overwrite=_flag(params.get("overwrite"), "overwrite"), warnings=warnings)
 
 
@@ -1248,6 +1488,7 @@ GET_ROUTES: dict[str, Route] = {
     "/api/loadouts/get": get_preset,
     "/api/loadouts/link": link,
     "/api/loadouts/plan": plan_route,
+    "/api/loadouts/run": run_route,
     "/api/loadouts/export_character": export_character,
     "/api/debug/loadouts": debug_dump,
 }

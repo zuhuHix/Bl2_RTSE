@@ -54,6 +54,7 @@ GET_PATHS = [
     "/api/loadouts/get",
     "/api/loadouts/link",
     "/api/loadouts/plan",
+    "/api/loadouts/run",
     "/api/part",
     "/api/part_owners",
     "/api/ping",

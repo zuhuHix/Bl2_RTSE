@@ -1,9 +1,10 @@
 // Builds page (page_loadouts.js): save the open build as a preset; import one from a file, a link or pasted JSON;
-// dry-run it (the preview shows what applying would change); apply it step by step and show each step's result.
+// dry-run it (the preview shows what applying would change); apply it in chunks and show each step's result.
 // Backed by rtse/loadouts.py. Nothing here has been run against a live game, and every result says so.
 
 const LINK_PREFIX = "RTSE-L1:";
-const MAX_IMPORT_BYTES = 256 * 1024;
+const LINK_LIMIT = 62000; // the server accepts import links up to this many characters
+const MAX_IMPORT_BYTES = 256 * 1024; // a file bigger than this is refused before it is read
 const SECTIONS = ["character", "skills", "gear"];
 const SECTION_LABEL = { character: "Character", skills: "Skills", gear: "Gear" };
 const SAVE_PARTS = [
@@ -14,6 +15,7 @@ const SAVE_PARTS = [
   ["currencies", "Currencies", false],
 ];
 const STATUS_TEXT = { ok: "ok", failed: "failed", rolled_back: "rolled back", rollback_failed: "rollback failed", not_run: "not run" };
+const CHUNK_TEXT = { applied: "applied", rolled_back: "rolled back", kept_partial: "kept, partly applied" };
 // a part the game finds outside the item's own part list: say where, and that it is unverified
 const MODE_TEXT = {
   same_slot: ["same slot", "Not in this item's own part list. RTSE takes it from the same slot. Unverified in game."],
@@ -27,7 +29,10 @@ const state = {
   save: { name: "", include: Object.fromEntries(SAVE_PARTS.map(([key, , on]) => [key, on])) },
   imp: { text: "", rename: "", file: null }, // file: { name, size, text } once a .json is chosen
   preview: null, // see openPreview()
-  report: null, // the last apply result, with its preset name
+  run: null, // while an apply runs: { name, reply } where reply is the last one the server sent
+  report: null, // the last finished apply, with its preset name
+  notes: null, // { title, lines }: the warnings from the last save or import
+  dialog: null, // the in-page confirm; see ask()
   shownLink: null, // { name, link } when the browser refused the clipboard
   scrollTo: null, // a selector to bring into view on the next render
 };
@@ -55,6 +60,7 @@ const cap = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : "No
 const short = (text) => String(text).slice(String(text).lastIndexOf(".") + 1);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const enc = encodeURIComponent;
+const count = (n) => n.toLocaleString();
 
 /** A value for the step table: numbers with separators, paths shortened to their last part. */
 function show(value) {
@@ -88,31 +94,81 @@ async function linkFor(preset) {
   return LINK_PREFIX + base64Url(new Uint8Array(await packed.arrayBuffer()));
 }
 
+/** The message for a link (or JSON text) longer than the server takes, or null when it fits. */
+function tooBig(what, length) {
+  return length > LINK_LIMIT
+    ? `This build is too big to import: its ${what} is ${count(length)} characters; the limit is ${count(LINK_LIMIT)}.`
+    : null;
+}
+
 /** What the import POST carries: the text as a link, or the preset itself when this browser cannot make one. */
 async function importBody(text) {
-  if (text.startsWith(LINK_PREFIX)) return { link: text };
+  if (text.startsWith(LINK_PREFIX)) {
+    const problem = tooBig("link", text.length);
+    if (problem) throw new Error(problem);
+    return { link: text };
+  }
   let preset;
   try {
     preset = JSON.parse(text);
   } catch {
     throw new Error("That is neither an RTSE-L1 link nor valid JSON");
   }
-  if (!globalThis.CompressionStream) return { preset };
-  return { link: await linkFor(preset) };
+  if (!globalThis.CompressionStream) {
+    const problem = tooBig("JSON", text.length);
+    if (problem) throw new Error(problem);
+    return { preset };
+  }
+  const link = await linkFor(preset);
+  const problem = tooBig("link", link.length);
+  if (problem) throw new Error(problem);
+  return { link };
 }
 
-/** POSTs; if the name is taken, asks once and retries with overwrite. Returns the reply, or null. */
-async function postReplacing(ctx, path, body, question) {
+/**
+ * An in-page confirm: resolves true for the yes button, false for cancel or a click on the dimmed page.
+ * (A native confirm() box cannot list the warnings, so the page draws its own.)
+ */
+function ask(ctx, { title, text, items = [], after = "", yes, no = "Cancel" }) {
+  return new Promise((resolve) => {
+    state.dialog = {
+      title, text, items, after, yes, no,
+      resolve: (answer) => { state.dialog = null; ctx.rerender(); resolve(answer); },
+    };
+    ctx.rerender();
+  });
+}
+
+/**
+ * POSTs a save or import. If the name is taken, asks before replacing it. If the server holds back a partial
+ * build (saved: false), asks whether to save it anyway, marked partial. Returns the reply, or null when refused.
+ */
+async function postAsking(ctx, path, body, replaceText) {
   if (state.busy) return null;
   state.busy = true;
   try {
-    try {
-      return await ctx.api("POST", path, body);
-    } catch (error) {
-      if (!/already exists/i.test(error.message)) throw error;
-      if (!confirm(question)) return null;
-      return await ctx.api("POST", path, { ...body, overwrite: true });
+    let send = { ...body };
+    for (let round = 0; round < 3; round += 1) {
+      try {
+        const reply = await ctx.api("POST", path, send);
+        if (reply.saved === false) {
+          const yes = await ask(ctx, {
+            title: "Partial build", text: "Some of the build couldn't be read:", items: reply.warnings || [],
+            after: "Save it anyway, marked partial?", yes: "Save anyway",
+          });
+          if (!yes) return null;
+          send = { ...send, allow_partial: true };
+          continue;
+        }
+        return reply;
+      } catch (error) {
+        if (!/already exists/i.test(error.message)) throw error;
+        const yes = await ask(ctx, { title: "Replace build?", text: replaceText, yes: "Replace" });
+        if (!yes) return null;
+        send = { ...send, overwrite: true };
+      }
     }
+    throw new Error("The build could not be saved: try again");
   } catch (error) {
     ctx.toast(error.message, true);
     return null;
@@ -126,12 +182,14 @@ async function postReplacing(ctx, path, body, question) {
 async function savePreset(ctx) {
   const name = state.save.name.trim();
   if (!name) return ctx.toast("Give the build a name first", true);
-  const reply = await postReplacing(ctx, "/api/loadouts/save", { name, include: { ...state.save.include } },
+  const reply = await postAsking(ctx, "/api/loadouts/save", { name, include: { ...state.save.include } },
     `A build named "${name}" already exists. Replace it with the current build?`);
   if (!reply) return;
   state.list = { ...state.list, presets: reply.presets };
   state.save.name = "";
-  ctx.toast(`Saved "${reply.preset.name}"`);
+  const warnings = reply.warnings || [];
+  state.notes = warnings.length ? { title: `Saved "${reply.preset.name}" with warnings`, lines: warnings } : null;
+  ctx.toast(reply.preset.partial ? `Saved "${reply.preset.name}" as partial` : `Saved "${reply.preset.name}"`);
   ctx.rerender();
 }
 
@@ -159,10 +217,12 @@ async function importPreset(ctx) {
     return ctx.toast(error.message, true);
   }
   if (state.imp.rename.trim()) body.rename = state.imp.rename.trim();
-  const reply = await postReplacing(ctx, "/api/loadouts/import", body, "A build with that name already exists. Replace it?");
+  const reply = await postAsking(ctx, "/api/loadouts/import", body, "A build with that name already exists. Replace it?");
   if (!reply) return;
   state.list = { ...state.list, presets: reply.presets };
   state.imp = { text: "", rename: "", file: null };
+  const warnings = reply.warnings || [];
+  state.notes = warnings.length ? { title: `Imported "${reply.preset.name}" with warnings`, lines: warnings } : null;
   ctx.toast(`Imported "${reply.preset.name}"`);
   ctx.rerender();
 }
@@ -170,7 +230,14 @@ async function importPreset(ctx) {
 async function exportCharacter(ctx) {
   const reply = await ctx.guarded(() => ctx.api("GET", "/api/loadouts/export_character"));
   if (!reply) return;
-  downloadJson(reply.preset.name, reply.preset);
+  const warnings = reply.warnings || [];
+  if (warnings.length > 0) {
+    const yes = await ask(ctx, {
+      title: "Partial export", text: "This export is partial:", items: warnings, after: "Download it anyway?", yes: "Download",
+    });
+    if (!yes) return;
+  }
+  downloadJson(warnings.length > 0 ? `${reply.preset.name}-partial` : reply.preset.name, reply.preset);
   ctx.toast(`Downloaded ${reply.preset.name} (not saved in Builds)`);
 }
 
@@ -194,7 +261,8 @@ async function copyLink(ctx, name) {
 }
 
 async function deletePreset(ctx, name) {
-  if (!confirm(`Delete the saved build "${name}"? This cannot be undone.`)) return;
+  const yes = await ask(ctx, { title: "Delete build?", text: `Delete the saved build "${name}"? This cannot be undone.`, yes: "Delete" });
+  if (!yes) return;
   const reply = await ctx.guarded(() => ctx.api("POST", "/api/loadouts/delete", { name }));
   if (!reply) return;
   state.list = { ...state.list, presets: reply.presets };
@@ -271,32 +339,58 @@ function toggleSkip(ctx, index, include) {
   replan(ctx);
 }
 
+/**
+ * Applies the planned build. The server runs it in chunks: the first request starts the run and runs chunk 1, and
+ * each request after it (with the run's id and cursor) runs the next chunk, until the reply says the run is over.
+ */
 async function applyPreview(ctx) {
   const p = state.preview;
   if (!p || !p.plan || state.busy) return;
   state.busy = true;
+  state.report = null;
+  state.run = { name: p.name, reply: null };
+  state.scrollTo = "#lo-run";
   ctx.rerender();
-  let result = null;
+  let reply = null;
   let error = null;
+  let notice = null;
   try {
-    result = await ctx.api("POST", "/api/loadouts/apply", {
+    reply = await ctx.api("POST", "/api/loadouts/apply", {
       name: p.name, plan_id: p.plan.plan_id, sections: p.sections, over_max: p.overMax, skip: p.skip, on_failure: p.onFailure,
     });
   } catch (e) {
     error = e.message;
   }
+  while (!error && reply.state === "running") {
+    state.run.reply = reply;
+    ctx.rerender();
+    try {
+      reply = await ctx.api("POST", "/api/loadouts/apply", { run_id: reply.run_id, cursor: reply.cursor });
+    } catch (e) {
+      // the request failed, so the server may or may not have run the chunk: read the run back before going on
+      const found = await ctx.api("GET", `/api/loadouts/run?run_id=${enc(reply.run_id)}`).catch(() => null);
+      if (!found) {
+        error = `${e.message}. The result is unknown: check the save in game. If it looks wrong, save the debug dump from Build dev tools.`;
+        break;
+      }
+      notice = `The request failed mid-run (${e.message}). The run below is what the server holds now.`;
+      reply = found;
+    }
+  }
   state.busy = false;
+  state.run = null;
   if (error) {
     ctx.toast(error, true);
     if (/changed since the preview/i.test(error)) {
       ctx.toast("Re-planned against the game as it is now. Check the steps, then apply again.");
       return replan(ctx);
     }
+    p.error = error;
     return ctx.rerender();
   }
-  state.report = { name: p.name, ...result };
+  state.report = { name: p.name, ...reply, notice };
   state.scrollTo = "#lo-report";
-  ctx.toast(reportToast(result).text, !result.ok);
+  ctx.toast(reportToast(reply).text, !reply.ok);
   await replan(ctx); // what the game holds now is the new starting point
 }
 
@@ -304,7 +398,7 @@ function reportToast(r) {
   if (r.ok) return { text: `Applied ${plural(r.summary.ok, "step")}. Not tested in a live game.` };
   const failed = r.steps.find((s) => s.status === "failed");
   const where = failed ? `Step ${failed.n} failed` : "A step failed";
-  const rest = r.rolled_back ? "the steps that worked were rolled back" : "the steps that worked were kept";
+  const rest = r.rolled_back ? "the steps in that chunk were rolled back" : "the steps that worked were kept";
   return { text: `${where}: ${rest}.${r.summary.rollback_failed ? " Reload the save before playing." : ""}` };
 }
 
@@ -347,7 +441,7 @@ function importCard(ctx) {
   const imp = state.imp;
   return h("section", { class: "lo-card" },
     h("h2", { class: "lo-h", text: "Import" }),
-    h("p", { class: "note", text: "A .json preset (up to 256 KB), an RTSE-L1 link, or the JSON itself. Pasted JSON is turned into a link here, so large builds still fit the server's limit." }),
+    h("p", { class: "note", text: `A .json preset, an RTSE-L1 link, or the JSON itself. Links and JSON up to ${count(LINK_LIMIT)} characters. Pasted JSON is turned into a link here, so large builds still fit the server's limit.` }),
     imp.file
       ? h("div", { class: "lo-file" },
         h("span", { text: `${imp.file.name} (${Math.ceil(imp.file.size / 1024)} KB)` }),
@@ -376,6 +470,7 @@ function presetRow(ctx, p, currentClass) {
   const c = p.counts || {};
   const other = Boolean(p.class_key && currentClass && p.class_key !== currentClass);
   const shown = state.shownLink && state.shownLink.name === p.name ? state.shownLink.link : null;
+  const leftOut = p.left_out || [];
   const facts = [
     c.gear !== undefined && `${c.gear} gear (${c.equipped ?? 0} equipped, ${c.backpack ?? 0} backpack)`,
     c.skills !== undefined && plural(c.skills, "skill"),
@@ -386,8 +481,10 @@ function presetRow(ctx, p, currentClass) {
     h("div", { class: "lo-main" },
       h("div", { class: "lo-name" }, p.name,
         p.kind === "character" && h("span", { class: "lo-tag", text: "whole character" }),
+        p.partial && h("span", { class: "lo-tag warn", title: leftOut.join("\n"), text: "partial" }),
         other && h("span", { class: "lo-tag warn", text: "other class" })),
       h("div", { class: "lo-meta", text: [p.class_key ? cap(p.class_key) : "No class", created && `saved ${created}`].filter(Boolean).join(" · ") }),
+      p.partial && h("div", { class: "lo-why", text: `Left out: ${leftOut.join("; ")}` }),
       h("div", { class: "lo-chips" }, facts.map((text) => h("span", { class: "lo-chip", text })))),
     h("div", { class: "lo-row-actions" },
       h("button", { class: "btn sm primary", title: "Dry run: what applying this build would change", onclick: () => openPreview(ctx, p.name) }, icon("search", 13), "Preview"),
@@ -407,6 +504,16 @@ function listCard(ctx, d) {
     presets.length === 0
       ? h("p", { class: "note", text: "No saved builds yet. Save the open build on the left, or import one." })
       : h("ul", { class: "lo-list" }, presets.map((p) => presetRow(ctx, p, d.class_key))));
+}
+
+function noticeBanner(ctx, notes) {
+  const { h, icon } = ctx;
+  return h("section", { class: "lo-notice", role: "status" },
+    icon("info", 18),
+    h("div", { class: "lo-notice-body" },
+      h("b", { text: notes.title }),
+      h("ul", {}, notes.lines.map((line) => h("li", { text: line })))),
+    h("button", { class: "btn sm ghost", onclick: () => { state.notes = null; ctx.rerender(); } }, "Dismiss"));
 }
 
 function previewOptions(ctx, p) {
@@ -431,7 +538,7 @@ function previewOptions(ctx, p) {
       h("p", { class: "lo-hint", text: "Lets a skill go above its normal maximum. Off by default." })),
     h("div", { class: "lo-opt" },
       h("div", { class: "lo-opt-title", text: "If a step fails" }),
-      [["rollback", "Undo the steps that worked"], ["keep", "Keep the steps that worked"]].map(([value, label]) =>
+      [["rollback", "Undo the chunk that failed"], ["keep", "Keep the steps that worked"]].map(([value, label]) =>
         h("label", { class: "lo-check" },
           h("input", { type: "radio", name: "lo-on-failure", value, checked: p.onFailure === value || null, onchange: () => { p.onFailure = value; } }),
           h("span", { text: label })))),
@@ -468,7 +575,9 @@ function stepsTable(ctx, steps) {
       h("thead", {}, h("tr", {}, h("th", { text: "#" }), h("th", { text: "Step" }), h("th", { text: "Now" }), h("th", { text: "Becomes" }))),
       h("tbody", {}, steps.map((step) => h("tr", {},
         h("td", { class: "lo-num", text: String(step.n) }),
-        h("td", {}, step.label, modeBadge(ctx, step.params && step.params.mode)),
+        h("td", {},
+          step.label, modeBadge(ctx, step.params && step.params.mode),
+          step.side_effect && h("div", { class: "lo-side", text: step.side_effect })),
         h("td", { class: "lo-mono", text: show(step.before) }),
         h("td", { class: "lo-mono", text: show(step.after) }))))));
 }
@@ -544,18 +653,44 @@ function previewCard(ctx) {
     !p.loading && !p.plan && !p.error && p.sections && p.sections.length === 0 && h("div", { class: "note", text: "Tick a section to plan it." }));
 }
 
+function runCard(ctx) {
+  const { h } = ctx;
+  const run = state.run;
+  const r = run.reply;
+  const total = r ? r.total : 0;
+  const cursor = r ? r.cursor : 0;
+  const pct = total ? Math.round((cursor / total) * 100) : 0;
+  return h("section", { class: "lo-card lo-wide lo-run", id: "lo-run", "aria-live": "polite" },
+    h("div", { class: "lo-head" }, h("h2", { class: "lo-h", text: `Applying: ${run.name}` })),
+    h("p", { class: "note", text: "The game is changed one chunk of up to 4 steps at a time. The result is final when the run ends." }),
+    h("div", { class: "lo-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(total), "aria-valuenow": String(cursor) },
+      h("i", { style: { width: `${pct}%` } })),
+    h("div", { class: "lo-run-text", text: r ? `Applying step ${cursor} of ${total} (chunk ${r.chunk})` : "Starting..." }),
+    r && r.chunks.length > 0 && chunkList(ctx, r.chunks));
+}
+
+/** One pill per chunk the run has finished: applied, rolled back, or kept partly applied. */
+function chunkList(ctx, chunks) {
+  const { h } = ctx;
+  return h("div", { class: "lo-chips lo-chunks" }, chunks.map((c) => h("span", { class: `lo-pill ${c.status}`, text: `Chunk ${c.chunk}: steps ${c.from}-${c.to}, ${CHUNK_TEXT[c.status] || c.status}` })));
+}
+
 function reportCard(ctx) {
   const { h, icon } = ctx;
   const r = state.report;
   const failed = r.steps.find((s) => s.status === "failed");
-  const outcome = r.ok
+  const fallback = r.ok
     ? `All ${plural(r.summary.ok, "step")} ran and read back. Not tested in a live game: check the save in game.`
     : `${failed ? `Step ${failed.n} failed` : "A step failed"}. ${r.rolled_back ? "The steps that worked were rolled back" : "The steps that worked were kept"}, and the steps after it did not run.`;
+  const earlier = !r.ok && r.chunks.some((c) => c.status === "applied");
   return h("section", { class: `lo-card lo-report${r.ok ? "" : " bad"}`, id: "lo-report" },
     h("div", { class: "lo-head" }, h("h2", { class: "lo-h", text: `Result: ${r.name}` })),
-    h("p", { class: "note", text: outcome }),
+    r.notice && h("div", { class: "warn-banner" }, icon("alert", 18), r.notice),
+    h("p", { class: "lo-msg", text: r.message || fallback }),
+    earlier && h("p", { class: "lo-earlier", text: "Earlier chunks stay applied — use History to undo them." }),
     r.summary.rollback_failed > 0 && h("div", { class: "warn-banner" }, icon("alert", 18),
       "An undo step failed. Reload the save before playing: the game may not match the build."),
+    r.chunks.length > 0 && chunkList(ctx, r.chunks),
     h("div", { class: "lo-chips" }, Object.keys(STATUS_TEXT).map((key) => h("span", { class: "lo-chip" }, STATUS_TEXT[key], h("b", { text: String(r.summary[key]) })))),
     h("div", { class: "lo-tablewrap" },
       h("table", { class: "lo-table" },
@@ -565,6 +700,21 @@ function reportCard(ctx) {
           h("td", { text: s.label }),
           h("td", {}, h("span", { class: `lo-pill ${s.status}`, text: STATUS_TEXT[s.status] || s.status })),
           h("td", { class: "lo-why", text: s.error || "" })))))));
+}
+
+function dialogView(ctx) {
+  const { h } = ctx;
+  const d = state.dialog;
+  return h("div", { class: "lo-dialog-wrap" },
+    h("div", { class: "scrim", onclick: () => d.resolve(false) }),
+    h("section", { class: "lo-dialog", role: "alertdialog", "aria-modal": "true", "aria-labelledby": "lo-dialog-title" },
+      h("h2", { class: "lo-h", id: "lo-dialog-title", text: d.title }),
+      h("p", { class: "lo-dialog-text", text: d.text }),
+      d.items.length > 0 && h("ul", { class: "lo-dialog-list" }, d.items.map((line) => h("li", { text: line }))),
+      d.after && h("p", { class: "lo-dialog-text", text: d.after }),
+      h("div", { class: "tools" },
+        h("button", { class: "btn ghost", onclick: () => d.resolve(false) }, d.no),
+        h("button", { class: "btn primary", onclick: () => d.resolve(true) }, d.yes))));
 }
 
 // ---------- page ----------
@@ -594,12 +744,15 @@ export function render(root, ctx) {
         state.error && warn(state.error),
         !d && !state.error && h("div", { class: "note", text: "Loading builds..." }),
         d && d.warnings.map((w) => warn(w)),
+        state.notes && noticeBanner(ctx, state.notes),
         d && h("div", { class: "lo-grid" }, saveCard(ctx), importCard(ctx)),
         d && listCard(ctx, d),
+        state.run && runCard(ctx),
         state.preview && previewCard(ctx),
         state.report && reportCard(ctx))),
     ctx.dropdown("loadoutsdev", "Build dev tools", "", h("div", {},
       h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => ctx.dump("/api/debug/loadouts") }, "Save build dump")))),
+    state.dialog && dialogView(ctx),
   );
   // scroll once the plan has settled: a re-plan renders twice, and the first draw would move the view
   if (state.scrollTo && !(state.preview && state.preview.loading)) {

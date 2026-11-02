@@ -219,6 +219,11 @@ def stored_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_runs(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(loadouts, "_runs", {})
+
+
+@pytest.fixture(autouse=True)
 def _no_open_transaction():
     journal._current = None  # noqa: SLF001
     yield
@@ -342,14 +347,14 @@ def test_link_rejects_a_bad_prefix_and_bad_characters():
 
 
 def test_link_rejects_a_link_over_the_length_limit():
-    with pytest.raises(LoadoutError, match="too long"):
-        loadouts.from_link("RTSE-L1:" + "A" * loadouts.MAX_LINK_CHARS)
+    with pytest.raises(LoadoutError, match="the limit is 62000"):
+        loadouts.from_link("RTSE-L1:" + "A" * loadouts.IMPORT_LINK_LIMIT)
 
 
 def test_link_rejects_a_zip_bomb_without_inflating_it_all():
     bomb = zlib.compress(b"\x00" * (loadouts.MAX_PRESET_BYTES * 8), 9)
     link = "RTSE-L1:" + base64.urlsafe_b64encode(bomb).decode().rstrip("=")
-    assert len(link) < loadouts.MAX_LINK_CHARS  # small enough to be accepted by length alone
+    assert len(link) < loadouts.IMPORT_LINK_LIMIT  # small enough to be accepted by length alone
     with pytest.raises(LoadoutError, match="larger than"):
         loadouts.from_link(link)
 
@@ -613,7 +618,8 @@ def test_apply_all_ok_changes_the_save_and_commits_the_journal(save, stored_in_t
         report = loadouts.apply({**request, "plan_id": preview_result["plan_id"]})
     assert report["ok"] is True and report["rolled_back"] is False
     assert statuses(report) == ["ok", "ok", "ok", "ok"]
-    assert report["summary"] == {"ok": 4, "failed": 0, "rolled_back": 0, "rollback_failed": 0, "not_run": 0}
+    assert report["summary"] == {"ok": 4, "failed": 0, "rolled_back": 0, "rollback_failed": 0, "not_run": 0, "pending": 0}
+    assert report["state"] == "done" and report["chunks"] == [{"chunk": 1, "from": 1, "to": 4, "status": "applied"}]
     assert save.character["skill_points"] == 5
     assert save.skill_tree["GD_Assassin_Skills.Sniping.Headshot"]["level"] == 4
     item = save._item("Guns.Pistol.A")
@@ -751,7 +757,7 @@ def test_a_hook_result_of_the_wrong_shape_is_a_500(save, stored_in_tmp, monkeypa
 def test_routes_are_collected_once_through_the_api_registry():
     gets, posts = api.collect([loadouts])
     assert set(gets) == {"/api/loadouts", "/api/loadouts/get", "/api/loadouts/link", "/api/loadouts/plan",
-                         "/api/loadouts/export_character", "/api/debug/loadouts"}
+                         "/api/loadouts/run", "/api/loadouts/export_character", "/api/debug/loadouts"}
     assert set(posts) == {"/api/loadouts/save", "/api/loadouts/import", "/api/loadouts/delete", "/api/loadouts/apply",
                           "/api/loadouts/import_missing"}
 
@@ -828,3 +834,153 @@ def test_the_whole_character_export_leaves_out_an_unreadable_skill_tree_with_a_w
     with pytest.raises(LoadoutError) as caught:
         loadouts.capture("x", {"skills": True})
     assert caught.value.status == 409
+
+
+# --- review round 1: chunked apply, XP side effect, size limits, partial captures -------------------
+
+
+def many_guns(save: FakeSave, count: int) -> dict[str, Any]:
+    """`count` guns on Barrel A at level 10; the build wants each on Barrel B at level 12: 2 steps per gun."""
+    for i in range(count):
+        save.add(make_gun(f"Guns.Pistol.{i}", parts={"Barrel": "Barrel.A"}, level=10, name=f"Gun {i}"))
+    store(build(gear=[gun_entry(parts={"Barrel": "Barrel.B"}, level=12, name=f"Gun {i}") for i in range(count)]),
+          overwrite=True)
+    return {"name": "Test build"}
+
+
+def in_tx(fn: Callable[[], Any]) -> tuple[Any, journal.Transaction]:
+    """Runs one request the way the route registry does: inside its own journal transaction."""
+    with journal.transaction("/api/loadouts/apply") as tx:
+        reply = fn()
+    return reply, tx
+
+
+def test_apply_runs_in_chunks_each_its_own_journal_transaction(save, stored_in_tmp):
+    request = many_guns(save, 25)  # 50 steps: chunks of 20, 20, 10
+    result = preview(request["name"])
+    first, tx1 = in_tx(lambda: loadouts.apply({**request, "plan_id": result["plan_id"]}))
+    assert (first["state"], first["cursor"], first["total"], first["chunk"]) == ("running", 20, 50, 1)
+    assert first["summary"]["ok"] == 20 and first["summary"]["pending"] == 30
+    assert tx1.outcome == "committed" and tx1.label == "Build 'Test build': chunk 1/3"
+    replies = [first]
+    while replies[-1]["state"] == "running":
+        reply, tx = in_tx(lambda: loadouts.apply({"run_id": first["run_id"], "cursor": replies[-1]["cursor"]}))
+        assert tx.outcome == "committed"
+        replies.append(reply)
+    assert [r["cursor"] for r in replies] == [20, 40, 50]
+    assert replies[-1]["state"] == "done" and replies[-1]["summary"]["ok"] == 50
+    assert [c["status"] for c in replies[-1]["chunks"]] == ["applied"] * 3
+    assert all(item.DefinitionData.BarrelPartDefinition.path == "Barrel.B" for item, _ in save.items)
+
+
+def test_a_chunk_stops_starting_steps_once_its_time_is_up(save, stored_in_tmp, monkeypatch):
+    request = many_guns(save, 5)
+    result = preview(request["name"])
+    ticks = iter(range(0, 10_000))
+    monkeypatch.setattr(loadouts, "_clock", lambda: next(ticks) * 0.7)  # every look at the clock is 0.7 s later
+    reply = loadouts.apply({**request, "plan_id": result["plan_id"]})
+    assert reply["state"] == "running" and 1 <= reply["cursor"] < 4
+
+
+def test_a_continuation_with_the_wrong_cursor_or_run_is_refused(save, stored_in_tmp):
+    request = many_guns(save, 15)
+    first = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    with pytest.raises(LoadoutError) as caught:
+        loadouts.apply({"run_id": first["run_id"], "cursor": 0})
+    assert caught.value.status == 409
+    with pytest.raises(LoadoutError) as caught:
+        loadouts.apply({"run_id": "nope", "cursor": 20})
+    assert caught.value.status == 404
+    assert loadouts.run_route({"run_id": first["run_id"]})["cursor"] == 20
+
+
+def test_a_failure_in_a_later_chunk_rolls_back_only_that_chunk_and_points_to_history(save, stored_in_tmp):
+    request = many_guns(save, 15)  # 30 steps: chunk 1 = 1-20, chunk 2 = 21-30
+    first, tx1 = in_tx(lambda: loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]}))
+    calls = len(save.calls)
+    save.explode = lambda name, params: name == "set_level" and params["id"] == "Guns.Pistol.12"  # step 26
+    second, tx2 = in_tx(lambda: loadouts.apply({"run_id": first["run_id"], "cursor": 20}))
+    assert tx1.outcome == "committed" and tx2.outcome == "aborted"
+    assert second["state"] == "failed" and second["done"] is True and second["rolled_back"] is True
+    steps = second["steps"]
+    assert {s["status"] for s in steps[:20]} == {"ok"}
+    assert {s["status"] for s in steps[20:25]} == {"rolled_back"} and steps[25]["status"] == "failed"
+    assert {s["status"] for s in steps[26:]} == {"not_run"}
+    assert [c["status"] for c in second["chunks"]] == ["applied", "rolled_back"]
+    assert "chunk 1 (steps 1-20) stay applied" in second["message"] and "History" in second["message"]
+    undo = [params for _name, params in save.calls[calls:]][6:]  # 5 forward ok + 1 failed, then the undos
+    assert len(undo) == 5  # only chunk 2 is undone
+    assert save._item("Guns.Pistol.0").DefinitionData.BarrelPartDefinition.path == "Barrel.B"
+    assert save._item("Guns.Pistol.10").DefinitionData.BarrelPartDefinition.path == "Barrel.A"
+
+
+def test_a_change_between_chunks_stops_the_run_without_writing(save, stored_in_tmp):
+    request = many_guns(save, 15)
+    first = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    calls = len(save.calls)
+    save._item("Guns.Pistol.14").ExpLevel = 5  # the player changed a build gun between two chunks
+    second = loadouts.apply({"run_id": first["run_id"], "cursor": 20})
+    assert len(save.calls) == calls
+    assert second["state"] == "stopped" and second["ok"] is False
+    assert second["summary"]["not_run"] == 10 and "game changed" in second["message"]
+    with pytest.raises(LoadoutError) as caught:
+        loadouts.apply({"run_id": first["run_id"], "cursor": 20})
+    assert caught.value.status == 409
+
+
+def test_a_level_step_shows_its_xp_side_effect_and_xp_is_part_of_the_plan_id(save, stored_in_tmp, monkeypatch):
+    monkeypatch.setattr(character, "_owners", lambda: {"pc": object()})
+    monkeypatch.setattr(character, "_xp_required", lambda _owners, level: (xp_for(level), "test"))
+    store(build(character={"level": 20}), overwrite=True)
+    result = preview("Test build")
+    (step,) = result["steps"]
+    assert step["kind"] == "character.level"
+    assert step["side_effect"] == "Experience also changes (now 1,000): it becomes 2,000, the minimum for level 20"
+    save.character["xp"] += 5  # only XP moved: the preview no longer matches
+    assert preview("Test build")["plan_id"] != result["plan_id"]
+
+
+def test_the_xp_side_effect_mentions_the_build_xp_step_when_there_is_one(save, stored_in_tmp):
+    store(build(character={"level": 20, "xp": 2500}), overwrite=True)
+    steps = preview("Test build")["steps"]
+    assert [s["kind"] for s in steps] == ["character.level", "character.xp"]
+    assert steps[0]["side_effect"].endswith("the next step then sets the build's XP")
+    assert steps[1]["side_effect"] is None
+
+
+def test_a_build_whose_link_would_not_fit_the_post_limit_is_refused(monkeypatch):
+    monkeypatch.setattr(loadouts, "LINK_LIMIT", 300)
+    with pytest.raises(LoadoutError, match="too big to share"):
+        loadouts.validate(build(gear=[gun_entry(name=f"Gun {i}") for i in range(6)]))
+    assert len(loadouts.to_link(loadouts.validate(build()))) <= 300
+
+
+def test_every_stored_build_fits_an_import_link():
+    big = build(gear=[gun_entry(name=f"Gun {i}", parts={s: f"GD_Weapons.Part_{s}_{i}" for s in gear_parts.WEAPON_SLOTS})
+                      for i in range(loadouts.MAX_GEAR)])
+    try:
+        preset = loadouts.validate(big)
+    except LoadoutError as ex:
+        assert "too big to share" in str(ex)
+    else:
+        assert len(loadouts.to_link(preset)) <= loadouts.LINK_LIMIT < loadouts.IMPORT_LINK_LIMIT
+
+
+def test_a_partial_save_asks_first_and_is_marked_partial(save, stored_in_tmp):
+    save.character["torgue"] = None  # unreadable
+    answer = loadouts.save({"name": "Partial", "include": {"currencies": True}})
+    assert answer["saved"] is False and answer["partial"] is True
+    assert any("Torgue Tokens" in w for w in answer["warnings"])
+    assert loadouts.list_presets({})["presets"] == []
+    answer = loadouts.save({"name": "Partial", "include": {"currencies": True}, "allow_partial": True})
+    assert answer["saved"] is True and answer["preset"]["partial"] is True
+    assert any("Torgue Tokens" in note for note in answer["preset"]["left_out"])
+    assert "left_out" in loadouts.get_preset({"name": "Partial"})["preset"]
+
+
+def test_left_out_is_validated():
+    with pytest.raises(LoadoutError, match="left_out"):
+        loadouts.validate(build(left_out="nope"))
+    with pytest.raises(LoadoutError, match="left_out"):
+        loadouts.validate(build(left_out=["x"] * 21))
+    assert loadouts.validate(build(left_out=["skills left out"]))["left_out"] == ["skills left out"]
