@@ -316,6 +316,8 @@ function alertCard(a, d, locked) {
         h("span", { class: "fg-meta", text: ago(a.at) }))),
     h("p", { class: "fg-msg", text: a.message }),
     delta,
+    a.note && h("p", { class: "fg-note", text: a.note }),
+    a.failed && h("p", { class: "fg-failed", text: a.failed }),
     h("div", { class: "fg-alert-actions" }, buttons, reloadOff));
 }
 

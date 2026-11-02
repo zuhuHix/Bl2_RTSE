@@ -31,6 +31,8 @@
 .fg-delta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 15px; }
 .fg-delta b { font-family: var(--display); font-weight: 400; font-size: 22px; letter-spacing: .04em; color: var(--hazard); }
 .fg-delta.blocked { color: var(--muted); font-weight: 600; }
+.fg-note { margin: 8px 0 0; color: var(--muted); font-weight: 600; }
+.fg-failed { margin: 8px 0 0; padding: 8px 10px; border-left: 4px solid #ff5a2c; background: rgba(255, 90, 44, .12); font-weight: 600; }
 .fg-delta.blocked .icon { color: var(--blaze); }
 .fg-arrow { color: var(--muted); font-size: 18px; }
 .fg-alert-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }

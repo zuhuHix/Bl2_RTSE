@@ -148,6 +148,24 @@ class PlayerController:
                             NetMode=0, TimeSeconds=10.0)
         self.MissionPlaythroughs = [NS(PlayThroughNumber=0, MissionList=saved_entries)]
         self.PlayerReplicationInfo = NS(PlayerName=character)
+        # the save identity (world.save_identity) and the quick-reload safety state (farmguard.reload_safety)
+        self.SaveGameFileId = 7
+        self.SaveGameName = "Save0007"
+        self.PlayerClass = Obj("GD_Soldier.Character.CharClass_Soldier")
+        self.save = NS(SaveGuid=NS(A=1, B=2, C=3, D=4))
+        self.Pawn = NS()
+        self.loading = False
+        self.bWaitingForSaveGameId = False
+        self.save_manager = NS(CurrentState=0)
+
+    def GetCachedSaveGame(self):
+        return self.save
+
+    def IsLoadingMoviePlaying(self):
+        return self.loading
+
+    def GetWillowGlobals(self):
+        return NS(GetWillowSaveGameManager=lambda: self.save_manager)
 
     def GetCurrentPlaythrough(self):
         return self.raw_playthrough
@@ -433,7 +451,7 @@ def test_undo_puts_back_both_entries_and_closes_the_alerts(farm):
 
 def test_undo_runs_the_game_and_publishes_nothing_while_the_hooks_are_suppressed(farm, monkeypatch):
     enable()
-    farm.tracker.SetMissionStatus(InMission=farm.mdef, MissionStatus=st("MS_Complete"), WillowPC=farm.pc)
+    farm.tracker.SetMissionStatus(InMission=farm.mdef, MissionStatus=st("MS_ReadyToTurnIn"), WillowPC=farm.pc)
     alert = only_alert()
     monkeypatch.setattr(farmguard, "BLOCK", BLOCK)
     farmguard.set_settings({"profile": PROFILE, "auto_block": True})  # would block the restore's own status write
@@ -550,20 +568,110 @@ def test_restore_refuses_a_snapshot_from_another_playthrough(farm):
 
 def test_restore_refuses_a_snapshot_from_another_character(farm):
     snap = world.mission_snapshot(M)
-    snap["character"] = "Salvador"
+    farm.pc.PlayerReplicationInfo.PlayerName = "Salvador"
     with pytest.raises(world.WorldError) as err:
         world.restore_mission_snapshot(snap)
     assert err.value.status == 409
 
 
-def test_restore_reports_the_fields_the_game_silently_ignored(farm):
-    snap = world.mission_snapshot(M)  # progress [0]
+def test_restore_refuses_another_save_whose_character_has_the_same_name(farm):
+    snap = world.mission_snapshot(M)
+    assert snap["identity"] == {"save_id": 7, "save_name": "Save0007", "player_class": "GD_Soldier.Character.CharClass_Soldier",
+                                "character": "Axton", "save_guid": "00000001-00000002-00000003-00000004"}
+    for field, value in (("SaveGameFileId", 8), ("PlayerClass", Obj("GD_Mercenary.Character.CharClass_Mercenary"))):
+        original = getattr(farm.pc, field)
+        setattr(farm.pc, field, value)  # same name "Axton", different save
+        with pytest.raises(world.WorldError) as err:
+            world.restore_mission_snapshot(snap)
+        assert err.value.status == 409 and "not this save" in str(err.value)
+        setattr(farm.pc, field, original)
+    farm.pc.save = NS(SaveGuid=NS(A=9, B=9, C=9, D=9))  # a different save GUID alone is enough to refuse
+    with pytest.raises(world.WorldError):
+        world.restore_mission_snapshot(snap)
+
+
+def test_no_snapshot_or_restore_when_the_save_cannot_be_identified(farm):
+    snap = world.mission_snapshot(M)
+    farm.pc.SaveGameFileId = None
+    for attempt in (lambda: world.mission_snapshot(M), lambda: world.restore_mission_snapshot(snap)):
+        with pytest.raises(world.WorldError) as err:
+            attempt()
+        assert err.value.status == 409 and "can't be identified" in str(err.value)
+    with pytest.raises(farmguard.FarmError) as err:
+        enable()
+    assert err.value.status == 409
+
+
+def _no_playthrough(farm):
+    def unreadable():
+        raise RuntimeError("no playthrough")
+
+    farm.pc.GetCurrentPlaythrough = unreadable
+    farm.pc.WorldInfo.GRI.GetCurrPlaythrough = unreadable
+
+
+def test_no_snapshot_or_restore_when_the_playthrough_is_unknown(farm):
+    snap = world.mission_snapshot(M)
     farm.entry.ObjectivesProgress = [1]
-    farm.entry.frozen = ("ObjectivesProgress",)  # writes to this entry vanish without an error
-    result = world.restore_mission_snapshot(snap)
-    assert result["matches"] is False
-    assert result["mismatch"] == ["tracker.progress"]
-    assert result["after"]["tracker"]["progress"] == [1]
+    _no_playthrough(farm)
+    assert set(world._snapshot_entries(world._owners(), M)) == {"tracker"}  # never guesses the saved playthrough
+    for attempt in (lambda: world.mission_snapshot(M), lambda: world.restore_mission_snapshot(snap)):
+        with pytest.raises(world.WorldError) as err:
+            attempt()
+        assert err.value.status == 409 and "playthrough" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]  # nothing was written
+    with pytest.raises(farmguard.FarmError):
+        enable()
+
+
+def test_a_write_the_game_silently_ignores_fails_the_restore_and_rolls_back(farm):
+    snap = world.mission_snapshot(M)  # progress [0], set1
+    farm.entry.ObjectivesProgress = [1]
+    farm.entry.ActiveObjectiveSet = farm.set2
+    farm.entry.frozen = ("ObjectivesProgress",)  # writes to this field vanish without an error
+    with pytest.raises(world.WorldError) as err:
+        world.restore_mission_snapshot(snap)
+    assert err.value.status == 500 and "tracker.progress" in str(err.value) and "put back exactly" in str(err.value)
+    assert farm.entry.ActiveObjectiveSet is farm.set2  # the field that DID take was rolled back to the pre-restore value
+    assert farm.saved.ObjectivesProgress == [0] and farm.saved.ActiveObjectiveSet is farm.set1
+
+
+class RefusingEntry(Entry):
+    """An entry whose ActiveObjectiveSet write raises once armed (a game that refuses the write)."""
+
+    def __setattr__(self, name, value):
+        if name == "ActiveObjectiveSet" and self.__dict__.get("armed"):
+            raise RuntimeError("refused")
+        super().__setattr__(name, value)
+
+
+def test_a_write_failing_in_the_middle_rolls_back_every_entry_and_keeps_the_alert(farm):
+    saved = RefusingEntry("saved entry", **{k: v for k, v in vars(farm.saved).items() if not k.startswith("_")})
+    farm.pc.MissionPlaythroughs[0].MissionList[0] = saved
+    enable()  # snapshot: progress [0]
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    saved.ObjectivesProgress = [1]
+    saved.armed = True  # the tracker entry is written first and succeeds, then the saved copy fails
+    alert = only_alert()
+
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo")
+    assert err.value.status == 500 and "refused" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]  # the tracker write was rolled back: nothing half restored
+    assert saved.ObjectivesProgress == [1]
+    still = only_alert()  # the alert stays open with the reason
+    assert still["id"] == alert["id"] and "undo failed" in still["failed"]
+    assert farmguard._restoring is False
+
+
+def test_a_set_that_cannot_be_found_stops_the_restore_before_any_write(farm):
+    snap = world.mission_snapshot(M)
+    snap["entries"]["saved"]["active_set"] = f"{M}:Gone"  # only the second entry names a missing set
+    farm.entry.ObjectivesProgress = [1]
+    with pytest.raises(world.WorldError) as err:
+        world.restore_mission_snapshot(snap)
+    assert err.value.status == 409 and "Gone" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]  # preflight: the tracker entry was not touched
 
 
 # ---------- 6. auto-block ----------
@@ -850,3 +958,93 @@ def test_every_guarded_objective_starts_with_its_missions_path():
     for profile in farmguard.load_profiles():
         for objective in profile["guard"].get("objectives") or ():
             assert objective.startswith(profile["mission"] + ":"), (profile["id"], objective)
+
+
+# ---------- review round 1: no undo after a turn-in, safe quick reload, net mode fails closed ----------
+
+
+def test_after_a_turn_in_the_alert_offers_keep_only(farm):
+    enable()
+    farm.pc.ServerCompleteMission(Mission=farm.mdef)
+    alert = only_alert()
+    assert alert["actions"] == ["keep"] and alert["note"] == farmguard.NO_UNDO_AFTER_TURN_IN
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo")
+    assert err.value.status == 400
+    assert farm.entry.Status is st("MS_Complete")  # nothing was "undone" while the rewards stay
+
+
+def test_undo_is_refused_when_the_mission_was_turned_in_after_the_alert(farm):
+    enable()
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    alert = only_alert()
+    assert "undo" in alert["actions"]
+    farm.entry.Status = st("MS_Complete")  # turned in without a hook firing
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo")
+    assert err.value.status == 409 and "Rewards" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]
+    assert only_alert()["actions"] == ["keep"]
+
+
+@pytest.mark.parametrize("unsafe", ["loading", "no_pawn", "saving", "waiting_for_save", "unreadable_state"])
+def test_undo_reload_is_refused_before_anything_changes_when_not_safe(farm, unsafe):
+    farmguard.set_settings({"experimental_reload": True})
+    enable()
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    alert = only_alert()
+    if unsafe == "loading":
+        farm.pc.loading = True
+    elif unsafe == "no_pawn":
+        farm.pc.Pawn = None
+    elif unsafe == "saving":
+        farm.pc.save_manager.CurrentState = 2
+    elif unsafe == "waiting_for_save":
+        farm.pc.bWaitingForSaveGameId = True
+    else:
+        farm.pc.save_manager = Empty()
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo_reload")
+    assert err.value.status == 409 and "isn't safe" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]  # nothing restored
+    for _ in range(3):
+        gamethread.pump()
+    assert farm.pc.calls == []
+
+
+def test_quick_reload_is_skipped_when_it_became_unsafe_before_the_tick(farm):
+    farmguard.set_settings({"experimental_reload": True})
+    enable()
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    resolve(only_alert()["id"], "undo_reload")
+    assert farm.entry.ObjectivesProgress == [0]  # the undo itself happened
+    farm.pc.loading = True
+    for _ in range(3):
+        gamethread.pump()
+    assert farm.pc.calls == []  # no ReturnToTitleScreen
+    state = farmguard.read()["reload"]
+    assert state["pending"] is False and "skipped" in state["last"] and "loading screen" in state["last"]
+
+
+@pytest.mark.parametrize(("mode", "allowed"), [(0, True), (2, True), (1, False), (3, False), ("garbage", False), (None, False)])
+def test_farm_writes_need_a_confirmed_solo_or_host_game(farm, mode, allowed):
+    farm.pc.WorldInfo.NetMode = mode
+    state = farmguard.read()
+    assert state["writes"]["allowed"] is allowed and state["coop"]["host"] is allowed
+    if allowed:
+        enable()
+        return
+    assert state["writes"]["reason"]
+    with pytest.raises(farmguard.FarmError) as err:
+        enable()
+    assert err.value.status == 423 and err.value.args[0] == state["writes"]["reason"]
+
+
+def test_an_unreadable_net_mode_never_blocks(farm, monkeypatch):
+    monkeypatch.setattr(farmguard, "BLOCK", BLOCK)
+    enable()
+    farmguard.set_settings({"profile": PROFILE, "auto_block": True})
+    del farm.pc.WorldInfo.NetMode  # reading it now raises
+    assert "can't tell" in farmguard.read()["writes"]["reason"]
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    assert farm.entry.ObjectivesProgress == [1]  # not blocked: auto-block needs a confirmed host
