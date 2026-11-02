@@ -12,7 +12,10 @@ MAX_JOBS_PER_TICK = 8
 
 
 def submit(fn: Callable[[], Any]) -> Future[Any]:
-    """Queues `fn` to run on the next game tick. Safe to call from any thread."""
+    """Queues `fn` to run on the next game tick. Safe to call from any thread.
+
+    Cancelling the returned future before its tick runs `fn` skips the job for good.
+    """
     future: Future[Any] = Future()
     _queue.put((fn, future))
     return future

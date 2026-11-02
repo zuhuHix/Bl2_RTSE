@@ -6,21 +6,20 @@ import json
 import re
 import secrets
 import threading
-from concurrent.futures import TimeoutError as FutureTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from unrealsdk import logging
-
-from . import api, gamethread
+from . import api, gamethread, idempotency
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 WEB_DIR = Path(__file__).parent / "web"
 GAME_THREAD_TIMEOUT = 15.0  # the first part scan walks every balance definition
+RUNNING_GRACE = 30.0  # extra wait when the game already started the job; see rtse/idempotency.py
 MAX_BODY_BYTES = 64 * 1024
+_idempotency = idempotency.IdempotencyCache()
 
 # Plain front-end files. Served without the token (they hold no secrets; every API call needs it),
 # but only from this whitelist: a flat file name in web/, or a flat file name in web/icons/, web/fonts/ or web/models/ or web/portraits/, or a .js file under web/vendor/three/.
@@ -55,16 +54,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # keep the game console quiet
 
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
+    def _send(self, status: int, body: bytes, content_type: str, headers: dict[str, str] | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, status: int, data: Any) -> None:
-        self._send(status, json.dumps(data).encode(), "application/json")
+    def _json(self, status: int, data: Any, headers: dict[str, str] | None = None) -> None:
+        self._send(status, json.dumps(data).encode(), "application/json", headers)
 
     def _host_ok(self) -> bool:
         # Defeats DNS rebinding: only requests addressed to our own loopback name are served.
@@ -90,18 +91,20 @@ class Handler(BaseHTTPRequestHandler):
             supplied = parse_qs(urlsplit(self.path).query).get("t", [""])[0]
         return secrets.compare_digest(supplied, token)
 
-    def _dispatch(self, route: api.Route, params: api.Params) -> None:
-        try:
-            result = gamethread.submit(lambda: route(params)).result(timeout=GAME_THREAD_TIMEOUT)
-        except FutureTimeout:
-            self._json(503, {"error": "game did not respond (loading or paused?)"})
-        except api.ApiError as ex:
-            self._json(ex.status, {"error": str(ex)})
-        except Exception as ex:  # noqa: BLE001
-            logging.error(f"RTSE: {self.path} failed: {ex!r}")
-            self._json(500, {"error": repr(ex)})
-        else:
-            self._json(200, result)
+    def _dispatch(
+        self, route_path: str, route: api.Route, params: api.Params, *, body: bytes = b"", key: str | None = None
+    ) -> None:
+        """Runs the route on the game thread. Timeout, cancel, grace and key rules: rtse/idempotency.py."""
+        status, payload, headers = idempotency.run_job(
+            lambda: gamethread.submit(lambda: route(params)),
+            _idempotency if key is not None else None,
+            key,
+            route_path,
+            body,
+            GAME_THREAD_TIMEOUT,
+            RUNNING_GRACE,
+        )
+        self._json(status, payload, headers)
 
     def do_GET(self) -> None:  # noqa: N802
         split = urlsplit(self.path)
@@ -125,14 +128,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         params = {k: v[0] for k, v in parse_qs(split.query).items() if k != "t"}
-        self._dispatch(route, params)
+        self._dispatch(split.path, route, params)
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorized(header_only=True):
             self._json(403, {"error": "forbidden"})
             return
 
-        route = api.POST_ROUTES.get(urlsplit(self.path).path)
+        route_path = urlsplit(self.path).path
+        route = api.POST_ROUTES.get(route_path)
         if route is None:
             self._json(404, {"error": "not found"})
             return
@@ -141,13 +145,19 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= MAX_BODY_BYTES:
                 raise ValueError
-            params = json.loads(self.rfile.read(length))
+            raw = self.rfile.read(length)
+            params = json.loads(raw)
             if not isinstance(params, dict):
                 raise ValueError
         except ValueError:
             self._json(400, {"error": "body must be a JSON object"})
             return
-        self._dispatch(route, params)
+
+        key = self.headers.get(idempotency.HEADER)
+        if key is not None and not idempotency.valid_key(key):
+            self._json(400, {"error": "Idempotency-Key must be 8-128 characters: A-Z a-z 0-9 _ -"})
+            return
+        self._dispatch(route_path, route, params, body=raw, key=key)
 
 
 def start() -> str:
