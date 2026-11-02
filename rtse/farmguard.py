@@ -3,14 +3,19 @@
 A farm profile (rtse/farm_profiles.json) names one mission whose progress ruins a farm, e.g. Doctor's Orders, where
 each recorder picked up lowers the number of the best loot midget spawns in the Wildlife Exploitation Preserve.
 Enabling a profile snapshots that mission's full stored state (world.mission_snapshot: Status, ObjectivesProgress,
-ActiveObjectiveSet, SubObjectiveSets, playthrough, character). When the game then changes the mission, an alert says
-what that costs ("Picking up this recorder would reduce the midget spawns.") and offers:
+ActiveObjectiveSet, SubObjectiveSets, playthrough and the save identity: save file number + class + character name,
+plus the save GUID when readable). No snapshot or restore happens unless the playthrough and the save are identified.
+When the game then changes the mission, an alert says what that costs ("Picking up this recorder would reduce the
+midget spawns.") and offers:
   keep         accept the change; the snapshot is retaken from the new state
-  undo         put the snapshot back (world.restore_mission_snapshot)
+  undo         put the snapshot back (world.restore_mission_snapshot: all or nothing; a failed or partial write is rolled
+               back, the alert stays open with "failed" set to the reason)
   undo_reload  undo, then save-quit and load straight back in (EXPERIMENTAL, off by default; see quick reload)
   dismiss      close an alert about a change that was blocked (nothing to undo)
 With the profile's auto_block on (off by default), the change is blocked in a pre-hook instead (the game function
 never runs), so there is nothing to undo.
+No undo after a turn-in: once the guarded mission is Complete (and wasn't in the snapshot), its rewards are already given
+and can't be taken back, so the alert offers keep only (with "note" saying why) and resolve refuses undo, checked live.
 
 Game hooks (names checked with dev/class_index.py; what they do at runtime is NOT verified in a live game):
   WillowGame.MissionTracker:SetMissionStatus(InMission, MissionStatus, WillowPC)  pre + post
@@ -32,12 +37,15 @@ Events (see rtse/events.py):
   PICKUP          {"item": readable name, "kind": "weapon" | "item" | "mission_item" | "ammo" | "money" | "usable",
                    "amount": None, "definition": definition path | None, "rarity": int | None}
 
-Co-op: only the host's (or a solo) game runs the mission logic, so a co-op CLIENT (WorldInfo.NetMode == NM_Client)
-gets every farm write refused with a reason, and the hooks don't guard anything there.
+Co-op: only the host's (or a solo) game runs the mission logic. Farm writes and auto-block need a CONFIRMED
+NM_Standalone or NM_ListenServer (WorldInfo.NetMode); a client, a dedicated server or an unreadable mode fails closed:
+writes refused (423) with the reason, and the hooks don't guard or block anything.
 
 Quick reload (experimental, settings.experimental_reload): restore, then pc.ReturnToTitleScreen(bSkipSave=False) so the
 game saves the restored state, then FrontendGFxMovie.LaunchSaveGame(<same playthrough>) once the main menu starts.
-That's the pattern of the SDK "Map Reloader" mod. If the relaunch doesn't happen, press Continue yourself.
+That's the pattern of the SDK "Map Reloader" mod. If the relaunch doesn't happen, press Continue yourself. reload_safety()
+must confirm a safe state (host, pawn spawned, no loading screen, not waiting for a save id, save manager idle) before
+anything is restored, and again on the tick that quits; if it can't, the reload is refused (or skipped, after the undo).
 
 Farm tracker: one session at a time. attempts (+1 by hand, and +1 whenever a fresh map is noticed: WorldInfo.
 TimeSeconds going backwards, unverified), a timer, and the matching drops picked up (profile "drops": kinds and
@@ -79,6 +87,8 @@ HOOK_ID = "rtse_farmguard"
 BLOCK = getattr(_hooks, "Block", None)  # returned from a pre-hook, the game function doesn't run
 
 NM_CLIENT = 3  # ENetMode: NM_Standalone, NM_DedicatedServer, NM_ListenServer, NM_Client
+HOST_MODES = (0, 2)  # solo, co-op host: the only modes in which farm guard writes or blocks
+NO_UNDO_AFTER_TURN_IN = "Rewards already given can't be taken back, so undo is off once the mission is turned in."
 MAX_ALERTS = 20
 MAX_DROPS = 200
 MAX_TRACE = 100
@@ -183,36 +193,81 @@ def _net_mode(pc: Any) -> int | None:
         return None
 
 
+def _mode_problem(mode: int | None) -> str:
+    """'' when this game runs the missions (solo or co-op host); otherwise why farm guard is off. Unknown fails closed."""
+    if mode in HOST_MODES:
+        return ""
+    if mode == NM_CLIENT:
+        return "you're a client in someone else's co-op game; only the host's game runs the missions, so farm guard is off"
+    if mode is None:
+        return "RTSE can't tell whether this is your own game or someone else's co-op game (WorldInfo.NetMode unreadable), so farm guard is off"
+    return f"this isn't a solo or hosted game (net mode {mode}), so farm guard is off"
+
+
 def coop_state() -> dict[str, Any]:
-    """{"in_game", "net_mode", "client", "players", "reason"}: farm writes are refused for a co-op client."""
+    """{"in_game", "net_mode", "client", "host", "players", "reason"}.
+
+    host is True only for a CONFIRMED solo (NM_Standalone) or co-op host (NM_ListenServer) game; farm writes and
+    auto-block need it. A client, a dedicated server or an unreadable mode gets host False and a reason."""
     pc = get_pc(possibly_loading=True)
     if pc is None:
-        return {"in_game": False, "net_mode": None, "client": False, "players": None, "reason": "not in a save"}
+        return {"in_game": False, "net_mode": None, "client": False, "host": False, "players": None, "reason": "not in a save"}
     mode = _net_mode(pc)
     players = None
     try:
         players = sum(1 for pri in pc.WorldInfo.GRI.PRIArray if pri is not None)
     except Exception:  # noqa: BLE001, S110
         pass
-    client = mode == NM_CLIENT
-    reason = "you're a client in someone else's co-op game; only the host's game runs the missions, so farm guard is off" if client else ""
-    return {"in_game": True, "net_mode": mode, "client": client, "players": players, "reason": reason}
+    reason = _mode_problem(mode)
+    return {"in_game": True, "net_mode": mode, "client": mode == NM_CLIENT, "host": not reason, "players": players, "reason": reason}
 
 
 def _require_writable() -> None:
     coop = coop_state()
     if not coop["in_game"]:
         raise FarmError(409, "not in a save")
-    if coop["client"]:
+    if not coop["host"]:
         raise FarmError(423, coop["reason"])
 
 
-def _is_client() -> bool:
+def _is_host() -> bool:
+    """Cheap check for the hooks: True only when the mode is confirmed solo or host."""
     try:
         pc = get_pc(possibly_loading=True)
-        return pc is not None and _net_mode(pc) == NM_CLIENT
+        return pc is not None and _net_mode(pc) in HOST_MODES
     except Exception:  # noqa: BLE001
         return False
+
+
+def reload_safety() -> tuple[bool, str]:
+    """Whether it's safe to save-quit right now: host, pawn spawned, no loading screen, not saving. Unknown = not safe.
+
+    The save manager's CurrentState is treated as idle when its enum name says Idle/None, or (no name) when it is 0
+    (a guess: the enum's values weren't readable offline)."""
+    pc = get_pc(possibly_loading=True)
+    if pc is None:
+        return False, "not in a save"
+    problem = _mode_problem(_net_mode(pc))
+    if problem:
+        return False, problem
+    if getattr(pc, "Pawn", None) is None:
+        return False, "your character isn't spawned right now (loading, or in Fight For Your Life?)"
+    try:
+        if pc.IsLoadingMoviePlaying():
+            return False, "a loading screen is up"
+    except Exception:  # noqa: BLE001
+        return False, "RTSE can't tell whether a loading screen is up"
+    if getattr(pc, "bWaitingForSaveGameId", None) is not False:
+        return False, "the game is still setting up the save (or RTSE can't tell)"
+    try:
+        state = pc.GetWillowGlobals().GetWillowSaveGameManager().CurrentState
+        name = getattr(state, "name", None)
+        idle = any(word in name.lower() for word in ("idle", "none")) if isinstance(name, str) else int(state) == 0
+    except Exception:  # noqa: BLE001
+        return False, "RTSE can't tell whether the game is saving"
+    if not idle:
+        return False, "the game is saving or loading"
+    return True, ""
 
 
 def _status_now(tracker: Any, mission: Any) -> str:
@@ -299,6 +354,7 @@ def _add_alert(profile: dict[str, Any], change: str, *, objective: str | None = 
                           "message": _consequence(profile, change)})
             if after is not None:
                 alert["after"] = _summary(after)
+            _set_actions(alert, profile)
             return alert
     alert = {
         "id": _next_alert, "profile": profile["id"], "profile_name": profile.get("name"), "mission": profile["mission"],
@@ -306,13 +362,31 @@ def _add_alert(profile: dict[str, Any], change: str, *, objective: str | None = 
         "objective": objective, "objective_name": _readable(objective), "item": item, "blocked": blocked,
         "message": _consequence(profile, change), "before": _summary(_primary(_state[profile["id"]]["snapshot"])),
         "after": _summary(after), "at": now, "count": 1,
-        "actions": ["dismiss"] if blocked else ["keep", "undo", "undo_reload"],
+        "actions": [], "note": None, "failed": None,
     }
+    _set_actions(alert, profile)
     _next_alert += 1
     _alerts.append(alert)
     del _alerts[:-MAX_ALERTS]
     logging.info(f"RTSE: farm guard alert: {alert['mission_name']}: {alert['message']}{' (blocked)' if blocked else ''}")
     return alert
+
+
+def _turned_in(profile: dict[str, Any], change: str, live: dict[str, Any] | None) -> bool:
+    """True once the guarded mission was turned in after the snapshot (its rewards are out, so no undo)."""
+    snap = _primary(_state[profile["id"]]["snapshot"]) or {}
+    if snap.get("status") == "complete":
+        return False
+    return change == "complete" or (live or {}).get("status") == "complete"
+
+
+def _set_actions(alert: dict[str, Any], profile: dict[str, Any]) -> None:
+    if alert["blocked"]:
+        alert.update({"actions": ["dismiss"], "note": None})
+    elif _turned_in(profile, alert["change"], alert.get("after")):
+        alert.update({"actions": ["keep"], "note": NO_UNDO_AFTER_TURN_IN})
+    else:
+        alert.update({"actions": ["keep", "undo", "undo_reload"], "note": None})
 
 
 def _check(profile: dict[str, Any], change: str, objective: str | None) -> None:
@@ -343,7 +417,7 @@ def _pre(change: str, mission_obj: Any, objective_obj: Any) -> Any:
     objective = _path(objective_obj)
     mission = _path(mission_obj) if mission_obj is not None else _mission_of(objective)
     profile = _guarded(mission, change, objective)
-    if profile is None or not _state[profile["id"]]["auto_block"] or BLOCK is None or _is_client():
+    if profile is None or not _state[profile["id"]]["auto_block"] or BLOCK is None or not _is_host():
         return None
     _add_alert(profile, change, objective=objective, blocked=True)
     _traced(f"pre:{change}", mission=mission, objective=objective, blocked=True)
@@ -368,7 +442,7 @@ def _post(change: str, tracker: Any, mission_obj: Any, objective_obj: Any) -> No
         "name": _readable(mission), "guarded": profile is not None,
     })
     _traced(f"post:{change}", mission=mission, objective=objective, status=status, guarded=profile is not None)
-    if profile is not None and not _is_client():
+    if profile is not None and _is_host():
         _check(profile, change, objective)
 
 
@@ -499,7 +573,7 @@ def _pre_pickup(obj: Any, _args: Any, _ret: Any, _func: Any) -> Any:
             _pending_pickups.pop(next(iter(_pending_pickups)))
         if _by_mission and not _restoring:
             profile = _pickup_profile(info)
-            if profile is not None and _state[profile["id"]]["auto_block"] and BLOCK is not None and not _is_client():
+            if profile is not None and _state[profile["id"]]["auto_block"] and BLOCK is not None and _is_host():
                 _pending_pickups.pop(key, None)
                 _add_alert(profile, "pickup", item=info["item"], blocked=True)
                 _traced("pre:pickup", item=info["item"], blocked=True)
@@ -607,7 +681,9 @@ def remove_hooks() -> None:
 def _snapshot_view(snapshot: dict[str, Any] | None, taken_at: float | None) -> dict[str, Any] | None:
     if not snapshot:
         return None
+    identity = snapshot.get("identity") or {}
     return {"taken_at": taken_at, "playthrough": snapshot.get("playthrough"), "character": snapshot.get("character"),
+            "save_id": identity.get("save_id"), "player_class": identity.get("player_class"),
             **(_summary(_primary(snapshot)) or {})}
 
 
@@ -648,7 +724,7 @@ def read(_params: dict[str, Any] | None = None) -> dict[str, Any]:
         "alerts": list(reversed(_alerts)),
         "session": _session_view(),
         "coop": coop,
-        "writes": {"allowed": in_game and not coop["client"], "reason": "" if in_game and not coop["client"] else coop["reason"]},
+        "writes": {"allowed": coop["host"], "reason": coop["reason"]},
         "settings": dict(_settings),
         "hooks": {"installed": len(_installed), "total": len(HOOKS), "failed": list(_failed), "can_block": BLOCK is not None},
         "reload": {"pending": _reload["pending"] is not None, "last": _reload["last"]},
@@ -755,6 +831,10 @@ def _quick_reload() -> None:
         if raw is None:
             _reload.update({"pending": None, "last": "the playthrough couldn't be read; reload by hand"})
             return
+        safe, why = reload_safety()  # checked again: things can change between the click and this tick
+        if not safe:
+            _reload.update({"pending": None, "last": f"the undo was done, but the quick reload was skipped: {why}. Save-quit and continue by hand."})
+            return
         _reload["pending"] = {"pt_raw": raw, "at": time.time()}
         world._call(pc, "ReturnToTitleScreen", {"bSkipSave": False, "bRemoveSplitPlayer": False}, (False, False))  # noqa: SLF001
         _reload["last"] = "saved and quit to the title screen; relaunching"
@@ -778,10 +858,24 @@ def resolve(params: dict[str, Any]) -> dict[str, Any]:
     applied: dict[str, Any] = {"what": action, "alert": alert["id"], "profile": profile["id"]}
     if action in ("keep", "undo", "undo_reload"):
         _require_writable()
+    if action in ("undo", "undo_reload"):
+        live = world.mission_state(profile["mission"])
+        if _turned_in(profile, alert["change"], live):  # checked live, not from the alert
+            alert["after"] = _summary(live)
+            _set_actions(alert, profile)  # now offers keep only
+            raise FarmError(409, NO_UNDO_AFTER_TURN_IN)
+        if action == "undo_reload":
+            safe, why = reload_safety()
+            if not safe:
+                raise FarmError(409, f"quick reload isn't safe right now: {why}. Nothing was changed; try again, or use Undo and reload by hand.")
     if action == "keep":
         applied["after"] = _summary(_primary(_take_snapshot(profile)))
     elif action in ("undo", "undo_reload"):
-        applied["restore"] = _restore(profile)
+        try:
+            applied["restore"] = _restore(profile)
+        except FarmError as ex:
+            alert["failed"] = str(ex)  # the alert stays open, with the reason on it
+            raise
         if action == "undo_reload":
             gamethread.submit(_quick_reload)
             _reload["last"] = "quick reload queued"

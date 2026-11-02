@@ -1199,14 +1199,73 @@ def debug_dump() -> dict[str, Any]:
 # IMission.MissionData {MissionDef, Status, ObjectivesProgress, ActiveObjectiveSet, SubObjectiveSets, ...} (names
 # checked with dev/class_index.py). A snapshot reads both; a restore writes both. UNVERIFIED: that writing these
 # fields is enough for the game to forget the progress (rather than only the HUD), and that the save picks up the
-# restored tracker values. Every restore reads the values back and reports any field that didn't take.
+# restored tracker values.
+#
+# Fail closed: no snapshot and no restore unless the current playthrough AND the save are identified. The save
+# identity is pc.SaveGameFileId (the save file's number) + pc.PlayerClass (path) + the character name, plus the
+# cached PlayerSaveGame's SaveGuid when it can be read. A restore resolves every object first (nothing is written if
+# one is missing), and if a write raises or the read-back doesn't match, every entry is put back to what it held just
+# before the restore, and the restore fails with the reason.
 
 SNAPSHOT_SOURCES = ("tracker", "saved")
 SNAPSHOT_SET_CLASSES = ("MissionObjectiveSetDefinition", "MissionObjectiveSetCollectionDefinition", "MissionObjectiveSetBranchingDefinition")
+SAVE_ID_FIELDS = (("pc", "SaveGameFileId"), ("pc", "SaveGameName"), ("pc", "PlayerClass"))  # Int, Str, Object on WillowPlayerController
+SNAPSHOT_FIELDS = ("status", "progress", "active_set", "sub_sets")
+
+
+def save_identity(owners: dict[str, Any] | None = None) -> dict[str, Any]:
+    """{"save_id", "save_name", "player_class", "character", "save_guid"} of the save being played; values may be None.
+
+    save_id (pc.SaveGameFileId), player_class and character are required to identify a save; save_guid is extra.
+    """
+    owners = owners or _owners()
+    pc = owners["pc"]
+    out: dict[str, Any] = {"save_id": None, "save_name": None, "player_class": None, "character": None, "save_guid": None}
+    try:
+        value = pc.SaveGameFileId
+        out["save_id"] = int(value) if value is not None and int(value) >= 0 else None
+    except Exception:  # noqa: BLE001, S110
+        pass
+    out["save_name"] = _text(_first(pc, ("SaveGameName",))[0])
+    player_class, _name = _first(pc, ("PlayerClass",))
+    out["player_class"] = _path(player_class) if player_class is not None else None
+    out["character"] = _text(_first(_first(pc, ("PlayerReplicationInfo",))[0], ("PlayerName",))[0])
+    try:
+        save = pc.GetCachedSaveGame()
+        guid = save.SaveGuid if save is not None else None
+        if guid is not None:
+            text = "-".join(f"{int(getattr(guid, part)) & 0xFFFFFFFF:08X}" for part in ("A", "B", "C", "D"))
+            out["save_guid"] = text if text != "00000000-00000000-00000000-00000000" else None
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return out
+
+
+def _identity_problem(identity: dict[str, Any]) -> str | None:
+    missing = [label for key, label in (("save_id", "save file number"), ("player_class", "class"), ("character", "character name"))
+               if identity.get(key) in (None, "")]
+    if missing:
+        return f"the save can't be identified (no {', '.join(missing)}), so RTSE won't snapshot or restore missions"
+    return None
+
+
+def _same_save(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Every identity field both sides know must match (and the required ones are known on both, see _identity_problem)."""
+    return all(a.get(key) == b.get(key) for key in ("save_id", "save_name", "player_class", "character", "save_guid")
+               if a.get(key) is not None and b.get(key) is not None)
+
+
+def _known_playthrough(owners: dict[str, Any]) -> int:
+    current = _current_playthrough(owners)
+    if current is None:
+        raise WorldError(409, "the current playthrough can't be read, so RTSE won't snapshot or restore missions")
+    return current
 
 
 def _snapshot_entries(owners: dict[str, Any], mission_id: str) -> dict[str, Any]:
-    """{"tracker": entry, "saved": entry} for mission_id in the current playthrough (a source is missing if not found)."""
+    """{"tracker": entry, "saved": entry} for mission_id in the current playthrough (a source is missing if not found).
+
+    The saved copy is only looked up when the current playthrough is known (never "the first one")."""
     found: dict[str, Any] = {}
     tracker = owners.get("missions")
     for entry in _items(_first(tracker, MISSION_FLAT_LISTS[0][1:])[0]) if tracker is not None else []:
@@ -1215,19 +1274,18 @@ def _snapshot_entries(owners: dict[str, Any], mission_id: str) -> dict[str, Any]
             found["tracker"] = entry
             break
     current = _current_playthrough(owners)
-    groups = _items(_first(owners.get("pc"), (MISSION_PLAYTHROUGH_LISTS[0][1],))[0])
-    for position, group in enumerate(groups):
+    if current is None:
+        return found
+    for group in _items(_first(owners.get("pc"), (MISSION_PLAYTHROUGH_LISTS[0][1],))[0]):
         number, _name = _first(group, MISSION_PT_NUMBER)
-        pt = number - FIRST_RAW + 1 if isinstance(number, int) else position + 1
-        if current is not None and pt != current:
+        if not isinstance(number, int) or number - FIRST_RAW + 1 != current:
             continue
         for entry in _items(_first(group, MISSION_GROUP_ENTRIES)[0]):
             definition, _name = _first(entry, MISSION_DEF)
             if definition is not None and _path(definition) == mission_id:
                 found["saved"] = entry
                 break
-        if "saved" in found or current is not None:
-            break
+        break
     return found
 
 
@@ -1257,17 +1315,23 @@ def _entry_state(entry: Any) -> dict[str, Any]:
 def mission_snapshot(mission_id: str) -> dict[str, Any]:
     """The mission's full stored state in the current playthrough, as JSON (see the section comment).
 
-    {"mission", "name", "playthrough", "character", "entries": {"tracker": state | None, "saved": state | None},
-     "set_classes": {set path: class name}}. Raises WorldError 404 when the mission isn't in this playthrough.
+    {"mission", "name", "playthrough", "character", "identity": save_identity(), "entries": {"tracker": state | None,
+     "saved": state | None}, "set_classes": {set path: class name}}. Raises WorldError 409 when the playthrough or the
+    save can't be identified, 404 when the mission isn't in this playthrough.
     """
     owners = _owners()
+    _known_playthrough(owners)
+    identity = save_identity(owners)
+    problem = _identity_problem(identity)
+    if problem:
+        raise WorldError(409, problem)
     entries = _snapshot_entries(owners, mission_id)
     if not entries:
         raise WorldError(404, "that mission isn't in this playthrough's mission list (is its DLC installed?)")
-    return _build_snapshot(owners, mission_id, entries)
+    return _build_snapshot(owners, mission_id, entries, identity)
 
 
-def _build_snapshot(owners: dict[str, Any], mission_id: str, entries: dict[str, Any]) -> dict[str, Any]:
+def _build_snapshot(owners: dict[str, Any], mission_id: str, entries: dict[str, Any], identity: dict[str, Any]) -> dict[str, Any]:
     entry = entries.get("tracker", entries.get("saved"))
     definition, _name = _first(entry, MISSION_DEF)
     name, _field = _first(definition, MISSION_NAME)
@@ -1277,11 +1341,10 @@ def _build_snapshot(owners: dict[str, Any], mission_id: str, entries: dict[str, 
         for obj in objects:
             if obj is not None:
                 set_classes[_path(obj)] = getattr(getattr(obj, "Class", None), "Name", None) or type(obj).__name__
-    pri, _name = _first(owners["pc"], ("PlayerReplicationInfo",))
-    character, _name = _first(pri, ("PlayerName",))
     return {
         "mission": mission_id, "name": _text(name) or _clean(mission_id), "playthrough": _current_playthrough(owners),
-        "character": _text(character), "entries": {source: _entry_state(entries[source]) if source in entries else None for source in SNAPSHOT_SOURCES},
+        "character": identity.get("character"), "identity": identity,
+        "entries": {source: _entry_state(entries[source]) if source in entries else None for source in SNAPSHOT_SOURCES},
         "set_classes": set_classes,
     }
 
@@ -1333,20 +1396,54 @@ def _write_progress(entry: Any, values: list[int]) -> None:
             array.append(value)
 
 
-def _restore_entry(owners: dict[str, Any], source: str, entry: Any, want: dict[str, Any], definition: Any, classes: dict[str, str]) -> list[str]:
-    """Writes one entry back to `want`; returns how each field was written."""
+class _Plan(NamedTuple):
+    """What to write into one entry. Objects are already resolved; a field left as None is not written."""
+
+    source: str
+    entry: Any
+    progress: list[int] | None
+    set_active: bool
+    active_set: Any
+    sub_sets: list[Any] | None
+    status: str | None
+
+
+def _plan_from_snapshot(source: str, entry: Any, want: dict[str, Any], definition: Any, classes: dict[str, str]) -> _Plan:
+    """Resolves every reference the snapshot names (raises WorldError before anything is written)."""
+    progress = want.get("progress")
+    sub_sets = want.get("sub_sets")
+    status = want.get("status")
+    return _Plan(
+        source, entry, list(progress) if progress is not None else None, "active_set" in want,
+        _resolve_set(definition, want.get("active_set"), classes) if "active_set" in want else None,
+        [_resolve_set(definition, p, classes) for p in sub_sets] if sub_sets is not None else None,
+        status if status in STATUS_ORDER else None,
+    )
+
+
+def _plan_from_entry(source: str, entry: Any) -> _Plan:
+    """What the entry holds right now, with its live objects (for a rollback; nothing to resolve)."""
+    state = _entry_state(entry)
+    subs, name = _first(entry, ("SubObjectiveSets",))
+    return _Plan(source, entry, state["progress"], True, _first(entry, OBJECTIVE_ACTIVE_SET)[0],
+                 list(_items(subs)) if name is not None else None, state["status"] if state["status"] in STATUS_ORDER else None)
+
+
+def _apply_plan(owners: dict[str, Any], plan: _Plan, definition: Any) -> list[str]:
+    """Writes one entry; returns how each field was written. Raises on the first write the game refuses."""
     via: list[str] = []
-    if want.get("progress") is not None:
-        _write_progress(entry, want["progress"])
+    entry, source = plan.entry, plan.source
+    if plan.progress is not None:
+        _write_progress(entry, plan.progress)
         via.append(f"{source}.{OBJECTIVE_PROGRESS[0]}")
-    if "active_set" in want:
-        setattr(entry, OBJECTIVE_ACTIVE_SET[0], _resolve_set(definition, want["active_set"], classes))
+    if plan.set_active:
+        setattr(entry, OBJECTIVE_ACTIVE_SET[0], plan.active_set)
         via.append(f"{source}.{OBJECTIVE_ACTIVE_SET[0]}")
-    if want.get("sub_sets") is not None:
-        setattr(entry, "SubObjectiveSets", [_resolve_set(definition, p, classes) for p in want["sub_sets"]])
+    if plan.sub_sets is not None:
+        setattr(entry, "SubObjectiveSets", list(plan.sub_sets))
         via.append(f"{source}.SubObjectiveSets")
-    key = want.get("status")
-    if key in STATUS_ORDER and _status_key(getattr(entry, MISSION_STATUS[0])) != key:
+    key = plan.status
+    if key is not None and _status_key(getattr(entry, MISSION_STATUS[0])) != key:
         sample = getattr(entry, MISSION_STATUS[0])
         tracker = owners.get("missions")
         if source == "tracker" and tracker is not None:
@@ -1355,63 +1452,97 @@ def _restore_entry(owners: dict[str, Any], source: str, entry: Any, want: dict[s
                 _call(tracker, MISSION_SETTERS[0][1], {"InMission": definition, "MissionStatus": value, "WillowPC": owners["pc"]}, (definition, value, owners["pc"]))
                 via.append(f"missions.{MISSION_SETTERS[0][1]}()")
             except Exception:  # noqa: BLE001, S110
-                pass
+                pass  # the direct write below still sets it
         if _status_key(getattr(entry, MISSION_STATUS[0])) != key:
             setattr(entry, MISSION_STATUS[0], _status_value(sample, key))
             via.append(f"{source}.{MISSION_STATUS[0]}")
     return via
 
 
-def restore_mission_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Puts a mission back to a snapshot taken by mission_snapshot(); reads everything back.
+def _mismatch(entries: dict[str, Any], wanted: dict[str, dict[str, Any]]) -> list[str]:
+    out = []
+    for source, entry in entries.items():
+        state, want = _entry_state(entry), wanted.get(source) or {}
+        for field in SNAPSHOT_FIELDS:
+            if field in want and want[field] is not None and state.get(field) != want[field]:
+                out.append(f"{source}.{field}")
+    return out
 
-    Same character and playthrough only (409 otherwise). Returns {"mission", "name", "before": {source: state},
-    "after": {source: state}, "matches": bool, "mismatch": [field, ...], "via": [...]}. Journals one world.restore record.
+
+def _notify(owners: dict[str, Any], definition: Any, via: list[str]) -> None:
+    tracker = owners.get("missions")
+    if tracker is None:
+        return
+    try:
+        _call(tracker, "OnMissionObjectivesChanged", {"MissionThatChanged": definition}, (definition,))  # HUD / log refresh
+        via.append("missions.OnMissionObjectivesChanged()")
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def restore_mission_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Puts a mission back to a snapshot taken by mission_snapshot(): all of it, or none of it.
+
+    Refused (409) unless the current playthrough is known and equals the snapshot's, and the save identity matches.
+    Every object is resolved before the first write. If a write raises, or the read-back doesn't match the snapshot,
+    every entry is rolled back to what it held just before, and WorldError 500 says what failed (and whether the rollback
+    worked). On success returns {"mission", "name", "before": {source: state}, "after": {source: state}, "matches": True,
+    "mismatch": [], "via": [...]} and journals one world.restore record whose undo puts the pre-restore state back.
     """
     owners = _owners()
     mission_id = snapshot["mission"]
-    current = _current_playthrough(owners)
-    if snapshot.get("playthrough") is not None and current is not None and snapshot["playthrough"] != current:
-        raise WorldError(409, f"the snapshot is from playthrough {snapshot['playthrough']} but you're in playthrough {current}")
-    pri, _name = _first(owners["pc"], ("PlayerReplicationInfo",))
-    character = _text(_first(pri, ("PlayerName",))[0])
-    if snapshot.get("character") and character and snapshot["character"] != character:
-        raise WorldError(409, f"the snapshot belongs to {snapshot['character']}, not {character} - take a new one")
+    current = _known_playthrough(owners)
+    if snapshot.get("playthrough") != current:
+        raise WorldError(409, f"the snapshot is from playthrough {snapshot.get('playthrough')} but you're in playthrough {current}")
+    identity = save_identity(owners)
+    problem = _identity_problem(identity)
+    if problem:
+        raise WorldError(409, problem)
+    taken = snapshot.get("identity") or {}
+    if _identity_problem(taken) or not _same_save(taken, identity):
+        who = taken.get("character") or snapshot.get("character") or "another save"
+        raise WorldError(409, f"the snapshot belongs to {who} (save {taken.get('save_id')}), not this save - take a new one")
     entries = _snapshot_entries(owners, mission_id)
     if not entries:
         raise WorldError(404, "that mission isn't in this playthrough's mission list any more")
     definition, _name = _first(entries.get("tracker", entries.get("saved")), MISSION_DEF)
     classes = snapshot.get("set_classes") or {}
-    wanted = snapshot.get("entries") or {}
-    prior = _build_snapshot(owners, mission_id, entries)  # what an undo of this restore puts back
+    wanted_raw = snapshot.get("entries") or {}
+    wanted = {source: wanted_raw.get(source) or wanted_raw.get("tracker") or wanted_raw.get("saved") or {} for source in entries}
+    # 1. preflight: resolve everything, and capture what's there now (for the rollback and the journal's undo)
+    plans = [_plan_from_snapshot(source, entry, wanted[source], definition, classes) for source, entry in entries.items() if wanted[source]]
+    rollback = [_plan_from_entry(source, entry) for source, entry in entries.items()]
+    prior = _build_snapshot(owners, mission_id, entries, identity)
     before = {source: _entry_state(entry) for source, entry in entries.items()}
+    # 2. write; 3. read back. Any failure rolls every entry back.
     via: list[str] = []
-    for source, entry in entries.items():
-        want = wanted.get(source) or wanted.get("tracker") or wanted.get("saved")
-        if not want:
-            continue
-        try:
-            via += _restore_entry(owners, source, entry, want, definition, classes)
-        except WorldError:
-            raise
-        except Exception as ex:  # noqa: BLE001
-            raise WorldError(501, f"the game refused the restore of {source} ({type(ex).__name__}: {ex}) - run the farm dump") from None
-    tracker = owners.get("missions")
-    if tracker is not None:
-        try:
-            _call(tracker, "OnMissionObjectivesChanged", {"MissionThatChanged": definition}, (definition,))  # HUD / log refresh
-            via.append("missions.OnMissionObjectivesChanged()")
-        except Exception:  # noqa: BLE001, S110
-            pass
+    failure = None
+    try:
+        for plan in plans:
+            via += _apply_plan(owners, plan, definition)
+    except Exception as ex:  # noqa: BLE001
+        failure = f"the game refused a write ({type(ex).__name__}: {ex})"
+    if failure is None:
+        mismatch = _mismatch(entries, wanted)
+        if mismatch:
+            failure = f"the game didn't keep {', '.join(mismatch)}"
+    if failure is not None:
+        rollback_errors = []
+        for plan in rollback:
+            try:
+                _apply_plan(owners, plan, definition)
+            except Exception as ex:  # noqa: BLE001
+                rollback_errors.append(f"{plan.source} ({type(ex).__name__})")
+        left = _mismatch(entries, before)
+        _notify(owners, definition, [])
+        outcome = ("and putting the mission back as it was ALSO failed for " + ", ".join(rollback_errors + left) + " - run the farm dump"
+                   if rollback_errors or left else "so the mission was put back exactly as it was before the undo")
+        logging.error(f"RTSE: world restore of {mission_id} failed: {failure}; {outcome}")
+        raise WorldError(500, f"undo failed: {failure}, {outcome}")
+    _notify(owners, definition, via)
     after = {source: _entry_state(entry) for source, entry in entries.items()}
-    mismatch = []
-    for source, state in after.items():
-        want = wanted.get(source) or wanted.get("tracker") or wanted.get("saved") or {}
-        for field in ("status", "progress", "active_set", "sub_sets"):
-            if want.get(field) is not None and state.get(field) != want.get(field):
-                mismatch.append(f"{source}.{field}")
     name = snapshot.get("name") or _clean(mission_id)
-    applied = {"mission": mission_id, "name": name, "before": before, "after": after, "matches": not mismatch, "mismatch": mismatch, "via": via}
+    applied = {"mission": mission_id, "name": name, "before": before, "after": after, "matches": True, "mismatch": [], "via": via}
     logging.info(f"RTSE: world restore {applied}")
     journal.record("world.restore", target=mission_id, before=before, after=after, undo=lambda: restore_mission_snapshot(prior))
     return applied

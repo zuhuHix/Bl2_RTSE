@@ -128,6 +128,7 @@ def _add_alert(pid: str, change: str, *, objective: str | None = None, item: str
         "mission_name": profile.get("mission_name"), "change": change, "objective": objective, "objective_name": _readable(objective), "item": item,
         "blocked": blocked, "message": _consequence(profile, change), "before": _summary(_primary(STATE[pid]["snapshot"])),
         "after": _summary(after), "at": now, "count": 1, "actions": ["dismiss"] if blocked else ["keep", "undo", "undo_reload"],
+        "note": None, "failed": None,
     }
     NEXT_ALERT[0] += 1
     ALERTS.append(alert)
@@ -199,7 +200,7 @@ def read() -> dict:
         "profiles": [_profile_view(p) for p in PROFILES],
         "alerts": list(reversed(ALERTS)),
         "session": _session_view(),
-        "coop": {"in_game": True, "net_mode": 3 if client else 2, "client": client, "players": 2 if client else 1,
+        "coop": {"in_game": True, "net_mode": 3 if client else 2, "client": client, "host": not client, "players": 2 if client else 1,
                  "reason": COOP_REASON if client else ""},
         "writes": {"allowed": not client, "reason": COOP_REASON if client else ""},
         "settings": dict(SETTINGS),
