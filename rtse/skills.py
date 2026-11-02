@@ -22,6 +22,7 @@ from typing import Any
 from unrealsdk import logging, unreal
 
 from . import character, skilltree_data
+from .routing import Route
 
 DEBUG_SKILLS_FILE = Path(__file__).parent / "debug_skills.json"
 
@@ -536,3 +537,14 @@ def debug_dump() -> dict[str, Any]:
         out["entries"] = entries
     DEBUG_SKILLS_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     return {"saved_to": str(DEBUG_SKILLS_FILE), "found": out["found"], "skills": len(out.get("entries", [])), "reason": reason or None}
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = SkillsError
+
+GET_ROUTES: dict[str, Route] = {
+    "/api/skills": lambda _params: read(),
+    "/api/debug/skills": lambda _params: debug_dump(),
+}
+POST_ROUTES: dict[str, Route] = {"/api/skills/set": set_level, "/api/skills/reset": reset}

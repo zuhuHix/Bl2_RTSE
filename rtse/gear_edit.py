@@ -15,7 +15,7 @@ from unrealsdk import find_object, logging, unreal
 from . import limits, stats
 from .gear_inventory import EQUIPPED, _find_item, _hidden_bones, _item_id, _note_id_change
 from .gear_parts import ITEM_SLOTS, WEAPON_SLOTS, _is_weapon, _mode, _part_ref, _ref_dict, _slots
-from .routing import ApiError, Params
+from .routing import ApiError, Params, Route
 
 MIN_LEVEL = 1  # The gear level cap is limits.gear_level_cap(pc): character cap + Overpower levels, not 100
 
@@ -333,3 +333,15 @@ def set_stat(params: Params) -> dict[str, Any]:
 def _warnings(message: str | None) -> list[str]:
     """A save warning from rtse/stats.py as the list the JSON carries (empty when there is none)."""
     return [message] if message else []
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = ApiError
+
+GET_ROUTES: dict[str, Route] = {"/api/item": item_detail}
+POST_ROUTES: dict[str, Route] = {
+    "/api/item/set_part": set_part,
+    "/api/item/set_level": set_level,
+    "/api/item/set_stat": set_stat,
+}

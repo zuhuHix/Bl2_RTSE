@@ -8,7 +8,7 @@ from mods_base import get_pc
 from unrealsdk import logging, unreal
 
 from .gear_parts import ITEM_SLOTS, WEAPON_SLOTS, _is_partless, _is_weapon, _ref, _ref_dict
-from .routing import ApiError, Params
+from .routing import ApiError, Params, Route
 
 # --- Inventory access ----------------------------------------------------------------------------
 
@@ -174,3 +174,11 @@ def _hidden_bones(item: unreal.UObject) -> list[str]:
         if value and value != "None":
             names.append(value)
     return names
+
+
+# --- Routes (paths are the API; api.py collects these) ---
+
+ROUTE_ERROR = ApiError
+
+GET_ROUTES: dict[str, Route] = {"/api/items": items}
+POST_ROUTES: dict[str, Route] = {}
