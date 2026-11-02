@@ -31,13 +31,13 @@ function showRender(plate, item) {
   });
 }
 
-function rowPlate(item) {
-  const plate = rowPlateSketch(item);
+export function gearPlate(item) {
+  const plate = gearPlateSketch(item);
   showRender(plate, item);
   return plate;
 }
 
-function rowPlateSketch(item) {
+function gearPlateSketch(item) {
   const mfr = itemManufacturer(item.name);
   const color = manufacturerColor(mfr);
   if (item.class === "WillowWeapon") {
@@ -71,7 +71,7 @@ function gearRow(item) {
       title: item.name,
       onclick: () => selectItem(item.id),
     },
-    rowPlate(item),
+    gearPlate(item),
     h("div", {}, h("div", { class: "t", text: cleanItemName(item.name) }),
       h("div", { class: "s", text: weaponTypeFrom(item.type_path) || classLabel(item.class) })),
     item.level != null && h("div", { class: "lvl" }, h("small", { text: "LV" }), String(item.level)),
