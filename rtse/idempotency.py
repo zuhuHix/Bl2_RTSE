@@ -19,8 +19,9 @@ Responses from `run_job`:
 Browser rule: the client generates one key per user action and, on 504 with pending:true, retries the
 same request with the same key, e.g. every 1 s up to 30 s.
 
-Requests without the header behave the same way on timeout (503 or 504), but without a key there is no
-replay: a second request is a second run.
+Requests without the header behave the same way on timeout, but without a key there is no replay: a second
+request is a second run. So their 504 says not to resend ({"error": ..., "pending": true, "retry": false}).
+(The browser always sends a key; keyless requests come only from scripts and tests.)
 """
 
 from __future__ import annotations
@@ -42,6 +43,10 @@ HEADER = "Idempotency-Key"
 REPLAY_HEADER = "Idempotent-Replay"
 NOT_APPLIED_ERROR = "game did not respond (loading or paused?) - nothing was changed"
 STILL_RUNNING_ERROR = "the game is still applying this change - retry with the same Idempotency-Key to get the result"
+# Without a key a retry would be a second run, so the request must not be resent blindly.
+STILL_RUNNING_UNKEYED_ERROR = (
+    "the game is still applying this change - check the result (reload the page) before trying again; don't resend it"
+)
 REUSED_ERROR = "Idempotency-Key reused for a different request"
 KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
 
@@ -149,7 +154,9 @@ class IdempotencyCache:
         for key, entry in list(self._entries.items()):
             if excess <= 0:
                 break
-            if entry.future.done():
+            # A future is done a moment before _finished records its response; evicting it in that window would
+            # let a same-key retry run the edit again, so only entries whose response is recorded may go.
+            if entry.finished is not None:
                 del self._entries[key]
                 excess -= 1
 
@@ -172,7 +179,7 @@ def run_job(
     if cache is None or key is None:
         future = submit()
         future.add_done_callback(_log_failure(route_path))
-        return _wait(future, timeout, grace)
+        return _wait(future, timeout, grace, keyed=False)
 
     body_hash = hashlib.sha256(body).hexdigest()
     entry, created = cache.begin(key, route_path, body_hash, submit)
@@ -186,13 +193,15 @@ def run_job(
     return _wait(entry.future, timeout, grace)
 
 
-def _wait(future: Future[Any], timeout: float, grace: float) -> Outcome:
+def _wait(future: Future[Any], timeout: float, grace: float, *, keyed: bool = True) -> Outcome:
     wait([future], timeout=timeout)
     if not future.done():
         if future.cancel():  # not started yet: the game thread will now skip it
             return 503, {"error": NOT_APPLIED_ERROR, "applied": False}, {}
         wait([future], timeout=grace)  # already running: give it a little longer
         if not future.done():
+            if not keyed:  # nothing to retry with: a resend would be a second run
+                return 504, {"error": STILL_RUNNING_UNKEYED_ERROR, "pending": True, "retry": False}, {}
             return 504, {"error": STILL_RUNNING_ERROR, "pending": True}, {}
     if future.cancelled():  # another request waiting on the same key cancelled it
         return 503, {"error": NOT_APPLIED_ERROR, "applied": False}, {}
