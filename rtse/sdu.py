@@ -30,7 +30,7 @@ from typing import Any
 from mods_base import get_pc
 from unrealsdk import logging, unreal
 
-from . import ammo
+from . import ammo, journal
 from .routing import Route
 
 DEBUG_SDU_FILE = Path(__file__).parent / "debug_sdu.json"
@@ -417,6 +417,7 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
         "via": via, "before": _brief(before), "after": _brief(after),
     }
     logging.info(f"RTSE: sdu {applied}")
+    journal.record(f"sdu.{kind}", target=kind, before=applied["before"], after=applied["after"])
     return {**read(), "applied": applied}
 
 
@@ -446,6 +447,7 @@ def set_ammo_max(params: dict[str, Any]) -> dict[str, Any]:
         "before": _brief(before), "after": _brief(after),
     }
     logging.info(f"RTSE: sdu {applied}")
+    journal.record("sdu.ammo_max", target=kind, before=applied["before"], after=applied["after"])
     return {**read(), "applied": applied}
 
 

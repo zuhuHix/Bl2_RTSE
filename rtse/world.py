@@ -26,6 +26,7 @@ from typing import Any, Callable, NamedTuple
 
 from mods_base import get_pc
 from unrealsdk import find_all, logging, unreal
+from . import journal
 from .routing import Route
 
 DEBUG_WORLD_FILE = Path(__file__).parent / "debug_world.json"
@@ -203,6 +204,7 @@ def set_objective(params: dict[str, Any]) -> dict[str, Any]:
         "after": after["objectives"][index]["progress"], "via": f"entry.{OBJECTIVE_PROGRESS[0]}[{index}]",
     }
     logging.info(f"RTSE: world {applied}")
+    journal.record("world.objective", target=f"{ref.id}#{index}", before=applied["before"], after=applied["after"])
     return {**after, "applied": applied}
 
 
@@ -226,6 +228,7 @@ def set_objective_set(params: dict[str, Any]) -> dict[str, Any]:
         "after": after["active_set"], "via": f"entry.{OBJECTIVE_ACTIVE_SET[0]}",
     }
     logging.info(f"RTSE: world {applied}")
+    journal.record("world.objective_set", target=ref.id, before=applied["before"], after=applied["after"])
     return {**after, "applied": applied}
 
 
@@ -253,6 +256,7 @@ def track_mission(params: dict[str, Any]) -> dict[str, Any]:
     after = _objectives_view(owners, ref)
     applied = {"what": "tracked mission", "mission": before["mission"]["name"], "requested": True, "before": before["tracked"], "after": after["tracked"], "via": called}
     logging.info(f"RTSE: world {applied}")
+    journal.record("world.track", target=ref.id, before=applied["before"], after=applied["after"])
     return {**after, "applied": applied}
 
 
@@ -510,6 +514,7 @@ def set_playthrough(params: dict[str, Any]) -> dict[str, Any]:
         "before": raw_before - FIRST_RAW + 1, "after": section.get("current"),
     }
     logging.info(f"RTSE: world {applied}")
+    journal.record("world.playthrough", target="playthrough", before=applied["before"], after=applied["after"])
     return {"playthrough": section, "applied": applied}
 
 
@@ -724,6 +729,13 @@ def _apply_missions(owners: dict[str, Any], targets: list[_Mission], pt: int, ke
     return {"missions": _section(_missions_section, owners), "applied": applied}
 
 
+def _record_missions(kind: str, targets: list[_Mission], result: dict[str, Any]) -> None:
+    """Journals a mission write, but only when the game state actually changed."""
+    applied = result["applied"]
+    if applied["changed"]:
+        journal.record(kind, target=[ref.id for ref in targets], before=applied["before"], after=applied["after"])
+
+
 def set_mission(params: dict[str, Any]) -> dict[str, Any]:
     _require_confirm(params, "changing mission state")
     key = params.get("status")
@@ -732,7 +744,9 @@ def set_mission(params: dict[str, Any]) -> dict[str, Any]:
     wanted = _ids(params)
     owners = _owners()
     targets, pt = _mission_targets(owners, params, wanted)
-    return _apply_missions(owners, targets, pt, key)
+    result = _apply_missions(owners, targets, pt, key)
+    _record_missions("world.mission", targets, result)
+    return result
 
 
 def reset_missions(params: dict[str, Any]) -> dict[str, Any]:
@@ -741,7 +755,9 @@ def reset_missions(params: dict[str, Any]) -> dict[str, Any]:
     wanted = None if params.get("all") is True else _ids(params)
     owners = _owners()
     targets, pt = _mission_targets(owners, params, wanted)
-    return _apply_missions(owners, targets, pt, "not_started")
+    result = _apply_missions(owners, targets, pt, "not_started")
+    _record_missions("world.missions_reset", targets, result)
+    return result
 
 
 # ---------- challenges ----------
@@ -870,6 +886,8 @@ def set_challenge(params: dict[str, Any]) -> dict[str, Any]:
     }
     if one:
         applied["name"] = after[0]["name"]
+    if vias:
+        journal.record("world.challenge", target=wanted, before=applied["before"], after=applied["after"])
     logging.info(f"RTSE: world {applied}")
     return {"challenges": _section(_challenges_section, owners), "applied": applied}
 
@@ -992,6 +1010,8 @@ def unlock_stations(params: dict[str, Any]) -> dict[str, Any]:
     }
     if len(wanted) == 1:
         applied["name"] = _station_row(owners, by_id[wanted[0]])["name"]
+    if vias:
+        journal.record("world.stations", target=wanted, before=applied["before"], after=applied["after"])
     logging.info(f"RTSE: world {applied}")
     return {"stations": _section(_stations_section, owners), "applied": applied}
 

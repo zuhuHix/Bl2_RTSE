@@ -20,6 +20,7 @@ from typing import Any
 
 from mods_base import get_pc
 from unrealsdk import logging, unreal
+from . import journal
 from .routing import Route
 
 PAGE = 100  # most array entries one answer lists
@@ -338,6 +339,7 @@ def set_value(params: dict[str, Any]) -> dict[str, Any]:
     after = _resolve(path)[0]
     applied = {"path": path, "kind": kind, "before": _summary(current, kind), "requested": _summary(new, _kind(new)), "after": _summary(after, _kind(after))}
     logging.info(f"RTSE: inspector {applied}")
+    journal.record("inspect.value", target=path, before=applied["before"], after=applied["after"])
     parent_path = path[: path.rindex("[")] if index is not None else path.rsplit(".", 1)[0]
     return {**look({"path": parent_path, "offset": params.get("offset") or 0}), "applied": applied}
 
