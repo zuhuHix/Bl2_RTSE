@@ -160,21 +160,33 @@ export function prettyAttribute(attribute, labels = {}) {
   return attribute.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
-/** Describes one attribute effect as { text, value, tone }, e.g. "Damage per shot", "x1.25 (+25%)". */
+/**
+ * Why an effect's value is not confirmed in game, or "" when it is (the title of the unverified badge).
+ * The server computes a value as constant x scale from the part's data; the runtime meaning is not confirmed.
+ */
+export function effectReason(effect) {
+  if (effect.verified) return "";
+  if (!effect.fields_found) return "read by guessing attribute and value key names; not confirmed in game";
+  const parts = effect.constant != null && effect.scale != null ? ` (${effect.constant} x ${effect.scale})` : "";
+  return `computed as constant x scale${parts} from the part's data; not confirmed in game`;
+}
+
+/** Describes one attribute effect as { text, value, tone, reason }, e.g. "Damage per shot", "x1.25 (+25%)". */
 export function describeEffect(effect, labels) {
   // The server's attribute_label (hand-written table or humanized object name) wins over the token guess.
   const text = effect.attribute_label || prettyAttribute(effect.attribute, labels);
+  const reason = effectReason(effect);
   const kind = (effect.type || "").toLowerCase();
   const v = effect.value;
-  if (v === null || v === undefined) return { text, value: effect.type || "modifies", tone: "" };
+  if (v === null || v === undefined) return { text, value: effect.type || "modifies", tone: "", reason };
   if (kind.includes("scale")) {
     const pct = Math.round((v - 1) * 100);
-    return { text, value: `×${+v.toFixed(2)} (${pct >= 0 ? "+" : ""}${pct}%)`, tone: pct >= 0 ? "up" : "down" };
+    return { text, value: `×${+v.toFixed(2)} (${pct >= 0 ? "+" : ""}${pct}%)`, tone: pct >= 0 ? "up" : "down", reason };
   }
   if (kind.includes("add")) {
-    return { text, value: `${v >= 0 ? "+" : ""}${+v.toFixed(2)}`, tone: v >= 0 ? "up" : "down" };
+    return { text, value: `${v >= 0 ? "+" : ""}${+v.toFixed(2)}`, tone: v >= 0 ? "up" : "down", reason };
   }
-  return { text, value: `${effect.type || "set"} ${+v.toFixed(2)}`, tone: "" };
+  return { text, value: `${effect.type || "set"} ${+v.toFixed(2)}`, tone: "", reason };
 }
 
 export const STAT_GROUPS = [

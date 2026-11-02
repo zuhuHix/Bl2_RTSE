@@ -859,7 +859,8 @@ def _exact_effect(summary: dict[str, Any]) -> dict[str, Any] | None:
     Field names verified in class data: AttributeEffectData.AttributeToModify (Object, its path is the id),
     AttributeEffectData.ModifierType (Byte) and AttributeEffectData.BaseModifierValue (Struct), which should
     hold AttributeInitializationData.BaseValueConstant and .BaseValueScaleConstant (Float). The runtime
-    values and the meaning of each ModifierType number are UNVERIFIED.
+    values and the meaning of each ModifierType number are UNVERIFIED, so "value" (constant x scale) is
+    not confirmed in game: "verified" is always False for now.
     """
     attribute = summary.get("AttributeToModify")
     base = summary.get("BaseModifierValue")
@@ -875,15 +876,18 @@ def _exact_effect(summary: dict[str, Any]) -> dict[str, Any] | None:
         "attribute_label": _attribute_label(attribute),
         "type": kind if kind is None or isinstance(kind, str) else str(kind),
         "value": constant * scale if constant is not None and scale is not None else None,
-        "exact": True,
+        "constant": constant,
+        "scale": scale,
+        "verified": False,  # the runtime value and the ModifierType meanings are not confirmed in game
+        "fields_found": True,  # the real field names were found in the summary
     }
 
 
 def _effect_view(summary: dict[str, Any]) -> dict[str, Any]:
     """Picks out the attribute, how it is modified and by how much; keeps the raw summary for display.
 
-    Reads the exact class-data fields first (see _exact_effect). Only when they are missing does it fall
-    back to scanning keys by name, which is a guess; that result has "exact": False.
+    Reads the class-data fields first (see _exact_effect). Only when they are missing does it fall back to
+    scanning keys by name, which is a guess; that result has "fields_found": False. "verified" is False either way.
     """
     exact = _exact_effect(summary)
     if exact is not None:
@@ -899,8 +903,11 @@ def _effect_view(summary: dict[str, Any]) -> dict[str, Any]:
         "attribute_label": _attribute_label(attribute),
         "type": kind,
         "value": value,
+        "constant": None,
+        "scale": None,
         "raw": summary,
-        "exact": False,
+        "verified": False,  # a guess from key names, so not confirmed in game either
+        "fields_found": False,
     }
 
 

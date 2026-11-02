@@ -1195,7 +1195,7 @@ function renderPreview() {
   else if (!fx.effects.length) effects = h("div", { class: "hint", text: "No stat modifiers found. It may be cosmetic, or its effects aren't readable yet." });
   else effects = h("div", { class: "fx" }, fx.effects.map((effect) => {
     const d = describeEffect(effect, labels);
-    return h("div", { class: d.tone }, d.tone && icon(d.tone === "up" ? "arrowUp" : "arrowDown", 16), h("span", { text: d.text }), h("b", { text: d.value }));
+    return h("div", { class: d.tone }, d.tone && icon(d.tone === "up" ? "arrowUp" : "arrowDown", 16), h("span", { text: d.text }), h("b", { text: d.value }), unverifiedBadge(d.reason));
   }));
 
   const isCurrent = slot.current && slot.current.id === option.id;

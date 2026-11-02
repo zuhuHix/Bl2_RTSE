@@ -153,9 +153,11 @@ def fake_effects(pid: str) -> list[dict]:
         attr, attr_label = STATS[digest[1 + i] % len(STATS)][:2]
         kind = ["MT_Scale", "MT_PreAdd", "MT_PostAdd"][digest[5 + i] % 3]
         value = round(0.5 + (digest[9 + i] % 25) / 10, 2) if kind == "MT_Scale" else (digest[9 + i] % 40) - 10
-        exact = i % 2 == 0  # alternate, so both the exact and the token-fallback paths get exercised in the UI
-        effects.append({"source": "WeaponAttributeEffects", "attribute": attr, "attribute_label": attr_label if exact else None,
-                        "type": kind, "value": value, "raw": {}, "exact": exact})
+        fields_found = i % 2 == 0  # alternate, so both the class-data and the key-name-guess paths get exercised in the UI
+        # Like the real server: value = constant x scale, both from the part's data; unverified in game either way
+        effects.append({"source": "WeaponAttributeEffects", "attribute": attr, "attribute_label": attr_label if fields_found else None,
+                        "type": kind, "value": value, "constant": value if fields_found else None, "scale": 1.0 if fields_found else None,
+                        "raw": {}, "verified": False, "fields_found": fields_found})
     return effects
 
 
