@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -55,14 +56,32 @@ try:
     check("missing icon -> 404", request("GET", "/icons/nothing.png")[0], 404)
     check("bundled font served", request("GET", "/fonts/bebas-neue-400.woff2")[0], 200)
     check("non-font in fonts dir refused", request("GET", "/fonts/readme.txt")[0], 403)
-    for page in ("sdu", "skills", "world"):
-        check(f"page_{page}.js served", request("GET", f"/page_{page}.js")[0], 200)
-        check(f"page_{page}.css served", request("GET", f"/page_{page}.css")[0], 200)
-        check(f"page_{page}.js with spoofed Host", request("GET", f"/page_{page}.js", {"Host": "evil.example"})[0], 403)
-        check(f"page_{page} traversal refused", request("GET", f"/page_{page}.js/../../api.py")[0], 403)
-        check(f"page_{page} encoded traversal refused", request("GET", f"/icons/..%2fpage_{page}.js")[0], 403)
-        check(f"{page} python source not served", request("GET", f"/{page}.py")[0], 403)
+    # Every page the shell can open is registered in rtse/web/pages.js: check each one, not a fixed list.
+    pages_js = (ROOT / "rtse" / "web" / "pages.js").read_text(encoding="utf-8")
+    page_modules = re.findall(r'module:\s*"\./(page_[a-z0-9_]+)\.js"', pages_js)
+    page_styles = re.findall(r'css:\s*"(page_[a-z0-9_]+)\.css"', pages_js)
+    check("pages.js registers pages", int(len(page_modules) >= 6), 1, f"({len(page_modules)} modules found)")
+    check("pages.js served", request("GET", "/pages.js")[0], 200)
+    for module in page_modules:
+        page = module.removeprefix("page_")
+        check(f"{module}.js served", request("GET", f"/{module}.js")[0], 200)
+        check(f"{module}.js with spoofed Host", request("GET", f"/{module}.js", {"Host": "evil.example"})[0], 403)
+        check(f"{module} traversal refused", request("GET", f"/{module}.js/../../api.py")[0], 403)
+        check(f"{module} encoded traversal refused", request("GET", f"/icons/..%2f{module}.js")[0], 403)
+        check(f"{page} python source not served", request("GET", f"/{module}.py")[0], 403)
         check(f"{page} api without token", request("GET", f"/api/{page}")[0], 403)
+    for style in page_styles:
+        check(f"{style}.css served", request("GET", f"/{style}.css")[0], 200)
+        check(f"{style}.css with spoofed Host", request("GET", f"/{style}.css", {"Host": "evil.example"})[0], 403)
+    # Every flat .js in web/ is a page, a shell file or a helper; a new one must be served without a server edit.
+    for script in sorted((ROOT / "rtse" / "web").glob("*.js")):
+        check(f"{script.name} served", request("GET", f"/{script.name}")[0], 200)
+    check("gear_list.js served", request("GET", "/gear_list.js")[0], 200)
+    check("page_character.js served", request("GET", "/page_character.js")[0], 200)
+    status, _ = request("GET", "/page_..%2fapi.py")
+    results.append(("page_..%2fapi.py not served", status in (403, 404), f"{status} (expected 403 or 404)"))
+    check("page_x.py refused", request("GET", "/page_x.py")[0], 403)
+    check("uppercase page name refused", request("GET", "/Page_SDU.js")[0], 403)
     check("debug dump json not served", request("GET", "/debug_sdu.json")[0], 403)
     check("skill tree data not served", request("GET", "/skilltrees.json")[0], 403)
     check("skill tree data traversal refused", request("GET", "/models/..%2fskilltrees.json")[0], 403)

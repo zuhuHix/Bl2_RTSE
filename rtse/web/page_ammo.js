@@ -1,19 +1,8 @@
 // The ammo page: every ammo pool, set to a number or filled, plus the ammo dev tools.
 import { api, dump, dropdown, fill, guarded, h, icon, pageCtx, shell, state, toast, unverifiedBadge } from "./core.js";
 import * as sduPage from "./page_sdu.js";
-import { renderInventory } from "./gear_list.js";
-import { closePicker } from "./gear_detail.js";
 
 // ---------- ammo ----------
-
-export async function openAmmo() {
-  state.page = "ammo";
-  closePicker();
-  shell.renderPinned();
-  renderInventory();
-  shell.renderWorkspace();
-  await loadAmmo();
-}
 
 async function loadAmmo() {
   try {
@@ -55,7 +44,7 @@ function ammoCard(pool, reason) {
   );
 }
 
-export function renderAmmo(root) {
+function renderAmmo(root) {
   const a = state.ammo;
   if (!a) {
     fill(root, h("div", { class: "empty" }, h("div", {}, h("h2", { text: "Loading..." }))));
@@ -81,3 +70,6 @@ export function renderAmmo(root) {
       h("button", { class: "btn sm", onclick: () => dump("/api/debug/ammo") }, "Save ammo dump"))),
   );
 }
+
+// The page interface (see pages.js): load() fetches the ammo pools, render() draws the page.
+export { loadAmmo as load, renderAmmo as render };

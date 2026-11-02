@@ -23,6 +23,7 @@ _idempotency = idempotency.IdempotencyCache()
 
 # Plain front-end files. Served without the token (they hold no secrets; every API call needs it),
 # but only from this whitelist: a flat file name in web/, or a flat file name in web/icons/, web/fonts/ or web/models/ or web/portraits/, or a .js file under web/vendor/three/.
+# A new page needs no change here: pages.js and page_<id>.js / page_<id>.css are flat names in web/ and already match.
 STATIC_PATH = re.compile(
     r"^/(?:[a-z0-9_]+\.(?:js|css)"
     r"|icons/[A-Za-z0-9_.-]+\.(?:png|svg|webp)"
