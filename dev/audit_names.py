@@ -25,7 +25,7 @@ import json  # noqa: E402
 
 import class_index  # noqa: E402
 import upk  # noqa: E402
-from rtse import ammo, character, damage, limits, sdu, skills, world  # noqa: E402
+from rtse import ammo, bank, character, codes, damage, limits, sdu, skills, world  # noqa: E402
 
 ix = class_index.Index()
 
@@ -105,6 +105,7 @@ CLASS_OF = {  # the owner names the modules use -> the real class they hold at r
     "missions": "MissionTracker", "game": "WillowGameInfo", "gri": "WillowGameReplicationInfo",
     "missiondef": "MissionDefinition", "chaldef": "ChallengeDefinition", "chalcat": "ChallengeCategoryDefinition",
     "station": "FastTravelStationDefinition", "xppool": "ExperienceResourcePool", "pooldef": "ResourcePoolDefinition",
+    "bank": "WillowInventoryStorage", "weapon": "WillowWeapon", "item": "WillowItem",
 }
 rows: list[tuple[str, str, str, str]] = []  # (module, what, verdict, detail)
 
@@ -283,6 +284,24 @@ for index, expected in ((0, "CURRENCY_Credits"), (1, "CURRENCY_Eridium"), (2, "C
 for key, label, index in character.CURRENCIES:
     rows.append(("data.currency", f"currency {key} ({label}) -> index {index}", "REAL" if index < len(currency_enum) else "MISSING",
                  "UNVERIFIED as " + label if key in character.UNVERIFIED_CURRENCY else "settled"))
+
+# ---- item codes, inventory and bank (codes.py, bank.py, gear_inventory.py) ----
+for name in ("TheBank", "Backpack", "GetEmptyBackpackSlots()", "RemoveFromInventory(ItemToRemove, bCanDrop)",
+             "ClientAddWeaponToBackpack(DefinitionData, Mark, bReadyAfterAdd)",
+             "ClientAddItemToBackpack(DefinitionData, Quantity, Mark, bReadyAfterAdd)"):
+    check("inventory", "invmgr", name)
+for name in ("TheChest", "ChestSlots", "MaxSlots", "GetSize()", "GetMaxSize()", "AddWeaponFromDef(WeaponDef, bIgnoreSizeCheck, bUniqueInventory)",
+             "AddItemFromDef(ItemDef, bIgnoreSizeCheck, bUniqueInventory)", "RemoveWeaponsByDef(WeaponDef)", "RemoveItemsByDef(ItemDef)"):
+    check("bank", "bank", name)
+for owner in ("weapon", "item"):
+    for name in ("CreateSerialNumber()", "GetSerialNumberString()", "Mark", "UnpackSerialNumber(SerialNumber, Def)"):
+        check("codes.item", owner, name)
+check("codes.item", "weapon", "CreateWeaponFromSerialNumber(SerialNumber, InAdditionalQueryInterfaceSource)")
+check("codes.item", "item", "CreateItemFromSerialNumber(SerialNumber, InAdditionalQueryInterfaceSource)")
+struct_check("codes", "WillowInventory.InventorySerialNumber", ("EncryptedLength", "RunningCounter", "State", "Buffer"))
+struct_check("codes", "WillowWeaponTypes.WeaponDefinitionData", codes.WEAPON_DEFINITION_FIELDS)
+struct_check("codes", "WillowItemTypes.ItemDefinitionData", codes.ITEM_DEFINITION_FIELDS)
+struct_check("bank", "WillowInventoryStorage.ChestData", ("Inventory", "InventorySerialNumber", "InventoryClass"))
 
 # ---- report ----
 width = max(len(r[1]) for r in rows)
