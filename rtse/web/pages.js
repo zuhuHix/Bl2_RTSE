@@ -29,4 +29,5 @@ export const PAGES = [
   { id: "inspect", label: "Inspector", sub: "Raw live game data", icon: "search", module: "./page_inspect.js", css: "page_inspect.css" },
   { id: "lab", label: "Weapon lab", sub: "A/B parts, measured damage", icon: "crosshair", module: "./page_lab.js", css: "page_lab.css" },
   { id: "bank", label: "Bank & codes", sub: "Bank, item codes, import", icon: "backpack", module: "./page_bank.js", css: "page_bank.css" },
+  { id: "farm", label: "Farm guard", sub: "Guard a farm, count drops", icon: "crosshair", module: "./page_farm.js", css: "page_farm.css" },
 ];

@@ -17,6 +17,7 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **Inspector:** browse the game's own live data and change plain numbers, switches and text in it, for the things that don't have a page of their own.
 - **Weapon lab:** snapshot a gun, swap a part, and see every stat that changed side by side. Then record the damage you actually deal (hits, crits, DPS, per-pellet) and chart it.
 - **Bank & codes:** copy any item as a `BL2(...)` code (the format the Gibbed editor uses), paste codes to add items, look through your bank, move items between backpack and bank, duplicate or delete them, and save or load your whole inventory as a JSON file.
+- **Farm guard:** protects a farm that a mission step would ruin (the Wildlife Exploitation Preserve loot midgets in Doctor's Orders, the Space Cowboy porta-potty midget). It warns you, then lets you keep the change or undo it. It also counts attempts, time and drops while you farm.
 
 ## A tour of the editor
 
@@ -155,6 +156,35 @@ Four tabs, all marked **unverified** until someone tries them in game:
 
 Delete asks for a second click, and RTSE refuses to delete an item unless its code decodes back to the exact same item, so **Restore** (under **Deleted this session** on the Import tab) can always bring it back. Moves add the item at the other end first, check it arrived with the same UniqueId, and only then remove the original. If anything doesn't match, the change is undone. Taking an item out of the bank uses the game's own removal; if that takes an identical twin too, the twin is put back and checked. Only if the game's removal does nothing does RTSE edit the bank's list directly, and then it says so (**unverified: direct array edit**), because nobody has checked yet that the game keeps that edit.
 
+### Farm guard
+
+Some farms only work while a mission stays at one step. In the **Wildlife Exploitation Preserve**, every slag-experiment recorder you pick up for **Doctor's Orders** lowers the number of the best loot midget spawns. In **Commander Lilith & the Fight for Sanctuary**, the **Space Cowboy** porta-potty loot midget only turns up while that mission is at the right step. Farm guard watches those missions for you.
+
+![The farm guard page with an open alert for Doctor's Orders](docs/screenshots/17-farm-guard.png)
+
+- **Enable** a profile and RTSE takes a snapshot of that mission's full state (status, objective counts, objective set and sub-sets, playthrough). The snapshot is tied to your save: its save file number, class and character name, plus the save's GUID when the game shows it. If RTSE can't read the playthrough or tell which save this is, it won't snapshot or undo anything.
+- When the game changes the mission, an alert says what it costs ("Picking up this recorder would reduce the midget spawns."). Pick **Keep** (accept it, and the snapshot moves on), **Undo** (put the snapshot back), or **Undo & quick reload**.
+- **Undo is all or nothing.** The game keeps two copies of a mission (the live one and the one your save is written from), and undo needs both, exactly as the snapshot saw them. If a copy is missing, or any value can't be read, nothing is changed. If the game refuses any part of the undo, or doesn't keep a value, RTSE puts every field back the way it was just before, leaves the alert open and lists anything it couldn't put back.
+- **No undo after a turn-in.** Once either copy of the mission says it's turned in, its rewards (XP, cash, items) are already yours and can't be taken back, so the alert only offers **Keep**, and keeping it switches the guard off. The same goes when RTSE can't read the mission's state. A mission that's already turned in can't be guarded at all: the farm is over.
+- **Quick reload** is experimental and off by default. It saves, quits to the title screen and loads the same playthrough straight back in, so the map reloads with the restored mission. It only runs when the game is in a safe state (your character spawned, no loading screen, not saving). Otherwise it refuses and tells you why. If the game stays on the main menu, press **Continue** yourself.
+- **Auto-block** (per profile, off by default) stops the change before it happens instead of undoing it afterwards. For Doctor's Orders it also stops the recorder pickup itself, so the recorder stays on the floor.
+- **Farm tracker:** start a session to count attempts (reloads are counted automatically), time it, and list the drops you pick up that match the profile (blue and better by default).
+- Co-op: only the host's game runs missions, so farm guard only works when RTSE can confirm it's a solo game or you're hosting. As a client in someone else's game, or when it can't tell, it turns itself off with a note.
+- The profiles live in `rtse/farm_profiles.json`. The mission names in it come from the game's own files; what each step does to the farm comes from community farm notes.
+
+**In-game test checklist** (nobody has run this in the game yet, so please try it and send the farm dump):
+
+1. Load a character with Doctor's Orders active, open **Farm guard**, enable *Wildlife Exploitation Preserve loot midgets*. The snapshot should show the mission as Active with its objective count.
+2. Pick up one recorder. An alert should appear within two seconds and the live progress should read one higher than the snapshot.
+3. **Undo**. The progress should go back, and the mission log in game should show the old count. Save-quit and continue: is the count still the old one, and are all the midgets back?
+4. Turn on **Quick reload**, pick up a recorder, use **Undo & quick reload**. The game should save, quit and load straight back into the same playthrough.
+5. Turn on **Auto-block**, try to pick up a recorder. It should stay on the floor (or the count shouldn't move), and a "Blocked" alert should appear.
+6. Start a tracker session, kill the midgets, pick up some loot. Blue and better gear should show up in the drop list, and the attempt count should go up after a reload.
+7. Repeat 1-3 for Space Cowboy in Fight for Sanctuary and note which step makes the porta-potty midget stop appearing.
+8. Join someone else's co-op game: the page should say farm guard is off for clients.
+9. Press F8 twice and disable and re-enable the mod, then check the farm dump: each hook must be listed once.
+10. Click **Save farm dump** (dev tools at the bottom of the page) and attach `rtse/debug_farm.json` to your report.
+
 ## Heads up before you start
 
 - **Back up your saves first.** They're in `Documents\My Games\Borderlands 2\WillowGame\SaveData`. Copy that folder somewhere. It takes ten seconds and saves you if you break something.
@@ -258,6 +288,7 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
   - A part's `DefaultWeightIndex` is read as an index into its part list's `ConsolidatedAttributeInitData`, and the weight is `BaseValueConstant x BaseValueScaleConstant` (from the BLCMods wiki, "Understanding Item and Weapon Parts Definitions"). A manufacturer entry with no manufacturer counts as the default for all of them. An empty manufacturer list ignores the index and means weight 100. Values that depend on the game at runtime show as **Unknown weight**.
   - Parent lists are assumed to be inherited through `BaseDefinition` for slots that aren't `bEnabled`.
   - "Unsupported" is a rule based on part class names.
+- **Farm guard**: the hook names exist in the game, but none of this has run in a live game. Still unconfirmed: that writing a mission's stored objective numbers back makes the game forget the progress (and brings the midgets back after a reload), that blocking a hook stops a pickup cleanly, which Space Cowboy step ends the porta-potty midget, the quick reload relaunch and its "not saving" check (the save manager's state 0 is assumed to mean idle), item rarity numbers (1 white to 5 orange), and spotting a fresh map from the world clock.
 
 The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
 

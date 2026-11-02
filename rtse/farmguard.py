@@ -52,6 +52,9 @@ Routes:
   POST /api/farm/resolve              {"alert": id, "action": "keep" | "undo" | "undo_reload" | "dismiss"}
   POST /api/farm/session              {"action": "start" | "stop" | "reset" | "attempt", "profile"?: id}
 Every route answers with the same state as GET /api/farm, plus "applied" on writes.
+An alert is {"id", "profile", "profile_name", "mission", "mission_name", "change": "objective" | "decrement" | "status" |
+"complete" | "pickup", "objective" (path) | None, "objective_name" | None, "item" (a blocked pickup's name) | None,
+"blocked", "message", "before", "after" ({"status", "progress", "active_set"} | None), "at", "count", "actions"}.
 """
 
 from __future__ import annotations
@@ -284,21 +287,23 @@ def _primary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
     return entries.get("tracker") or entries.get("saved")
 
 
-def _add_alert(profile: dict[str, Any], change: str, *, objective: str | None = None, blocked: bool = False, after: dict[str, Any] | None = None) -> dict[str, Any]:
+def _add_alert(profile: dict[str, Any], change: str, *, objective: str | None = None, item: str | None = None, blocked: bool = False,
+               after: dict[str, Any] | None = None) -> dict[str, Any]:
     """Opens an alert, or folds the change into the profile's open alert of the same kind (blocked or not)."""
     global _next_alert  # noqa: PLW0603
     now = time.time()
     for alert in _alerts:
         if alert["profile"] == profile["id"] and alert["blocked"] == blocked:
             alert.update({"count": alert["count"] + 1, "at": now, "change": change, "objective": objective or alert["objective"],
-                          "objective_name": _readable(objective) or alert["objective_name"], "message": _consequence(profile, change)})
+                          "objective_name": _readable(objective) or alert["objective_name"], "item": item or alert["item"],
+                          "message": _consequence(profile, change)})
             if after is not None:
                 alert["after"] = _summary(after)
             return alert
     alert = {
         "id": _next_alert, "profile": profile["id"], "profile_name": profile.get("name"), "mission": profile["mission"],
         "mission_name": profile.get("mission_name") or _readable(profile["mission"]), "change": change,
-        "objective": objective, "objective_name": _readable(objective), "blocked": blocked,
+        "objective": objective, "objective_name": _readable(objective), "item": item, "blocked": blocked,
         "message": _consequence(profile, change), "before": _summary(_primary(_state[profile["id"]]["snapshot"])),
         "after": _summary(after), "at": now, "count": 1,
         "actions": ["dismiss"] if blocked else ["keep", "undo", "undo_reload"],
@@ -496,7 +501,7 @@ def _pre_pickup(obj: Any, _args: Any, _ret: Any, _func: Any) -> Any:
             profile = _pickup_profile(info)
             if profile is not None and _state[profile["id"]]["auto_block"] and BLOCK is not None and not _is_client():
                 _pending_pickups.pop(key, None)
-                _add_alert(profile, "pickup", objective=info.get("definition"), blocked=True)
+                _add_alert(profile, "pickup", item=info["item"], blocked=True)
                 _traced("pre:pickup", item=info["item"], blocked=True)
                 return BLOCK
     except Exception as ex:  # noqa: BLE001
