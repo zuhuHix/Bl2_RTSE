@@ -28,6 +28,17 @@ Topics (payloads are plain JSON-able dicts; the hooks that publish them are writ
                                    attribution "held" = the weapon held when the hit landed (approximate).
   PICKUP           "game.pickup"   {"item": str, "kind": "weapon" | "item" | "ammo" | "money" | ..., "amount": float | None}
   MISSION_CHANGED  "game.mission"  {"mission": str, "status": str, "objective": str | None}
+
+  Published by rtse/farmguard.py (its hooks run whether or not a farm profile is enabled; UNVERIFIED in a live game):
+    PICKUP after WillowPickup:GiveTo, with two extra keys:
+      {"item": readable name, "kind": "weapon" | "item" | "mission_item" | "ammo" | "money" | "usable",
+       "amount": None (not read yet), "definition": weapon type / item definition path | None, "rarity": int | None}
+    MISSION_CHANGED after MissionTracker:SetMissionStatus / UpdateObjective / DecrementObjective and
+    WillowPlayerController:ServerCompleteMission, with three extra keys:
+      {"mission": mission path, "status": "not_started" | "active" | "objectives_done" | "ready" | "complete" |
+       "failed" | "unknown" (read after the change), "objective": objective path | None,
+       "change": "status" | "objective" | "decrement" | "complete", "name": readable mission name, "guarded": bool}
+    Not published for the farm guard's own restores, nor for changes it blocked.
   EDIT_APPLIED     "rtse.edit"     {"route": str, "ok": bool}   published by the route registry after each write
 """
 

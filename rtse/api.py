@@ -23,6 +23,7 @@ from . import (
     codes,
     damage,
     events,
+    farmguard,
     gear_debug,
     gear_edit,
     gear_inventory,
@@ -49,6 +50,7 @@ ROUTE_MODULES = (
     inspector,
     damage,
     codes, bank,
+    farmguard,
 )
 
 
