@@ -15,12 +15,13 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **Skills:** your real skill tree for your class. Set any skill to any rank (even locked ones), change unspent points, or reset the whole tree.
 - **World:** missions (including how far through each objective you are), challenges, fast travel stations and playthrough (Normal / TVHM / UVHM).
 - **Inspector:** browse the game's own live data and change plain numbers, switches and text in it, for the things that don't have a page of their own.
+- **Weapon lab:** snapshot a gun, swap a part, and see every stat that changed side by side. Then record the damage you actually deal (hits, crits, DPS, per-pellet) and chart it.
 
 ## A tour of the editor
 
 The screenshots below were taken with the demo data from `dev/mock_server.py` (see [For tinkerers](#for-tinkerers)), not from a live game, so the names and numbers are placeholders. In the real thing they come from your character.
 
-The left side is always your **Loadout**: six pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector), then a search box and everything you have equipped or in your backpack.
+The left side is always your **Loadout**: seven pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector, Weapon lab), then a search box and everything you have equipped or in your backpack.
 
 ![The editor with nothing selected](docs/screenshots/01-home.png)
 
@@ -102,6 +103,30 @@ The closest thing to the raw tab in the Gibbed editor, except it shows the live 
 - You can change whole numbers, decimals, true/false, text and enum values (type the enum's number). References, structs and lists are read-only here, and nothing in the game is ever called.
 - This skips every check, so a wrong value can confuse the game or crash it, and some fields will do nothing. Back up your saves first.
 - It's also the quickest way to find out what the game really holds when one of the other pages says "unavailable".
+
+### Weapon lab
+
+![The weapon lab recording damage, with stat tiles and the hit chart](docs/screenshots/15-weapon-lab.png)
+
+Two halves:
+
+- **A/B compare.** Pick a weapon and press **Snapshot A**. Swap parts right there (the part pickers use the same edit as the Gear page, so the change is real), then press **Snapshot B**, or skip B to compare A with the gun as it is now. The table lists every stat with A, B, the change and the % change, and which parts differ. The two bottom rows, damage per shot and "card DPS", are worked out from the stats (damage x pellets / fire interval), so they're marked **estimated**.
+- **Measured damage.** Press **Start**, shoot something, press **Stop**. While it records, the page shows hits, crits and crit rate, total damage, DPS, average and max hit, crit vs non-crit, shots, pellets per shot, per-pellet damage, hits per shot and kills, plus a chart of every hit (crits in red) and the damage in the last second. Pick a **Target** to see one enemy only. **Only this weapon** ignores hits while you hold anything else. Every hit is kept up to the **Cap** (default 2,000; the oldest drop off after that), and **Reset** clears them without stopping.
+
+Where the numbers come from: each hit is the game's own damage summary for that hit, read when the game tells the player controller it dealt damage (`NotifyDamageDealt`). Shots are counted when your gun uses ammo (`ConsumeAmmo`). If the first never fires, RTSE falls back to the damage passed to each enemy's `TakeDamage`, which is before armour and resistances, and the page then says every damage number is an estimate. Tiles that are arithmetic over the readings (crit multiplier, per-pellet, hits per shot, kills) are always marked **estimated**. The hooks only do any work while a recording is running.
+
+**In-game test checklist** (nobody has run this in the game yet; please try it and send the lab dump):
+
+1. Open **Weapon lab**, pick an equipped gun, **Snapshot A**. Change its barrel with the part picker. The table should show B (live) values that differ, and the barrel under Parts. Check in game that the gun really changed.
+2. **Snapshot B**, then swap the barrel back. The table should still compare A with the saved B.
+3. **Start**, then fire single shots at an enemy. **Hits** should go up about once per shot (a shotgun: up to once per pellet), and **Shots** once per trigger pull. If Shots stays at 0, `ConsumeAmmo` isn't firing.
+4. Compare a few hits with the damage numbers floating in the game. Shoot a weak spot: those hits should be counted as crits.
+5. Hit a shielded enemy: **Total damage** should mention "shield absorbed".
+6. Kill something and check **Kills** goes up.
+7. Shoot with another gun with **Only this weapon** ticked: nothing should be recorded.
+8. Watch the "Hooks" line: `NotifyDamageDealt` should be counting. If only `TakeDamage` counts, the page shows the "pre-mitigation estimate" banner. Note that down.
+9. Press **Save lab dump** and send `rtse/debug_lab.json` (it holds the raw damage summary fields of the first 20 hits).
+10. Press F8 twice and toggle the mod off and on in the mod menu, then record again. Hits must not be counted twice.
 
 ## Heads up before you start
 
@@ -199,7 +224,8 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
 - **SDU**: the number of backpack and bank upgrades (9 each), and which call reports the bank size.
 - **Ammo pools** are matched to the game's exact `D_Resourcepools.AmmoPools.*` definitions. A pool matched only by its name is marked unverified.
 - **Part effects**: attribute labels come from a hand-written table.
+- **Weapon lab damage**: the hooks (`WillowPlayerController.NotifyDamageDealt`, `WillowPawn.TakeDamage` as a fallback, `WillowWeapon.ConsumeAmmo`) and the damage summary fields exist in the game's class data, but nobody has seen them fire yet. Also unconfirmed: whether `DamageDealtToShields` is the shield damage of that hit, and whether every pellet counts as a hit. DPS uses the PC's clock, not the game's, so pausing during a recording stretches it.
 
-The debug dumps on each page (Character, Ammo, Upgrades, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
+The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
 
 RTSE isn't affiliated with Gearbox or 2K. Skill names and descriptions in `rtse/skilltrees.json` come from the game's own files.

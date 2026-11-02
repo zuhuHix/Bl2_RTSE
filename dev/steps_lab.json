@@ -1,0 +1,21 @@
+{
+  "url": "http://127.0.0.1:8766/?t=mock",
+  "width": 1440,
+  "height": 1100,
+  "steps": [
+    {"wait": 1200},
+    {"clickText": "A/B parts, measured damage"},
+    {"wait": 1200},
+    {"shot": "dev/out/lab_1_page.png"},
+    {"clickText": "Snapshot A"},
+    {"wait": 900},
+    {"eval": "(() => { const s = document.querySelectorAll('.lab-strip select')[1]; s.value = s.options[2].value; s.dispatchEvent(new Event('change')); return s.value; })()"},
+    {"wait": 1200},
+    {"eval": "document.querySelector('.lab-h').scrollIntoView()"},
+    {"shot": "dev/out/lab_2_compare.png"},
+    {"clickText": "Start"},
+    {"wait": 2500},
+    {"eval": "document.querySelectorAll('.lab-h')[1].scrollIntoView()"},
+    {"shot": "dev/out/lab_3_damage.png"}
+  ]
+}

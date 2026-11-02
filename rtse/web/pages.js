@@ -27,4 +27,5 @@ export const PAGES = [
   { id: "skills", label: "Skills", sub: "Skill tree", icon: "sliders", module: "./page_skills.js", css: "page_skills.css" },
   { id: "world", label: "World", sub: "Missions, challenges, travel", icon: "swap", module: "./page_world.js", css: "page_world.css" },
   { id: "inspect", label: "Inspector", sub: "Raw live game data", icon: "search", module: "./page_inspect.js", css: "page_inspect.css" },
+  { id: "lab", label: "Weapon lab", sub: "A/B parts, measured damage", icon: "crosshair", module: "./page_lab.js", css: "page_lab.css" },
 ];

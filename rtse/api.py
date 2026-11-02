@@ -19,6 +19,7 @@ from unrealsdk import logging
 from . import (
     ammo,
     character,
+    damage,
     events,
     gear_debug,
     gear_edit,
@@ -44,6 +45,7 @@ ROUTE_MODULES = (
     skills,
     world,
     inspector,
+    damage,
 )
 
 
