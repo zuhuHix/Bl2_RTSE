@@ -15,15 +15,27 @@ HOOKS (HOOK_ID "rtse_damage_lab"). ALL ARE UNVERIFIED IN GAME. The names exist i
 (dev/class_index.py, checked by dev/audit_names.py), but nothing here has run in Borderlands 2, so whether each one
 fires, how often, in which order and with which values is not known.
   1. POST WillowPlayerController.NotifyDamageDealt: the primary; player-dealt damage only, with the game's summary.
-  2. PRE + POST WillowPawn.TakeDamage, fires for every pawn. PRE remembers the DamageCauser of a hit the player
-     instigated for the length of that call. POST is the fallback recorder.
+  2. PRE + POST WillowPawn.TakeDamage, fires for every pawn. PRE pushes a frame for EVERY call (an untracked marker
+     when the player did not instigate it, the DamageCauser when they did); POST pops exactly that frame and is the
+     fallback recorder.
   3. POST WillowWeapon.ConsumeAmmo: one shot each time the local pawn's weapon uses ammo.
+  4. POST WillowGameViewportClient.Tick: drops frames whose POST never ran. Nothing else.
 
-ONE CANONICAL STREAM: a hit is recorded once, published once. Once NotifyDamageDealt has recorded a hit this session
-("primary_seen"), the fallback records nothing. Before that, a fallback hit waits DEDUPE_WINDOW (0.25 s) in "pending";
-if the primary reports anything in that time, the pending hits are discarded as duplicates, otherwise they are
-committed as estimated hits. A primary report made inside the TakeDamage call it belongs to marks that call
-"notified", so its fallback is skipped outright.
+CALL FRAMES: PRE and POST pair LIFO, so a nested call (tracked or not, on the same victim or another) pops only its
+own frame. A frame is only valid inside its own game call: no TakeDamage call spans a viewport tick, so any frame still
+on the stack at a tick is stale (its POST never ran) and the stack is cleared. That also covers map changes; the stack
+is cleared on session start and stop too. A POST whose frame is for another victim means the pairing broke: the stack
+is cleared and "unpaired" counts it (debug dump).
+
+ONE SOURCE PER MOD LIFETIME, ONE EVENT PER HIT. The fallback records only while NotifyDamageDealt has NEVER fired since
+the mod was loaded ("primary_ever"). Once it fires, the fallback is off for good, in this and every later session.
+Until then a fallback hit waits DEDUPE_WINDOW (0.25 s) in "pending" before it is committed and published; a primary hit
+in that time takes one pending hit on the same target with a near-equal amount (the fallback's pre-mitigation Damage vs
+the summary's InitialDamage) out of the queue, as the same hit. Pending hits that match nothing are committed. A primary
+report made inside its own TakeDamage call marks the frame "notified", and that call's fallback is skipped outright.
+Consequence: the first few hits of the very first session after loading the mod may come from the fallback (marked
+estimated). A duplicate is only possible if the very first primary report of the mod's lifetime arrives more than
+0.25 s after its TakeDamage call, for a hit outside any frame.
 
 ATTRIBUTION (the hit's "source" weapon and "attribution"):
   - "weapon":     TakeDamage's DamageCauser was a WillowWeapon (an instant hit). Exact.
@@ -76,6 +88,7 @@ HOOK_ID = "rtse_damage_lab"
 PRIMARY = "WillowGame.WillowPlayerController:NotifyDamageDealt"
 FALLBACK = "WillowGame.WillowPawn:TakeDamage"
 SHOTS = "WillowGame.WillowWeapon:ConsumeAmmo"
+TICK = "WillowGame.WillowGameViewportClient:Tick"
 
 VIA_NOTIFY = "notify"
 VIA_TAKE = "take_damage"
@@ -86,7 +99,8 @@ ATTR_PROJECTILE = "projectile"  # DamageCauser was a projectile whose Owner is t
 ATTR_HELD = "held"  # no causer: the weapon held when the hit landed (approximate)
 DEDUPE_WINDOW = 0.25  # seconds a fallback hit waits for the primary hook to report the same hit
 MAX_PENDING = 256
-MAX_OPEN_CALLS = 16
+MAX_OPEN_CALLS = 64  # nested TakeDamage depth; deeper than this means frames are leaking
+AMOUNT_MATCH = 0.02  # relative difference under which a fallback and a primary report are the same hit
 # Summary fields that need shots, which cannot be tied to one target
 SESSION_WIDE = ("shots", "pellets_per_shot", "pellets_fired", "hits_per_shot", "per_pellet")
 
@@ -130,9 +144,12 @@ _session_active = False  # checked FIRST in every hook
 _s: dict[str, Any]  # the current session's buffer and counters; built by _new_session()
 _raw: collections.deque = collections.deque(maxlen=RAW_KEEP)
 _snapshots: dict[str, dict[str, Any] | None] = {"a": None, "b": None}
-# Open player-instigated TakeDamage calls, innermost last: {"victim": UObject, "weapon": path | None, "how": str,
-# "notified": bool}. Lives only for the length of one game call (PRE pushes, POST pops); never leaves this module.
+# Open TakeDamage calls, innermost last: {"victim": UObject, "player": bool, "weapon": path | None, "how": str,
+# "notified": bool}. One frame per call (PRE pushes, POST pops); never leaves this module, never survives a tick.
 _calls: list[dict[str, Any]] = []
+_primary_ever = False  # NotifyDamageDealt has fired since the mod loaded: the fallback is off for good
+_unpaired = 0  # POSTs that found another call's frame on top (the stack was cleared)
+_stale = 0  # ticks that found frames left over (a POST that never ran)
 
 _installed: list[str] = []
 _failed: dict[str, str] = {}
@@ -153,7 +170,7 @@ def _new_session(session_id: int, cap: int, weapon: str | None, started: float |
         "hits": collections.deque(maxlen=cap),  # ONE buffer, ONE cap, both hooks
         "recorded": 0,
         "dropped": 0,
-        "primary_seen": False,  # NotifyDamageDealt has recorded a hit this session: the fallback stands down
+        "notify_hits": 0,  # hits this session from NotifyDamageDealt
         "pending": collections.deque(maxlen=MAX_PENDING),  # (time, hit): fallback hits waiting out DEDUPE_WINDOW
         "shots": collections.deque(maxlen=cap),
         "shots_seen": 0,
@@ -174,7 +191,7 @@ def _elapsed_since_start() -> float:
 
 
 def _session_via() -> str | None:
-    if _s["primary_seen"]:
+    if _s["notify_hits"]:
         return VIA_NOTIFY
     return VIA_TAKE if _s["hits"] else None
 
@@ -211,8 +228,11 @@ def _reset() -> None:
 
 def _clear_all() -> None:
     """Test helper: back to a fresh module (no session, no snapshots, no hook bookkeeping)."""
-    global _session_active, _s, _errors, _last_error  # noqa: PLW0603
+    global _session_active, _s, _errors, _last_error, _primary_ever, _unpaired, _stale  # noqa: PLW0603
     _session_active = False
+    _primary_ever = False
+    _unpaired = 0
+    _stale = 0
     _s = _new_session(0, DEFAULT_CAP, None, None)
     _raw.clear()
     _calls.clear()
@@ -360,21 +380,37 @@ def _commit(hit: dict[str, Any]) -> None:
         _s["dropped"] += 1
     _s["seq"] += 1
     hit["seq"] = _s["seq"]
+    if hit["via"] == VIA_NOTIFY:
+        _s["notify_hits"] += 1
     buf.append(hit)
     events.publish(events.DAMAGE, dict(hit))
 
 
 def _flush_pending(*, force: bool = False) -> None:
-    """Settles fallback hits older than DEDUPE_WINDOW (all of them when force): dropped if the primary hook has worked
-    this session (it reports the same hits), otherwise committed as estimated hits."""
+    """Commits fallback hits that waited out DEDUPE_WINDOW (all of them when force) without a primary report taking
+    them: the primary did not report those hits, so they are kept, as estimates."""
     pending = _s["pending"]
     if not pending:
         return
     now = _now()
     while pending and (force or now - pending[0][0] >= DEDUPE_WINDOW):
-        _at, hit = pending.popleft()
-        if not _s["primary_seen"]:
-            _commit(hit)
+        _commit(pending.popleft()[1])
+
+
+def _same_amount(fallback: float, initial: float | None) -> bool:
+    if initial is None:
+        return True  # nothing to compare: the target and the window decide
+    return abs(fallback - initial) <= AMOUNT_MATCH * max(abs(fallback), abs(initial), 1.0)
+
+
+def _take_pending_match(target_id: str, initial: float | None) -> None:
+    """A primary report arrived: the oldest waiting fallback hit on the same target with a near-equal amount is the
+    same hit, so it is dropped (one-to-one). Everything else stays and is committed when its window ends."""
+    pending = _s["pending"]
+    for index, (_at, hit) in enumerate(pending):
+        if hit["target_id"] == target_id and _same_amount(hit["amount"], initial):
+            del pending[index]
+            return
 
 
 def _record_shot(*, weapon: str | None, pellets: int | None, cost: float | None, fire_mode: int | None) -> None:
@@ -414,6 +450,7 @@ def _fail(path: str, ex: BaseException) -> None:
 
 def _on_notify(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
     """NotifyDamageDealt on the player controller: one call per hit the player deals."""
+    global _primary_ever  # noqa: PLW0603
     if not _session_active:
         return
     _bump(PRIMARY)
@@ -421,28 +458,29 @@ def _on_notify(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
         pc = get_pc(possibly_loading=True)
         if pc is None or obj != pc:
             return
+        _primary_ever = True  # from now on, for the mod's lifetime, the fallback records nothing
         summary = args.DamageSummary
         if len(_raw) < RAW_KEEP:  # the full field read is only for the debug dump: the first hits of a session do
             _remember_raw(summary)
         victim = args.DamagedPawn
-        # Inside the player's TakeDamage call on this victim (if the game nests them), the causer is known exactly
-        call = _calls[-1] if _calls and _calls[-1]["victim"] == victim else None
+        # Inside the player's own TakeDamage call on this victim (innermost frame), the causer is known exactly
+        top = _calls[-1] if _calls else None
+        call = top if top is not None and top["player"] and top["victim"] == victim else None
         if call is not None:
             call["notified"] = True
         source, how = _attribute(pc, call["weapon"] if call else None, call["how"] if call else ATTR_HELD)
-        _flush_pending()  # fallback hits that already waited out the window are kept (the primary missed them)
-        if not _s["primary_seen"]:
-            _s["primary_seen"] = True
-            _s["pending"].clear()  # the primary works: hits still waiting are the same hits, reported again
+        target, target_id = _target_names(victim)
+        initial = _opt_float(summary.InitialDamage)
+        _take_pending_match(target_id, initial)
+        _flush_pending()
         if not _weapon_ok(source, how):
             return
-        target, target_id = _target_names(victim)
         _commit(
             _hit(
                 VIA_NOTIFY,
                 amount=float(summary.FinalDamage),
                 shield=float(summary.DamageDealtToShields),
-                initial=_opt_float(summary.InitialDamage),
+                initial=initial,
                 critical=bool(summary.bWasCrit),
                 kill=_killing_blow(summary),
                 target=target,
@@ -457,36 +495,46 @@ def _on_notify(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
 
 
 def _on_take_damage_pre(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
-    """Before TakeDamage on any pawn: remembers the causing weapon of a player-instigated hit for the call's length."""
+    """Before TakeDamage on any pawn: pushes this call's frame. Every call gets one (an untracked marker unless the
+    player instigated it), so each POST pops exactly its own frame."""
     if not _session_active:
         return
+    frame: dict[str, Any] = {"victim": obj, "player": False, "weapon": None, "how": ATTR_HELD, "notified": False}
     try:
         pc = get_pc(possibly_loading=True)
-        if pc is None or args.InstigatedBy != pc or obj == pc.Pawn:
-            return
-        if len(_calls) >= MAX_OPEN_CALLS:  # a POST that never came: never let this grow
-            _calls.clear()
-        weapon, how = _causing_weapon(getattr(args, "DamageCauser", None))
-        _calls.append({"victim": obj, "weapon": weapon, "how": how, "notified": False})
+        if pc is not None and args.InstigatedBy == pc and obj != pc.Pawn:
+            frame["player"] = True
+            frame["weapon"], frame["how"] = _causing_weapon(getattr(args, "DamageCauser", None))
     except Exception as ex:  # noqa: BLE001
         _fail(FALLBACK, ex)
+    finally:
+        if len(_calls) >= MAX_OPEN_CALLS:  # frames leaking faster than ticks clear them: start over
+            _calls.clear()
+        _calls.append(frame)
 
 
 def _on_take_damage(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
-    """After TakeDamage on any pawn: the fallback. Records only when the primary hook did not report this hit and has
-    not worked this session; such hits wait DEDUPE_WINDOW in case the primary reports them a little later."""
+    """After TakeDamage on any pawn: pops this call's frame, then records a fallback hit only if the frame is the
+    player's, the primary did not report it, and the primary has never fired since the mod loaded."""
+    global _unpaired  # noqa: PLW0603
     if not _session_active:
         return
     _bump(FALLBACK)
     try:
+        if not _calls:
+            return  # PRE ran before the session started, or a tick already dropped the frame
+        frame = _calls.pop()
+        if frame["victim"] != obj:  # not our frame: the pairing broke somewhere, trust nothing on the stack
+            _calls.clear()
+            _unpaired += 1
+            return
         _flush_pending()
-        call = _calls.pop() if _calls and _calls[-1]["victim"] == obj else None
-        if call is None or call["notified"] or _s["primary_seen"]:
-            return  # not the player's hit, or the primary hook already has it
+        if not frame["player"] or frame["notified"] or _primary_ever:
+            return
         pc = get_pc(possibly_loading=True)
         if pc is None:
             return
-        source, how = _attribute(pc, call["weapon"], call["how"])
+        source, how = _attribute(pc, frame["weapon"], frame["how"])
         if not _weapon_ok(source, how):
             return
         target, target_id = _target_names(obj)
@@ -506,6 +554,15 @@ def _on_take_damage(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
         _s["pending"].append((_now(), hit))
     except Exception as ex:  # noqa: BLE001
         _fail(FALLBACK, ex)
+
+
+def _on_tick(_obj: Any, _args: Any, _ret: Any, _func: Any) -> None:
+    """Viewport tick: no TakeDamage call spans one, so frames still open here lost their POST. Drop them."""
+    global _stale  # noqa: PLW0603
+    if not _calls:
+        return
+    _calls.clear()
+    _stale += 1
 
 
 def _on_consume_ammo(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
@@ -537,6 +594,7 @@ HOOKS = (
     (FALLBACK, Type.PRE, _on_take_damage_pre),
     (FALLBACK, Type.POST, _on_take_damage),
     (SHOTS, Type.POST, _on_consume_ammo),
+    (TICK, Type.POST, _on_tick),
 )
 HOOK_PATHS = tuple(dict.fromkeys(path for path, _kind, _fn in HOOKS))
 _fired.update(dict.fromkeys(HOOK_PATHS, 0))
@@ -683,6 +741,9 @@ def _hooks_state() -> dict[str, Any]:
         "fired": dict(_fired),
         "errors": _errors,
         "last_error": _last_error,
+        "primary_ever": _primary_ever,
+        "unpaired": _unpaired,
+        "stale_ticks": _stale,
     }
 
 
