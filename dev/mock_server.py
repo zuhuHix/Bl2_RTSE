@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "rtse" / "web"
 TOKEN = "mock"
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8766
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 8766
 
 MODELS = json.loads((WEB_DIR / "models" / "parts.json").read_text(encoding="utf-8"))
 WEAPON_SLOTS = ["Body", "Grip", "Barrel", "Sight", "Stock", "Elemental", "Accessory1", "Accessory2", "Material"]
@@ -262,16 +262,26 @@ def ammo() -> dict:
     }
 
 
-# Feature mocks: dev/mock_<feature>.py, each exporting handle(path, params, shared) -> dict | None
-# (None = not my route). Raise LookupError for 404, ValueError for 400. Loaded by path because -I drops dev/ from sys.path.
-FEATURE_MOCKS = []
-for _name in ("sdu", "skills", "world", "inspect"):
-    _file = Path(__file__).resolve().parent / f"mock_{_name}.py"
-    if _file.is_file():
-        _spec = importlib.util.spec_from_file_location(f"mock_{_name}", _file)
-        _module = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_module)
-        FEATURE_MOCKS.append(_module)
+# Feature mocks: every dev/mock_<feature>.py next to this file is loaded automatically (adding a feature needs no edit
+# here). Each exports handle(path, params, shared) -> dict | None (None = not my route); raise LookupError for 404,
+# ValueError for 400. `shared` is {"CHAR": ..., "AMMO": ...}. Loaded by path because -I drops dev/ from sys.path.
+def discover_feature_mocks(directory: Path) -> list:
+    """Imports every mock_<feature>.py in `directory` (sorted by name) that defines handle()."""
+    modules = []
+    for file in sorted(directory.glob("mock_*.py")):
+        if file.name == "mock_server.py":
+            continue
+        spec = importlib.util.spec_from_file_location(file.stem, file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if callable(getattr(module, "handle", None)):
+            modules.append(module)
+        else:
+            print(f"mock: {file.name} has no handle(path, params, shared); skipped")
+    return modules
+
+
+FEATURE_MOCKS = discover_feature_mocks(Path(__file__).resolve().parent)
 
 
 # Same shape as limits.gear_level_cap(): gear level = character cap (80) + Overpower levels (10)
