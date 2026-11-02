@@ -19,6 +19,10 @@ WEB_DIR = Path(__file__).parent / "web"
 GAME_THREAD_TIMEOUT = 15.0  # the first part scan walks every balance definition
 RUNNING_GRACE = 30.0  # extra wait when the game already started the job; see rtse/idempotency.py
 MAX_BODY_BYTES = 64 * 1024
+# Every socket read or write on a connection must finish within this many seconds, so a client that sends a
+# Content-Length and then stalls (or trickles the body) can't pin a handler thread. Waiting for the game thread
+# is not a socket operation, so long game jobs are unaffected.
+SOCKET_TIMEOUT = 10.0
 _idempotency = idempotency.IdempotencyCache()
 
 # Plain front-end files. Served without the token (they hold no secrets; every API call needs it),
@@ -56,6 +60,9 @@ port: int = 0
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "RTSE"
+    # StreamRequestHandler applies this to the connection: a stalled read raises TimeoutError, which
+    # BaseHTTPRequestHandler.handle_one_request turns into closing the connection (also for authorized body reads).
+    timeout = SOCKET_TIMEOUT
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # keep the game console quiet
@@ -147,13 +154,21 @@ class Handler(BaseHTTPRequestHandler):
     def _refuse_post(self, status: int, error: str) -> None:
         """Answers a POST that is refused before its body was read. The body is read (and dropped) first, up to
         MAX_BODY_BYTES: closing a socket with unread data makes Windows reset the connection, so the client could get
-        a connection error instead of this answer. A larger body is not read; the connection is closed instead."""
+        a connection error instead of this answer. A larger body is not read; the connection is closed instead.
+        The read is bounded in time by `timeout` (SOCKET_TIMEOUT): a client that stalls or sends less than it
+        announced gets no answer, just a closed connection."""
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = -1
         if 0 < length <= MAX_BODY_BYTES:
-            self.rfile.read(length)
+            try:
+                complete = len(self.rfile.read(length)) == length
+            except OSError:  # TimeoutError included: the body stalled
+                complete = False
+            if not complete:
+                self.close_connection = True
+                return
         elif length != 0:
             self.close_connection = True
         self._json(status, {"error": error})
