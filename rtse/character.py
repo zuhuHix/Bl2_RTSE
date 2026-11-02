@@ -297,8 +297,33 @@ def _restore(owners: dict[str, Any], xp: int | None, level: int | None) -> None:
     if level is not None:
         try:
             _write(owners, "level", level)
-        except CharacterError as ex:
+        except Exception as ex:  # noqa: BLE001
             logging.error(f"RTSE: could not restore level {level}: {ex}")
+
+
+def _undo_level(owners: dict[str, Any], before: dict[str, Any], level: int, target_xp: int, xp_source: str, reason: str,
+                status: int) -> CharacterError:
+    """After a level write went wrong: puts the level and XP back, reads back, and returns the error to raise. The message
+    says whether the restore stuck; if it didn't, the save's level and XP are not what they were, so the status is 500."""
+    try:
+        observed = read()
+    except Exception:  # noqa: BLE001
+        observed = {"level": None, "xp": None}
+    _restore(owners, before["xp"], before["level"])
+    try:
+        restored = read()
+    except Exception:  # noqa: BLE001
+        restored = {"level": None, "xp": None}
+    _last_write.clear()
+    _last_write.update({"field": "level", "requested": level, "xp_requested": target_xp, "xp_source": xp_source,
+                        "before": {"level": before["level"], "xp": before["xp"]},
+                        "after": {"level": observed["level"], "xp": observed["xp"]},
+                        "restored": {"level": restored["level"], "xp": restored["xp"]}})
+    if restored["level"] == before["level"] and restored["xp"] == before["xp"]:
+        return CharacterError(status, f"{reason}; restored the previous level and XP")
+    return CharacterError(
+        500, f"{reason}; restoring ALSO failed (level now {restored['level']}, XP now {restored['xp']}) - reload the save before playing",
+    )
 
 
 def set_field(params: dict[str, Any]) -> dict[str, Any]:
@@ -314,21 +339,20 @@ def set_field(params: dict[str, Any]) -> dict[str, Any]:
         # Level and XP are stored separately and must move together, XP first. If no experience pool can be written,
         # no alternative sets a level to a chosen value: WillowPlayerController.ExpLevelUp(bCheated) only adds one level
         # from the XP already held, and nothing else in the class data writes XP or level, so refuse and change nothing.
+        if before["xp"] is None or before["level"] is None:
+            # Without the old values there is nothing to put back, so don't start a write that might need undoing.
+            raise CharacterError(409, "can't read the current level/XP, so a change couldn't be undone - nothing was changed")
         where["xp"] = _write_xp(owners, target_xp)
-        where["level"] = _write(owners, "level", level)
-        check = read()
+        try:
+            where["level"] = _write(owners, "level", level)
+            check = read()
+        except Exception as ex:  # noqa: BLE001 - whatever failed after the XP write, both fields go back
+            raise _undo_level(owners, before, level, target_xp, xp_source, f"writing the level failed ({ex})",
+                              ex.status if isinstance(ex, CharacterError) else 409) from ex
         if check["level"] != level or check["xp"] != target_xp:
-            _restore(owners, before["xp"], before["level"])
-            restored = read()
-            _last_write.update({"field": field, "requested": level, "xp_requested": target_xp, "xp_source": xp_source,
-                                "before": {"level": before["level"], "xp": before["xp"]},
-                                "after": {"level": check["level"], "xp": check["xp"]},
-                                "restored": {"level": restored["level"], "xp": restored["xp"]}})
-            raise CharacterError(
-                409,
-                f"the game didn't keep level {level} with {target_xp} XP (it reads level {check['level']}, XP {check['xp']}); "
-                "the old level and XP were put back",
-            )
+            raise _undo_level(owners, before, level, target_xp, xp_source,
+                              f"the game didn't keep level {level} with {target_xp} XP "
+                              f"(it reads level {check['level']}, XP {check['xp']})", 409)
     elif field == "xp":
         where["xp"] = _write_xp(owners, _whole(params.get("value"), 0, MAX_XP, "experience"))
     elif field == "skill_points":

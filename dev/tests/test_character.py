@@ -136,6 +136,78 @@ def test_desync_after_write_restores_before_values_and_raises_409(game):
     assert character._last_write["restored"]["level"] == 10
 
 
+class RefusingPRI(Obj):
+    """A PlayerReplicationInfo whose ExpLevel writes are refused for the next `refuse` tries."""
+
+    refuse = 0
+
+    def __setattr__(self, name, value):
+        if name == "ExpLevel" and self.refuse > 0:
+            self.refuse -= 1
+            raise RuntimeError("the game refused the level write")
+        super().__setattr__(name, value)
+
+
+def test_level_write_failing_after_the_xp_write_restores_both_and_says_so(game):
+    world = make_world(game, level=10)
+    world.pri.__class__ = RefusingPRI
+    world.pri.refuse = 1  # the XP write goes through, the level write is refused once
+    with pytest.raises(character.CharacterError) as info:
+        character.set_field({"field": "level", "value": 20})
+    assert info.value.status == 409
+    assert "writing the level failed" in str(info.value)
+    assert str(info.value).endswith("restored the previous level and XP")
+    assert world.state.xp == XP_TABLE[10] and world.pri.ExpLevel == 10
+    assert character._last_write["restored"] == {"level": 10, "xp": XP_TABLE[10]}
+
+
+def test_unreadable_level_or_xp_is_refused_before_anything_is_written(game):
+    world = make_world(game, level=10)
+    del world.pri.ExpLevel  # the level can't be read, so the old value can't be put back
+    with pytest.raises(character.CharacterError) as info:
+        character.set_field({"field": "level", "value": 20})
+    assert info.value.status == 409
+    assert "nothing was changed" in str(info.value)
+    assert world.state.xp == XP_TABLE[10]
+    assert world.pool.GetCurrentValue() == XP_TABLE[10]
+
+
+def test_unreadable_xp_is_refused_before_anything_is_written(game):
+    world = make_world(game, level=10)
+    def no_xp() -> int:
+        raise RuntimeError("no XP")
+
+    world.pc.GetExpPoints = no_xp
+    world.pc.ResourcePoolManager = None  # so there is no pool to read XP from either
+    with pytest.raises(character.CharacterError) as info:
+        character.set_field({"field": "level", "value": 20})
+    assert info.value.status == 409
+    assert world.pri.ExpLevel == 10 and world.state.xp == XP_TABLE[10]
+
+
+def test_restore_that_does_not_stick_is_a_500_that_says_so(game):
+    world = make_world(game, level=10)
+    world.pri.__class__ = RefusingPRI
+    world.pri.refuse = 999  # every level write is refused
+    real_set = world.pool.SetCurrentValue
+    calls = {"n": 0}
+
+    def xp_write_once(value: float) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:  # the first write (to the new XP) works, the restore is refused
+            raise RuntimeError("the pool is locked")
+        real_set(value)
+
+    world.pool.SetCurrentValue = xp_write_once
+    with pytest.raises(character.CharacterError) as info:
+        character.set_field({"field": "level", "value": 20})
+    assert info.value.status == 500
+    message = str(info.value)
+    assert "restoring ALSO failed" in message and "reload the save before playing" in message
+    assert f"XP now {XP_TABLE[20]}" in message
+    assert character._last_write["restored"]["xp"] == XP_TABLE[20]
+
+
 def test_level_cap_comes_from_limits(game):
     make_world(game, cap=72)
     assert character.read()["limits"]["level"] == [1, 72]
