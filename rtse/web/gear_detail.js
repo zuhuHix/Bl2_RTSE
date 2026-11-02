@@ -2,7 +2,7 @@
 // part picker (search, filters, preview, bolt-on).
 import {
   ELEMENTS, MANUFACTURERS, STAT_GROUPS, classLabel, cleanItemName, describeEffect, formatNumber,
-  itemManufacturer, manufacturerColor, parsePart, rarityColor, slotLabel,
+  dlcOwnership, itemManufacturer, manufacturerColor, PART_STATUS, parsePart, rarityColor, slotLabel, statusText, statusTitle,
 } from "./meta.js";
 import { SLOT_REGION, gunFor, gunSvg } from "./guns.js";
 import { itemClassSvg } from "./icons.js";
@@ -22,6 +22,10 @@ const PAGE = 90;
 
 const stage = { host: null, viewer: null }; // the main 3D view; its canvas survives re-renders
 let hover3d = null;
+// The "CHECK BEFORE APPLY" answers, keyed by item, mode, slot and part. Cleared when the item changes or after any apply.
+const checkCache = new Map();
+let checkGen = 0; // bumped on every clear, so a check still in flight never writes a stale answer
+let lastKept = null; // what the game kept after the last bolt-on or level change: { id, what, kept, removing }
 
 // ---------- which gun a part comes from ----------
 
@@ -56,6 +60,13 @@ function ownerTooltip(option, detail) {
   if (!owned) return option.id;
   const names = owned.slice(1).join(", ");
   return `${option.id}\n${owned[0] > owned.length - 1 ? `On ${owned[0]} guns, e.g. ${names}` : `On: ${names}`}`;
+}
+
+/** A small coloured chip with the status's short label; nothing when the option has no status. */
+function statusChip(option) {
+  const meta = option && PART_STATUS[option.status];
+  if (!meta) return null;
+  return h("span", { class: "pstat", vars: { "--c": meta.color }, title: statusTitle(option) }, h("i", { class: "pdot" }), meta.short);
 }
 
 /** A small plate for the card: the SVG sketch at first, replaced by a render of the real part once it is on screen. */
@@ -106,7 +117,19 @@ export async function loadDetail() {
   if (detail) setDetail(detail);
 }
 
+function forgetChecks() {
+  checkCache.clear();
+  checkGen += 1;
+}
+
+/** Keeps what the game kept after an edit, for the panel on the gear page (none from an older backend). */
+function keepResult(result, removing = false) {
+  const kept = result.applied && result.applied.kept;
+  lastKept = kept ? { id: result.id, what: result.applied.what, kept, removing } : null;
+}
+
 function setDetail(detail) {
+  if (!state.detail || state.detail.id !== detail.id) forgetChecks();
   state.detail = detail;
   state.selected = detail.id; // the game can change an item's id when it rebuilds it
   state.mode = detail.mode;
@@ -165,6 +188,7 @@ export function renderGear(root) {
       h("div", { class: "bench-body" },
         state.mode !== "legal" && detail.slots.length > 0
           && h("div", { class: "warn-banner" }, icon("alert", 18), "Illegal part mode is on. Odd combinations can break stats or crash the game. Save first."),
+        keptPanel(detail),
         renderDiagram(detail, entry, weapon),
         detail.slots.length > 0 && h("ol", { class: "legend" }, detail.slots.map((slot, index) => legendRow(slot, index, detail))))),
     weapon && detail.stats.length > 0
@@ -285,6 +309,7 @@ function legendRow(slot, index, detail) {
           info.manufacturer && h("span", {}, emblem(info.manufacturer, 14), MANUFACTURERS[info.manufacturer].label),
           info.element && h("span", { class: "elem", vars: { "--c": ELEMENTS[info.element].color }, text: ELEMENTS[info.element].label }),
           info.rarity && h("span", { text: info.rarity }),
+          current.status !== "natural" && statusChip(current),
           foreign && h("span", { class: "foreign" }, icon("alert", 13), `from ${info.weaponType}`))),
       h("span", { class: "swap" }, icon("swap", 18)),
     ),
@@ -333,12 +358,14 @@ function renderInfo(detail) {
     ["Item id", detail.id], ["Class", detail.class], ["Location", detail.location],
     ["Level requirement", detail.level], ["Manufacturer grade", detail.grade], ["Game stage", detail.game_stage],
   ];
+  if (detail.dlc) rows.push(["DLC", h("span", {}, detail.dlc.name, unverifiedBadge("The DLC comes from the game's balance data; not confirmed in game"))]);
   return h(
     "div",
     {},
-    h("dl", { class: "kv" }, rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: String(v) })])),
+    h("dl", { class: "kv" }, rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", {}, v)])),
     h("div", { class: "tools" },
       h("button", { class: "btn sm", onclick: () => dump(`/api/debug/item?id=${encodeURIComponent(detail.id)}`) }, "Save item dump"),
+      h("button", { class: "btn sm", onclick: () => dump(`/api/debug/validation?id=${encodeURIComponent(detail.id)}`) }, "Save validation dump"),
       h("button", { class: "btn sm", onclick: () => dump("/api/debug/inventory") }, "Save inventory dump"),
       h("button", { class: "btn sm", onclick: () => dump("/api/debug/gestalts") }, "Save ALL gestalt tables"),
       h("button", { class: "btn sm", onclick: () => dump("/api/debug/coverage") }, "Save mesh coverage report"),
@@ -348,15 +375,53 @@ function renderInfo(detail) {
   );
 }
 
+// ---------- what the game kept ----------
+
+/** After a bolt-on or a level change: what the game kept of it. Shown only on the item it was for; the x clears it. */
+function keptPanel(detail) {
+  if (!lastKept || lastKept.id !== detail.id) return null;
+  const { what, kept, removing } = lastKept;
+  const head = h("div", { class: "kept-head" },
+    h("h3", { text: "What the game kept" }),
+    what && h("span", { class: "kept-what", text: what }),
+    h("button", { class: "btn sm ghost", title: "Dismiss", "aria-label": "Dismiss what the game kept", onclick: () => { lastKept = null; shell.renderWorkspace(); } }, icon("x", 13)));
+  if (kept.error) return h("div", { class: "kept" }, head, h("div", { class: "kept-line bad" }, icon("alert", 15), h("span", { text: kept.error })));
+
+  const name = kept.name && (kept.name.before === kept.name.after ? "unchanged" : `${cleanItemName(kept.name.before)} -> ${cleanItemName(kept.name.after)}`);
+  const rows = (kept.parts || []).filter((part) => part.changed || part.edited);
+  const stats = (kept.stats || []).map((s) => `${s.label.replace(/\s*[-(].*$/, "")}: ${formatNumber(s.before)} -> ${formatNumber(s.after)}`);
+  return h("div", { class: "kept" }, head,
+    name && h("div", { class: "kept-line" }, h("b", { text: "Name" }), h("span", { text: name })),
+    rows.length > 0 && h("div", { class: "kept-table" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", { text: "Slot" }), h("th", { text: "Before" }), h("th", { text: "After" }), h("th", { text: "Edit" }))),
+      h("tbody", {}, rows.map((part) => keptRow(part, removing))))),
+    stats.length > 0 && h("div", { class: "kept-line" }, h("b", { text: "Stats" }), h("span", { text: stats.join("  /  ") })),
+    kept.save_check && h("div", { class: "kept-line" }, saveSummary(kept.save_check)));
+}
+
+function keptRow(part, removing) {
+  const title = (name) => (name ? parsePart(name).title : "empty");
+  let edit = null;
+  if (part.edited) {
+    const kept = removing ? part.after === null : part.after !== null;
+    edit = kept
+      ? h("span", { class: "tick" }, icon("check", 14), "kept")
+      : h("span", { class: "warn" }, icon("alert", 14), "the game did not keep it");
+  }
+  return h("tr", {}, h("td", { text: slotLabel(part.slot) }), h("td", { text: title(part.before) }), h("td", { text: title(part.after) }), h("td", {}, edit));
+}
+
 async function applyLevel(level) {
   if (!Number.isInteger(level)) return toast("Enter a whole number", true);
   const result = await guarded(() => api("POST", "/api/item/set_level", { id: state.selected, mode: state.mode, level }));
-  if (result) { setDetail(result); toast(`Level ${result.level}`); if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true)); }
+  if (result) { forgetChecks(); keepResult(result); setDetail(result); toast(`Level ${result.level}`); if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true)); }
 }
 
 async function applyStat(stat, value) {
   const result = await guarded(() => api("POST", "/api/item/set_stat", { id: state.selected, mode: state.mode, stat: stat.name, value }));
   if (!result) return;
+  forgetChecks();
+  lastKept = null;
   setDetail(result);
   const now = result.stats.find((s) => s.name === stat.name);
   toast(value === null ? `${stat.name} reset` : `${stat.name} ${formatNumber(now && now.value)}`);
@@ -366,6 +431,8 @@ async function applyStat(stat, value) {
 async function applyPart(slotName, option) {
   const result = await guarded(() => api("POST", "/api/item/set_part", { id: state.selected, mode: state.mode, slot: slotName, part: option ? option.id : null }));
   if (!result) return;
+  forgetChecks();
+  keepResult(result, !option);
   closePicker();
   setDetail(result);
   toast(option ? `${slotLabel(slotName)}: ${parsePart(option).title}` : `${slotLabel(slotName)} removed`);
@@ -375,7 +442,7 @@ async function applyPart(slotName, option) {
 // ---------- part picker ----------
 
 function openPicker(slotName) {
-  state.picker = { slot: slotName, query: "", mfr: null, type: null, shown: PAGE, chosen: null, loading: false, stageHost: null, viewer: null, timer: null, watcher: null, lazy: new WeakMap() };
+  state.picker = { slot: slotName, query: "", mfr: null, type: null, status: null, shown: PAGE, chosen: null, loading: false, stageHost: null, viewer: null, timer: null, watcher: null, lazy: new WeakMap() };
   renderPicker();
 }
 
@@ -446,6 +513,7 @@ function filteredOptions(slot) {
   return parsedOptions(slot).filter((entry) =>
     (!p.mfr || entry.info.manufacturer === p.mfr)
     && (!p.type || entry.info.weaponType === p.type)
+    && (!p.status || entry.option.status === p.status)
     && words.every((w) => entry.hay.includes(w) || ownerHay(entry.option).includes(w)));
 }
 
@@ -515,6 +583,15 @@ async function switchMode(mode) {
   else if (p) renderResults();
 }
 
+/** The status filter chips: each status that occurs in this slot, with how many parts have it. */
+function statusCounts(slot) {
+  const counts = new Map();
+  for (const { option } of parsedOptions(slot)) {
+    if (option.status) counts.set(option.status, (counts.get(option.status) || 0) + 1);
+  }
+  return Object.keys(PART_STATUS).filter((key) => counts.has(key)).map((key) => [key, counts.get(key)]);
+}
+
 function renderFilters() {
   const p = state.picker;
   const slot = state.detail.slots.find((s) => s.slot === p.slot);
@@ -535,6 +612,9 @@ function renderFilters() {
       h("button", { class: `fchip${p.mfr === key ? " on" : ""}`, onclick: toggle("mfr", key) }, emblem(key, 15), `${MANUFACTURERS[key].label} ${n}`)),
     count((i) => i.weaponType).map(([key, n]) =>
       h("button", { class: `fchip${p.type === key ? " on" : ""}`, onclick: toggle("type", key), text: `${key} ${n}` })),
+    statusCounts(slot).map(([key, n]) =>
+      h("button", { class: `fchip${p.status === key ? " on" : ""}`, title: PART_STATUS[key].label, onclick: toggle("status", key) },
+        h("i", { class: "pdot", vars: { "--c": PART_STATUS[key].color } }), `${PART_STATUS[key].label} ${n}`)),
   );
 }
 
@@ -569,6 +649,7 @@ function renderResults(append = false) {
         h("div", { class: "t" },
           info.manufacturer && emblem(info.manufacturer, 12),
           h("span", { text: option.name }),
+          statusChip(option),
           foreign && h("span", { class: "flag", title: "From a different gun type" }, icon("alert", 13)))),
     );
   });
@@ -581,10 +662,76 @@ function renderResults(append = false) {
   holder.scrollTop = scrollTop;
 }
 
+// ---------- check before apply ----------
+
+const SAVE_REASON = "A serial round-trip in the game's own encoder; not confirmed in game";
+const STATUS_REASON = "Read from the game's balance data; not confirmed in game";
+
+function checkKey(option, slotName) {
+  return `${state.selected}|${state.mode}|${slotName}|${option.id}`;
+}
+
+/** Asks whether the part survives save and reload on this item. Read-only; each answer is kept until the next apply. */
+function loadCheck(option) {
+  const slotName = state.picker.slot;
+  const key = checkKey(option, slotName);
+  if (checkCache.has(key)) return;
+  const gen = checkGen;
+  const settle = (value) => { if (gen === checkGen) checkCache.set(key, value); };
+  checkCache.set(key, { loading: true });
+  api("GET", `/api/item/check_part?id=${encodeURIComponent(state.selected)}&mode=${state.mode}&slot=${encodeURIComponent(slotName)}&part=${encodeURIComponent(option.id)}`)
+    .then((result) => settle({ result }), (error) => settle({ error: error.message }))
+    .then(() => {
+      const chosen = state.picker && state.picker.chosen;
+      if (gen === checkGen && chosen && chosen.id === option.id) renderPreview();
+    });
+}
+
+/** The CHECK BEFORE APPLY block: the status, the DLC line if any, and the save and reload check. Advisory: Apply is never blocked. */
+function checkSection(option, slotName) {
+  const entry = checkCache.get(checkKey(option, slotName));
+  let save;
+  if (!entry || entry.loading) save = h("div", { class: "hint", text: "Checking whether it survives save/reload..." });
+  else if (entry.error) save = h("div", { class: "chk-sum bad" }, icon("alert", 16), h("span", { text: `Could not check: ${entry.error}` }));
+  else save = saveCheckView(entry.result.save_check);
+  const meta = PART_STATUS[option.status];
+  return h("div", { class: "check" },
+    h("div", { class: "label", text: "CHECK BEFORE APPLY" }),
+    meta && h("div", { class: "chk-status", vars: { "--c": meta.color } },
+      h("i", { class: "pdot" }), h("b", { text: statusText(option) }), unverifiedBadge(STATUS_REASON),
+      option.status_reason && h("span", { class: "chk-reason", text: option.status_reason })),
+    option.dlc && h("div", { class: "chk-dlc", text: `DLC: ${option.dlc.name} (${dlcOwnership(option.dlc)})` }),
+    save);
+}
+
+/** The answer in one line: a tick, an alert or a neutral mark by survives, then the summary and the unverified tag. */
+function saveSummary(save) {
+  const tone = save.survives === true ? "ok" : save.survives === false ? "bad" : "neutral";
+  const glyph = save.survives === true ? "check" : save.survives === false ? "alert" : "info";
+  return h("div", { class: `chk-sum ${tone}` }, icon(glyph, 16), h("span", { text: save.summary }), unverifiedBadge(SAVE_REASON));
+}
+
+/** The whole save and reload check: the summary, each check's result, and anything a save lost. */
+function saveCheckView(save) {
+  const yesNo = (ok) => (ok === true ? "yes" : ok === false ? "no" : "n/a");
+  return h("div", { class: "chk-body" },
+    saveSummary(save),
+    h("ul", { class: "chk-list" }, (save.checks || []).map((c) => h("li", {},
+      h("span", { text: c.name }), h("b", { class: `yn ${yesNo(c.ok)}`, text: yesNo(c.ok) }), h("small", { text: c.detail })))),
+    save.lost && save.lost.length > 0 && h("div", { class: "chk-lost" },
+      save.lost.map((l) => h("div", { title: `${l.field}: ${l.expected} -> ${l.got}`, text: `${l.field}: ${partName(l.expected)} -> ${partName(l.got)}` }))));
+}
+
+/** A part path from a check, as a readable name ("none" for nothing). */
+function partName(path) {
+  return path ? parsePart(path.split(".").pop()).title : "none";
+}
+
 async function choose(option) {
   const p = state.picker;
   p.chosen = option;
   renderResults(true);
+  loadCheck(option);
   renderPreview();
   if (!state.effects.has(option.id)) {
     state.effects.set(option.id, { loading: true });
@@ -642,10 +789,12 @@ function renderPreview() {
         info.rarity && h("span", { text: info.rarity }))),
     h("div", {}, h("div", { class: "label", text: "WHAT IT DOES" }), effects),
     h("div", { class: "path", text: option.id }),
+    checkSection(option, slot.slot),
     h("div", { class: "actions" },
       h("button", { class: "btn primary", disabled: isCurrent || null, onclick: () => applyPart(slot.slot, option) },
         icon("check", 16), isCurrent ? "Already on the gun" : `Bolt on this ${slotLabel(slot.slot).toLowerCase()}`),
       slot.current && h("button", { class: "btn danger", onclick: () => applyPart(slot.slot, null) }, icon("trash", 15), "Remove current part"),
-      h("button", { class: "btn ghost sm", onclick: () => dump(`/api/debug/part?id=${encodeURIComponent(option.id)}&cls=${encodeURIComponent(option.class)}`) }, "Save part dump")),
+      h("button", { class: "btn ghost sm", onclick: () => dump(`/api/debug/part?id=${encodeURIComponent(option.id)}&cls=${encodeURIComponent(option.class)}`) }, "Save part dump"),
+      h("button", { class: "btn ghost sm", onclick: () => dump(`/api/debug/validation?id=${encodeURIComponent(state.selected)}&mode=${state.mode}`) }, "Save validation dump")),
   );
 }

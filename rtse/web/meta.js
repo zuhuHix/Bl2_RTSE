@@ -201,3 +201,38 @@ export function formatNumber(value) {
   if (value === null || value === undefined) return "-";
   return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(5)));
 }
+
+// --- Part status: can the game use this part on this item? Every result is unverified (show unverifiedBadge). ---
+
+/** Label, short label and colour for each status the server sends. */
+export const PART_STATUS = {
+  natural: { label: "Could drop naturally", short: "Natural", color: "#67d983" },
+  dlc: { label: "Needs DLC", short: "DLC", color: "#59c8d8" },
+  custom: { label: "Custom", short: "Custom", color: "#e0a050" },
+  unsupported: { label: "Unsupported", short: "Unsupported", color: "#ff5a2c" },
+};
+
+/** The status text: its label, and for a DLC part the DLC's name. "" when the option has no status. */
+export function statusText(option) {
+  const meta = option && PART_STATUS[option.status];
+  if (!meta) return "";
+  return option.status === "dlc" && option.dlc && option.dlc.name ? `${meta.label}: ${option.dlc.name}` : meta.label;
+}
+
+/** Whether the player has a DLC's content, in words. */
+export function dlcOwnership(dlc) {
+  if (dlc.licensed === true) return "you have it";
+  if (dlc.licensed === false) return "you don't seem to have it";
+  return "ownership unknown";
+}
+
+/** The tooltip for a status: label, reason, DLC ownership, and that it is unverified. "" when there is no status. */
+export function statusTitle(option) {
+  const meta = option && PART_STATUS[option.status];
+  if (!meta) return "";
+  const lines = [meta.label];
+  if (option.status_reason) lines.push(option.status_reason);
+  if (option.status === "dlc" && option.dlc) lines.push(`${option.dlc.name}: ${dlcOwnership(option.dlc)}`);
+  lines.push("(unverified)");
+  return lines.join("\n");
+}

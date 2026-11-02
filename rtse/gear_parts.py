@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from enum import Enum
 from typing import Any, NamedTuple
 
+from mods_base import get_pc
 from unrealsdk import find_all, find_object, logging, unreal
 
 from .routing import ApiError, Params, Route
@@ -50,6 +51,7 @@ class Slot(NamedTuple):
     name: str  # Display name, e.g. "Barrel"
     field: str  # DefinitionData field, e.g. "BarrelPartDefinition"
     options: list[PartRef]
+    statuses: dict[str, dict[str, Any]] | None = None  # part id -> status, status_reason, dlc (see part_status)
 
 
 def _mesh_names(part: unreal.UObject) -> tuple[str, ...]:
@@ -223,6 +225,7 @@ def _part_universe(*, weapon: bool) -> dict[str, dict[str, PartRef]]:
 
     universe: dict[str, dict[str, PartRef]] = {s: {} for s in (WEAPON_SLOTS if weapon else ITEM_SLOTS)}
     owners: dict[str, dict[str, None]] = {}  # part id -> names of the guns/items that can roll it
+    dlc_entries: dict[str, dict[str, Any]] = {}  # part id -> {"base": a non-DLC balance owns it, "dlcs": {id: DlcRef}}
     scanned = 0
     for balance in _balances(weapon):
         try:
@@ -231,11 +234,17 @@ def _part_universe(*, weapon: bool) -> dict[str, dict[str, PartRef]]:
             continue  # An odd balance definition shouldn't stop the whole scan
         scanned += 1
         label = _balance_label(balance, weapon=weapon)
+        dlc = _balance_dlc(balance)  # once per balance; cached
         for slot, parts in lists.items():
             for part in parts:
                 ref = _ref(part)
                 universe[slot].setdefault(ref.id, ref)
                 owners.setdefault(ref.id, {})[label] = None
+                entry = dlc_entries.setdefault(ref.id, {"base": False, "dlcs": {}})
+                if dlc is None:
+                    entry["base"] = True
+                else:
+                    entry["dlcs"].setdefault(dlc.id, dlc)
 
     logging.info(
         f"RTSE: scanned {scanned} {'weapon' if weapon else 'item'} balances, "
@@ -243,6 +252,7 @@ def _part_universe(*, weapon: bool) -> dict[str, dict[str, PartRef]]:
     )
     _universe[weapon] = universe
     _owners[weapon] = owners
+    _part_dlc[weapon] = dlc_entries
     return universe
 
 
@@ -251,6 +261,244 @@ def _mode(params: Params) -> str:
     if mode not in MODES:
         raise ApiError(400, f"mode must be one of {', '.join(MODES)}")
     return mode
+
+
+# --- Part status: natural / DLC / custom / unsupported -------------------------------------------
+# UNVERIFIED in game: DLC sets are read from class data (DlcItemSet, BaseDefinition), IsLicensed() is a game call
+# and the package-name table is a guess. Nothing in this section has been run against the real game yet.
+
+STATUS_NATURAL = "natural"  # in this item's own balance part list for the slot: could drop naturally
+STATUS_DLC = "dlc"  # only used by DLC gear
+STATUS_CUSTOM = "custom"  # comes from another balance, not this item's own list
+STATUS_UNSUPPORTED = "unsupported"  # the wrong part family for this item
+
+MAX_BASE_LEVELS = 6  # BaseDefinition links followed when looking for a DLC set (also stops a loop)
+
+
+class DlcRef(NamedTuple):
+    id: str
+    name: str
+    licensed: bool | None  # IsLicensed() for the local player; None when unknown
+    source: str  # "DlcItemSet" (read from the balance) or "package name (guess)"
+
+
+def dlc_dict(ref: DlcRef | None) -> dict[str, Any] | None:
+    if ref is None:
+        return None
+    return {"name": ref.name, "licensed": ref.licensed, "source": ref.source}
+
+
+# Hand-written, NOT verified in game: a guess from package names. Each key is a token of a part's package name,
+# e.g. "GD_Orchid_Weapons" -> "Orchid". Used only when no balance information is loaded for a part.
+DLC_PACKAGE_HINTS = {
+    "Orchid": "Captain Scarlett and Her Pirate's Booty",
+    "Iris": "Mr. Torgue's Campaign of Carnage",
+    "Sage": "Sir Hammerlock's Big Game Hunt",
+    "Aster": "Tiny Tina's Assault on Dragon Keep",
+    "Anemone": "Commander Lilith & the Fight for Sanctuary",
+    "Lobelia": "Ultimate Vault Hunter Upgrade Pack 2 (Digistruct Peak)",
+    "Tulip": "Mechromancer Pack",
+    "Lilac": "Psycho Pack",
+    "Flax": "T.K. Baha's Bloody Harvest",
+}
+
+# Caches for the DLC lookups, cleared by rescan_parts. Balances by path, DLC sets by path (IsLicensed runs once each).
+_balance_dlc_cache: dict[str, DlcRef | None] = {}
+_dlc_cache: dict[str, DlcRef] = {}
+# Per kind (weapon or item) and part id: whether a non-DLC balance owns the part, and the DLC sets that do.
+_part_dlc: dict[bool, dict[str, dict[str, Any]]] = {}
+
+
+def _attr(obj: Any, name: str) -> Any:
+    """getattr that never raises: a missing or unreadable field is None."""
+    try:
+        return getattr(obj, name, None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _path_of(obj: Any) -> str | None:
+    try:
+        return obj._path_name()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _text(value: Any) -> str:
+    try:
+        return str(value).strip() if value is not None else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _balance_chain(balance: Any) -> Iterator[Any]:
+    """The balance, then its BaseDefinition parents: at most MAX_BASE_LEVELS, stopping at None or at a loop."""
+    seen: set[Any] = set()
+    current = balance
+    for _ in range(MAX_BASE_LEVELS):
+        if current is None:
+            return
+        key = _path_of(current) or id(current)
+        if key in seen:
+            return
+        seen.add(key)
+        yield current
+        current = _attr(current, "BaseDefinition")
+
+
+def _licensed(dlc: Any) -> bool | None:
+    """IsLicensed() for the local player. None when there is no player or the game call fails. UNVERIFIED."""
+    try:
+        pc = get_pc(possibly_loading=True)
+        if pc is None:
+            return None
+        value = dlc.IsLicensed(pc)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(value, tuple):
+        value = value[0] if value else None
+    return None if value is None else bool(value)
+
+
+def _dlc_name(dlc: Any) -> str:
+    package = _attr(dlc, "PackageDef")
+    for text in (
+        _text(_attr(dlc, "ContentDisplayName")),
+        _text(_attr(package, "PackageDisplayName")),
+        _text(_attr(package, "DLCName")),
+        _text(_attr(dlc, "Name")),
+    ):
+        if text:
+            return text
+    return "unnamed DLC"
+
+
+def _dlc_ref(dlc: Any) -> DlcRef:
+    key = _path_of(dlc)
+    if key is not None and key in _dlc_cache:
+        return _dlc_cache[key]
+    ref = DlcRef(id=key or f"object:{id(dlc)}", name=_dlc_name(dlc), licensed=_licensed(dlc), source="DlcItemSet")
+    if key is not None:
+        _dlc_cache[key] = ref
+    return ref
+
+
+def _balance_dlc(balance: Any) -> DlcRef | None:
+    """The DLC set a balance belongs to: its own DlcItemSet, else its BaseDefinition's. None for base-game balances.
+
+    UNVERIFIED: the field names come from class data, the runtime values are not confirmed in game.
+    Never raises. Cached per balance path until rescan_parts.
+    """
+    try:
+        key = _path_of(balance)
+        if key is not None and key in _balance_dlc_cache:
+            return _balance_dlc_cache[key]
+        found: DlcRef | None = None
+        for level in _balance_chain(balance):
+            dlc_set = _attr(level, "DlcItemSet")
+            if dlc_set is not None:
+                found = _dlc_ref(dlc_set)
+                break
+        if key is not None:
+            _balance_dlc_cache[key] = found
+        return found
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def item_dlc(item: unreal.UObject) -> DlcRef | None:
+    """The DLC set of an item's own balance. None when it is base game or unknown. UNVERIFIED (see _balance_dlc)."""
+    try:
+        balance = item.DefinitionData.BalanceDefinition
+    except Exception:  # noqa: BLE001
+        return None
+    return None if balance is None else _balance_dlc(balance)
+
+
+def balance_chain_view(balance: Any) -> list[dict[str, Any]]:
+    """The balance and its BaseDefinition parents, with each DlcItemSet path, for the debug dump."""
+    view: list[dict[str, Any]] = []
+    for level in _balance_chain(balance):
+        dlc_set = _attr(level, "DlcItemSet")
+        view.append({"balance": _path_of(level) or _text(_attr(level, "Name")), "DlcItemSet": _path_of(dlc_set)})
+    return view
+
+
+def _dlc_from_package(part_id: str) -> DlcRef | None:
+    """A guess from the part's package name (its first dotted segment, e.g. "GD_Orchid_Weapons"). UNVERIFIED."""
+    package = part_id.partition(".")[0]
+    for token in package.split("_"):
+        name = DLC_PACKAGE_HINTS.get(token)
+        if name is not None:
+            return DlcRef(id=f"package:{token}", name=name, licensed=None, source="package name (guess)")
+    return None
+
+
+def part_dlc(part_id: str, *, weapon: bool) -> DlcRef | None:
+    """Which DLC a part belongs to, judged from every balance that can roll it. None when it is base game.
+
+    Without a scanned universe for this part (legal mode, or a part no loaded balance uses) it falls back to the
+    package-name guess.
+    """
+    entry = _part_dlc.get(weapon, {}).get(part_id)
+    if entry is None:
+        return _dlc_from_package(part_id)
+    if entry["base"]:
+        return None  # some balance that owns it has no DLC
+    return next(iter(entry["dlcs"].values()), None)
+
+
+_EQUIPABLE_FAMILIES = (
+    "ShieldPartDefinition",
+    "GrenadeModPartDefinition",
+    "ClassModPartDefinition",
+    "ArtifactPartDefinition",
+)
+_WEAPON_PART_CLASSES = ("WeaponPartDefinition", "WeaponNamePartDefinition")
+
+
+def _family_problem(ref: PartRef, *, weapon: bool, own_classes: set[str]) -> str | None:
+    """Why a part is the wrong family for this item, or None. Not checked in game: these rules come from class names."""
+    cls = ref.class_name
+    if weapon and cls not in _WEAPON_PART_CLASSES:
+        return f"a {cls} is not a weapon part (not checked in game)"
+    if not weapon and cls in _WEAPON_PART_CLASSES:
+        return "a weapon part on an item (not checked in game)"
+    if not weapon and cls in _EQUIPABLE_FAMILIES:
+        others = sorted(c for c in own_classes if c in _EQUIPABLE_FAMILIES and c != cls)
+        if others:
+            return f"a {cls}, but this item's own parts here are {others[0]} (not checked in game)"
+    return None
+
+
+def _status(status: str, reason: str, dlc: DlcRef | None = None) -> dict[str, Any]:
+    return {"status": status, "status_reason": reason, "dlc": dlc_dict(dlc)}
+
+
+def part_status(
+    ref: PartRef,
+    *,
+    slot: str,
+    weapon: bool,
+    legal_ids: set[str],
+    own_classes: set[str],
+) -> dict[str, Any]:
+    """How one part stands on one item's slot. Precedence: natural > unsupported > dlc > custom.
+
+    legal_ids are the part ids in this item's own balance list for the slot; own_classes are the class names
+    of those parts. The DLC and family results are UNVERIFIED in game.
+    """
+    if ref.id in legal_ids:
+        return _status(STATUS_NATURAL, f"In this item's own balance list for the {slot} slot")
+    problem = _family_problem(ref, weapon=weapon, own_classes=own_classes)
+    if problem is not None:
+        return _status(STATUS_UNSUPPORTED, problem[:1].upper() + problem[1:])
+    dlc = part_dlc(ref.id, weapon=weapon)
+    if dlc is not None:
+        if dlc.source == "DlcItemSet":
+            return _status(STATUS_DLC, f"Only used by DLC gear: {dlc.name}", dlc)
+        return _status(STATUS_DLC, f"Looks like DLC content from its package name: {dlc.name} (guess)", dlc)
+    return _status(STATUS_CUSTOM, f"From another balance, not this item's own {slot} slot")
 
 
 def _slots(item: unreal.UObject, mode: str) -> list[Slot]:
@@ -282,7 +530,18 @@ def _slots(item: unreal.UObject, mode: str) -> list[Slot]:
             options.setdefault(_ref(current).id, _ref(current))
 
         ordered = sorted(options.values(), key=lambda r: (r.id.rpartition(".")[2].lower(), r.id))
-        slots.append(Slot(name, field, ordered))
+        here = legal.get(name, ())
+        legal_ids = {r.id for r in here}
+        own_classes = {r.class_name for r in here}
+        statuses: dict[str, dict[str, Any]] = {}
+        for ref in ordered:
+            try:
+                statuses[ref.id] = part_status(
+                    ref, slot=name, weapon=weapon, legal_ids=legal_ids, own_classes=own_classes,
+                )
+            except Exception:  # noqa: BLE001, S112
+                continue  # one odd part must never break the picker
+        slots.append(Slot(name, field, ordered, statuses))
     return slots
 
 
@@ -472,6 +731,9 @@ def rescan_parts(_params: Params) -> dict[str, Any]:
     """Forgets the cached part universe so newly loaded parts (e.g. after a map change) show up."""
     _universe.clear()
     _owners.clear()
+    _part_dlc.clear()
+    _balance_dlc_cache.clear()
+    _dlc_cache.clear()
     return {"ok": True}
 
 
