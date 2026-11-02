@@ -20,6 +20,12 @@ Every write route runs inside one transaction, opened by the route registry arou
     Group the records of one user action. Nested begin() calls join the outer transaction. `transaction(...)` is the
     context manager form (commit on success, abort with the exception on error, exception re-raised).
 
+    Nesting rule (all or nothing): the nested levels share ONE transaction. An abort() at any level marks the whole
+    transaction failed (`tx.failed = True`, `tx.error` = the first error), even if the caller catches the nested
+    exception and carries on. When the outermost level closes, a failed transaction is discarded (no records kept,
+    `tx.outcome = "aborted"`) whether that close is commit() or abort(); only a transaction that never saw an abort
+    ends with `tx.outcome = "committed"` and keeps its records. So an undo history never holds half of a user action.
+
 `entries() -> list[dict]`: committed transactions, newest last (always empty in this stub).
 
 All functions are called on the game thread (routes run there), so the real implementation does not need locks for
@@ -36,15 +42,23 @@ Undo = Callable[[], Any]
 
 
 class Transaction:
-    """One user action's worth of records. `records` stays empty while the journal is a stub."""
+    """One user action's worth of records. `records` stays empty while the journal is a stub.
 
-    __slots__ = ("label", "params", "records", "depth")
+    failed:  True once abort() was called at any nesting level (see the nesting rule in the module docstring).
+    error:   the first error passed to abort(), if any.
+    outcome: None while open; "committed" or "aborted" once the outermost level closed.
+    """
+
+    __slots__ = ("label", "params", "records", "depth", "failed", "error", "outcome")
 
     def __init__(self, label: str, params: dict[str, Any] | None) -> None:
         self.label = label
         self.params = params
         self.records: list[dict[str, Any]] = []
         self.depth = 1
+        self.failed = False
+        self.error: BaseException | None = None
+        self.outcome: str | None = None
 
 
 _current: Transaction | None = None
@@ -66,23 +80,33 @@ def begin(label: str, params: dict[str, Any] | None = None) -> Transaction:
 
 
 def _close(tx: Transaction) -> bool:
-    """Leaves one nesting level; True when the outermost level closed."""
+    """Leaves one nesting level; when the outermost level closes, settles the outcome. True when it closed."""
     global _current  # noqa: PLW0603
     tx.depth -= 1
     if tx.depth > 0:
         return False
     if _current is tx:
         _current = None
+    if tx.failed:
+        tx.records.clear()  # all or nothing: a failed user action leaves no history
+        tx.outcome = "aborted"
+    else:
+        tx.outcome = "committed"
     return True
 
 
 def commit(tx: Transaction) -> None:
-    """Closes a transaction that succeeded. No-op beyond bookkeeping for now."""
+    """Closes one level of a transaction that succeeded. At the outermost level the transaction is kept, unless an
+    abort() at any level already marked it failed, in which case it is discarded. No storage yet (stub)."""
     _close(tx)
 
 
 def abort(tx: Transaction, error: BaseException | None = None) -> None:
-    """Closes a transaction that failed (its records are discarded). No-op beyond bookkeeping for now."""
+    """Closes one level of a transaction that failed and marks the WHOLE transaction failed, so the outermost close
+    discards every record, even if a caller caught the nested error and carried on."""
+    tx.failed = True
+    if tx.error is None:
+        tx.error = error
     _close(tx)
 
 
