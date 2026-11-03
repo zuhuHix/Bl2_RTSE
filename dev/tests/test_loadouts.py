@@ -1122,3 +1122,70 @@ def test_expiry_is_enforced_on_lookup(save, stored_in_tmp, monkeypatch):
     with pytest.raises(LoadoutError) as caught:
         loadouts.run_route({"run_id": first["run_id"]})
     assert caught.value.status == 404 and first["run_id"] not in loadouts._runs
+
+
+# --- final round: XP around a level step -------------------------------------------------------
+
+
+def level_scenario(save: FakeSave) -> str:
+    """XP 1003 at level 10 (3 above the level's minimum); the build raises the level, the skill points and a gun,
+    and the gun's step fails, so the level step has to be rolled back."""
+    save.character.update(level=10, xp=1003, skill_points=3)
+    save.add(make_gun("Guns.Pistol.A", parts={"Barrel": "Barrel.A"}, level=10))
+    store(build(character={"level": 12, "skill_points": 5}, gear=[gun_entry(parts={"Barrel": "Barrel.B"})]),
+          overwrite=True)
+    save.explode = lambda name, _params: name == "set_part"
+    return preview("Test build")["plan_id"]
+
+
+def test_rolling_back_a_level_step_restores_and_verifies_the_exact_xp(save, stored_in_tmp):
+    report = loadouts.apply({"name": "Test build", "plan_id": level_scenario(save)})
+    assert statuses(report) == ["rolled_back", "rolled_back", "failed"]
+    assert (save.character["level"], save.character["xp"]) == (10, 1003)
+    assert report["summary"]["rollback_failed"] == 0
+
+
+def test_a_level_step_whose_xp_cannot_be_read_first_is_refused_without_writing(save, stored_in_tmp, monkeypatch):
+    # The reviewer's reproduction: XP can't be read just before the level write, while the setter itself works.
+    plan_id = level_scenario(save)
+    real = loadouts._read_xp
+    reads = {"n": 0}
+
+    def first_read_fails() -> int:
+        reads["n"] += 1
+        if reads["n"] == 1:
+            raise character.CharacterError(503, "the experience pool is busy")
+        return real()
+
+    monkeypatch.setattr(loadouts, "_read_xp", first_read_fails)
+    report = loadouts.apply({"name": "Test build", "plan_id": plan_id})
+    assert statuses(report) == ["failed", "not_run", "not_run"]
+    assert "nothing was written" in report["steps"][0]["error"]
+    assert not any(name == "character.set_field" for name, _params in save.calls)
+    assert (save.character["level"], save.character["xp"]) == (10, 1003)  # not 1000
+    assert report["summary"]["rollback_failed"] == 0
+
+
+def test_xp_that_cannot_be_verified_after_a_level_rollback_is_rollback_failed(save, stored_in_tmp, monkeypatch):
+    plan_id = level_scenario(save)
+    real = loadouts._read_xp
+    reads = {"n": 0}
+
+    def verify_fails() -> int:
+        reads["n"] += 1
+        if reads["n"] > 1:  # the read before the write works; the check after the rollback doesn't
+            raise character.CharacterError(503, "the experience pool is busy")
+        return real()
+
+    monkeypatch.setattr(loadouts, "_read_xp", verify_fails)
+    report = loadouts.apply({"name": "Test build", "plan_id": plan_id})
+    assert statuses(report) == ["rollback_failed", "rolled_back", "failed"]
+    assert report["summary"]["rollback_failed"] == 1
+    assert report["steps"][0]["error"].endswith("reload the save before playing")
+
+
+def test_an_unavailable_skill_tree_fingerprints_a_fixed_marker(save, monkeypatch):
+    monkeypatch.setattr(skills, "read", lambda: {"available": False, "reason": "busy at 12:00:01", "skills": []})
+    first = loadouts._basis(["skills"])
+    monkeypatch.setattr(skills, "read", lambda: {"available": False, "reason": "busy at 12:00:02", "skills": []})
+    assert loadouts._basis(["skills"]) == first
