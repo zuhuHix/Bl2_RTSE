@@ -361,6 +361,21 @@ def test_an_own_entry_whose_index_points_at_weight_zero_is_custom_with_the_weigh
     assert statuses["Barrel.Zero"] == {"status": "custom", "status_reason": WEIGHT_ZERO, "dlc": None, "unknown": None}
 
 
+def test_an_empty_manufacturer_list_ignores_the_index_and_means_weight_100(game):
+    # Regression: the part-level index 1 points at weight 0, but an EMPTY Manufacturers array means weight 100
+    # (BLCMods parts guide). A missing Manufacturers field still falls back to the part-level index.
+    empty, missing = Part("Barrel.EmptyList"), Part("Barrel.NoField")
+    balance = FakeBalance("Balance.Pistol", data={
+        "Barrel": part_list(entry(empty, weight=1, manufacturers=[]), entry(missing, weight=1)),
+    })
+    gun = own_barrel(game, balance)
+
+    statuses = slot_named(gun, "legal", "Barrel").statuses or {}
+
+    assert statuses["Barrel.EmptyList"]["status"] == "natural"
+    assert statuses["Barrel.NoField"] == {"status": "custom", "status_reason": WEIGHT_ZERO, "dlc": None, "unknown": None}
+
+
 def test_an_own_entry_for_another_manufacturer_is_custom_and_one_for_this_manufacturer_is_natural(game):
     jakobs = Part("Manufacturer.Jakobs", "ManufacturerDefinition")  # the gun's manufacturer (make_gun)
     bandit = Part("Manufacturer.Bandit", "ManufacturerDefinition")

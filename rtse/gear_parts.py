@@ -166,6 +166,16 @@ def _as_list(value: Any) -> list[Any]:
         return []
 
 
+def _is_empty_array(value: Any) -> bool:
+    """True only for a readable array with no entries; a missing (None) or unreadable field is not "empty"."""
+    if value is None:
+        return False
+    try:
+        return len(value) == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _slot_enabled(data: Any) -> bool:
     """bEnabled when the struct has it. Without the field, a slot counts as enabled when it has entries."""
     if data is None:
@@ -255,14 +265,18 @@ def _resolve_weight(source: Any, index: Any) -> float | None:
 def _entry_outcome(entry: Any, item: unreal.UObject, slot: str, source: Any) -> tuple[str, str]:
     """How one own-list entry stands on this item: ("natural", ""), ("custom", reason) or ("unknown", reason).
 
-    Which index applies: an entry for this item's manufacturer uses that entry's DefaultWeightIndex. With no
-    manufacturer list, or with a default entry (Manufacturer None, which applies to every manufacturer), the
-    part-level DefaultWeightIndex applies. A list that names only other manufacturers means the part cannot drop
-    on this item.
+    Which index applies: an entry for this item's manufacturer uses that entry's DefaultWeightIndex. A default entry
+    (Manufacturer None, which applies to every manufacturer) uses the part-level DefaultWeightIndex. An EMPTY
+    Manufacturers array ignores DefaultWeightIndex entirely and means weight 100, so the part can drop (BLCMods parts
+    guide). A list that names only other manufacturers means the part cannot drop on this item. A Manufacturers field
+    that is missing or unreadable falls back to the part-level index.
     UNVERIFIED: see _resolve_weight.
     """
     index = _attr(entry, "DefaultWeightIndex")
-    manufacturers = _as_list(_attr(entry, "Manufacturers"))
+    raw_manufacturers = _attr(entry, "Manufacturers")
+    if _is_empty_array(raw_manufacturers):
+        return STATUS_NATURAL, ""  # empty list: weight 100 whatever DefaultWeightIndex says
+    manufacturers = _as_list(raw_manufacturers)
     if manufacturers:
         mine = _path_of(_attr(item.DefinitionData, "ManufacturerDefinition"))
         matching = [m for m in manufacturers if mine is not None and _path_of(_attr(m, "Manufacturer")) == mine]
