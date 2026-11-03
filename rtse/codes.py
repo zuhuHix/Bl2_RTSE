@@ -8,21 +8,44 @@ Public API (other streams call these; the routes at the bottom are the HTTP side
       ok is False when the code is malformed or its checksum fails. That check is offline and verified on real codes.
       The card comes from the GAME's UnpackSerialNumber (UNVERIFIED). When the game cannot decode a code that is
       otherwise fine, ok stays True, card is None and warning says why.
+      NO time budget: it decodes every code in one go. On the game thread prefer decode_chunk.
+
+  decode_chunk(text: str, start: int = 0) -> dict
+      The preview route's reply: {entries (this chunk only; `index` stays absolute), found (codes in the whole text),
+      next (the `start` for the next call, or None when done)}. One call does at most CHUNK_STEPS (20) codes and stops
+      starting new ones after CHUNK_SECONDS (2.0 s), but always does at least one. A `start` outside 0..found: 400.
 
   import_items(codes: list[str], destination: str = "backpack") -> dict
   import_pairs(pairs: list[tuple[str, str]]) -> dict      (one destination per code)
-      {results: [{code, ok, error, id, name, unique_id}], imported, failed, path: "unpack" | "create" | "mixed"}.
-      Every imported item gets a FRESH UniqueId: not held by any backpack, equipped or bank item, nor by an earlier
-      code in the same batch. A bad code fails on its own and the rest of the batch still imports. More than
-      MAX_CODES codes, or a destination other than "backpack" / "bank", raises ApiError 400.
+      {results: [{code, ok, error, id, name, unique_id}], processed, remaining (always 0), imported, failed,
+      path: "unpack" | "create" | "mixed"}. Imports EVERY code (no time budget; on the game thread prefer
+      import_chunk). Every imported item gets a FRESH UniqueId: not held by any backpack, equipped or bank item, nor
+      by an earlier code in the same batch. Each add is verified (add_verified): exactly one new entry carrying that
+      UniqueId must appear, or every new entry is removed again and that code fails. A bad code fails on its own and
+      the rest still import. More than MAX_CODES codes, or a destination other than "backpack" / "bank": ApiError 400.
+
+  import_chunk(codes: list[str], destination: str = "backpack") -> dict
+      The import route's reply: the same shape for the first codes only, within the same budget as decode_chunk.
+      `processed` codes were handled (results has one row each, in order); the caller re-sends codes[processed:]
+      until `remaining` is 0.
 
   export_code(source) -> (code, header | None, warnings)
       source is an item (its CreateSerialNumber()) or a bank ChestData entry with no Inventory (its
       InventorySerialNumber). header is item_serial.read_header's dict, or None when its version is not 7.
 
+  verified_backup(source, definition, is_weapon, *, name, action) -> code
+      The item's code, but only when RTSE could restore the item from it: the header reads (version 7), the checksum
+      matches, and the game decodes the bytes back to a definition whose every field (UniqueId, GameStage,
+      ManufacturerGradeIndex, BalanceDefinition, every part slot, ...) equals `definition`. Otherwise ApiError 409
+      "could not make a restorable code for <name>, so it was not <action> (...)". Delete and move call it first.
+
+  add_verified(definition, is_weapon, destination, unique_id, mark) -> {id, name}
+      Adds a definition and checks the destination gained exactly one entry with `unique_id` (and lost nothing).
+      Otherwise every new entry is removed again (exactly) and ApiError 409 says what happened.
+
 Other modules use the helpers below (gear_inventory.py, bank.py): serial_struct, serial_bytes,
 definition_of_code_bytes, definition_from_serial, copy_definition, card_for_bytes, card_from_definition,
-fresh_unique_id, place_definition, find_added, undo_add, restore_code, check_codes.
+fresh_unique_id, place_definition, undo_add, restore_code, Budget, ImportBatch.
 
 Verified offline: the code layer (rtse/item_serial.py, tested on real published codes in dev/tests/test_item_serial.py).
 NOT verified in a live game: every game call in this module and in bank.py / gear_inventory.py. Each is marked
@@ -39,6 +62,8 @@ from __future__ import annotations
 import contextlib
 import json
 import random
+import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -51,6 +76,8 @@ from .gear_parts import ITEM_SLOTS, WEAPON_SLOTS, _balance_label, _humanize, _ti
 from .routing import ApiError, Params, Route
 
 MAX_CODES = 200
+CHUNK_SECONDS = 2.0  # a preview/import request stops starting new codes after this long (game thread budget)
+CHUNK_STEPS = 20  # ... or after this many codes, whichever comes first; it always does at least one
 MARK_STANDARD = 1
 DESTINATIONS = ("backpack", "bank")
 DEFAULT_BUFFER = 40  # serial buffer size when there is no live serial to copy it from (UNVERIFIED)
@@ -65,6 +92,7 @@ DEBUG_BANK_ENTRIES = 3
 LAST_PATHS: dict[str, str] = {}
 
 _RNG = random.SystemRandom()
+_now = time.monotonic  # the chunk clock; tests patch it
 
 WEAPON_DEFINITION_FIELDS = (
     "UniqueId", "GameStage", "TitlePartDefinition", "PrefixPartDefinition",
@@ -201,6 +229,9 @@ def definition_from_serial(serial: Any, is_weapon: bool) -> tuple[Any, str]:
 def definition_of_code_bytes(data: bytes, template: Any | None = None) -> tuple[Any, bool, str]:
     """(definition, is_weapon, path) for code bytes. Raises SerialError for a bad header, DecodeError when the game cannot decode it."""
     header = item_serial.read_header(data)
+    # Before ANY game call: checksum, version and every asset reference bounds-checked against the asset tables
+    # (rtse/item_assets.py). The game decoder is still trusted for what valid references mean together.
+    item_serial.validate_assets(data)
     if template is None:
         template = _template()
     definition, path = definition_from_serial(serial_struct(data, template), header["is_weapon"])
@@ -295,6 +326,68 @@ def export_code(source: Any) -> tuple[str, dict[str, Any] | None, list[str]]:
     return item_serial.bytes_to_code(data), header, warnings
 
 
+def _field_value(definition: Any, name: str) -> Any:
+    try:
+        return _plain(getattr(definition, name))
+    except Exception:  # noqa: BLE001
+        return "<unreadable>"
+
+
+def verified_backup(source: Any, definition: Any, is_weapon: bool, *, name: str = "the item", action: str = "deleted") -> str:
+    """The code of `source`, checked to restore the same item (see the module docstring). ApiError 409 otherwise.
+
+    `definition` is the item's own definition (its DefinitionData, or a bank entry's). Every field in
+    WEAPON_DEFINITION_FIELDS / ITEM_DEFINITION_FIELDS is compared, objects by path name. UNVERIFIED game calls:
+    CreateSerialNumber / InventorySerialNumber and the game decode (UnpackSerialNumber or Create*FromSerialNumber).
+    """
+
+    def refuse(why: str) -> ApiError:
+        return ApiError(409, f"could not make a restorable code for {name}, so it was not {action} ({why})")
+
+    try:
+        code, header, _warnings = export_code(source)
+    except Exception as ex:  # noqa: BLE001
+        raise refuse(f"its serial could not be read: {ex}") from None
+    if header is None:
+        raise refuse("its header could not be read, or its serial version is not 7")
+    if not header["checksum_ok"]:
+        raise refuse("its checksum does not match")
+    if header["is_weapon"] != is_weapon:
+        raise refuse("its code says weapon/item the other way round")
+    try:
+        decoded, decoded_weapon, _path_used = definition_of_code_bytes(item_serial.code_to_bytes(code))
+    except Exception as ex:  # noqa: BLE001
+        raise refuse(f"the game could not decode it: {ex}") from None
+    if decoded_weapon != is_weapon:
+        raise refuse("the game decoded it as the wrong kind")
+    fields = WEAPON_DEFINITION_FIELDS if is_weapon else ITEM_DEFINITION_FIELDS
+    different = [field for field in fields if _field_value(definition, field) != _field_value(decoded, field)]
+    if different:
+        raise refuse(f"decoding it gives a different item: {', '.join(different)} differ")
+    return code
+
+
+# --- Chunk budget --------------------------------------------------------------------------------------
+
+
+class Budget:
+    """One request's work limit: at most CHUNK_STEPS steps, no new step after CHUNK_SECONDS, and never fewer than one
+    step. `unlimited=True` never stops (the full Python APIs decode / import_items)."""
+
+    def __init__(self, *, unlimited: bool = False) -> None:
+        self.unlimited = unlimited
+        self.started = _now()
+        self.steps = 0
+
+    def spent(self) -> bool:
+        if self.unlimited or self.steps == 0:
+            return False
+        return self.steps >= CHUNK_STEPS or _now() - self.started >= CHUNK_SECONDS
+
+    def step(self) -> None:
+        self.steps += 1
+
+
 # --- Decode (preview) ------------------------------------------------------------------------------------
 
 
@@ -309,33 +402,65 @@ def _entry(index: int, code: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
-def decode(text: str) -> list[dict[str, Any]]:
-    """The preview entries for the codes in `text` (see the module docstring). More than MAX_CODES codes: ApiError 400."""
+def _extract(text: str) -> list[str]:
     found = item_serial.extract_codes(text or "")
     if len(found) > MAX_CODES:
         raise ApiError(400, f"at most {MAX_CODES} codes at a time ({len(found)} found)")
+    return found
+
+
+def _decode_one(index: int, code: str, used: set[int], template: Any | None) -> dict[str, Any]:
+    entry = _entry(index, code)
+    try:
+        data = item_serial.code_to_bytes(code)
+        header = item_serial.read_header(data)
+    except item_serial.SerialError as ex:
+        entry["error"] = str(ex)
+        return entry
+    entry.update(kind=_kind(header), unique_id=header["unique_id"], uid_clash=header["unique_id"] in used)
+    if not header["checksum_ok"]:
+        entry["error"] = CHECKSUM_ERROR
+        return entry
+    try:
+        item_serial.validate_assets(data)  # offline: a code with impossible asset references is an error, not a card
+    except item_serial.SerialError as ex:
+        entry["error"] = f"not a valid item: {ex}"
+    else:
+        entry["ok"] = True
+        entry["card"], entry["warning"] = card_for_bytes(
+            data, card_id=f"preview:{index}", location="Preview", unique_id=header["unique_id"], template=template,
+        )
+    return entry
+
+
+def _decode_range(found: list[str], start: int, budget: Budget) -> list[dict[str, Any]]:
+    if start >= len(found):
+        return []
     used = gear_inventory.used_unique_ids()
     template = _template()
     entries: list[dict[str, Any]] = []
-    for index, code in enumerate(found):
-        entry = _entry(index, code)
-        try:
-            data = item_serial.code_to_bytes(code)
-            header = item_serial.read_header(data)
-        except item_serial.SerialError as ex:
-            entry["error"] = str(ex)
-            entries.append(entry)
-            continue
-        entry.update(kind=_kind(header), unique_id=header["unique_id"], uid_clash=header["unique_id"] in used)
-        if not header["checksum_ok"]:
-            entry["error"] = CHECKSUM_ERROR
-        else:
-            entry["ok"] = True
-            entry["card"], entry["warning"] = card_for_bytes(
-                data, card_id=f"preview:{index}", location="Preview", unique_id=header["unique_id"], template=template,
-            )
-        entries.append(entry)
+    for index in range(start, len(found)):
+        if budget.spent():
+            break
+        budget.step()
+        entries.append(_decode_one(index, found[index], used, template))
     return entries
+
+
+def decode(text: str) -> list[dict[str, Any]]:
+    """The preview entries for EVERY code in `text`, with no time budget (see the module docstring). More than
+    MAX_CODES codes: ApiError 400."""
+    return _decode_range(_extract(text), 0, Budget(unlimited=True))
+
+
+def decode_chunk(text: str, start: int = 0) -> dict[str, Any]:
+    """One budgeted slice of the preview, from code `start` on: {entries, found, next} (see the module docstring)."""
+    found = _extract(text)
+    if isinstance(start, bool) or not isinstance(start, int) or not 0 <= start <= len(found):
+        raise ApiError(400, f"'start' must be a whole number from 0 to {len(found)}")
+    entries = _decode_range(found, start, Budget())
+    end = start + len(entries)
+    return {"entries": entries, "found": len(found), "next": end if end < len(found) else None}
 
 
 # --- Import ----------------------------------------------------------------------------------------------
@@ -351,7 +476,7 @@ def fresh_unique_id(used: set[int]) -> int:
 
 def place_definition(definition: Any, is_weapon: bool, destination: str, mark: int = MARK_STANDARD) -> str | None:
     """Adds a definition to the backpack (ClientAdd...ToBackpack) or the bank. None on success, else why not.
-    UNVERIFIED calls. Success is confirmed by find_added, not by the return value."""
+    UNVERIFIED calls. Success is confirmed by add_verified's snapshots, never by this return value alone."""
     try:
         if destination == "bank":
             return None if bank.add_def_to_bank(definition, is_weapon) else "the bank refused it (it may be full)"
@@ -369,18 +494,124 @@ def place_definition(definition: Any, is_weapon: bool, destination: str, mark: i
         return f"the game refused to add it ({ex})"
 
 
-def find_added(destination: str, unique_id: int) -> dict[str, Any] | None:
-    """{id, name} of the item with this UniqueId in the destination, or None when it is not there."""
+def _backpack_rows() -> list[tuple[str, int, Any]]:
+    """(id, UniqueId, item) for every backpack item, in order."""
+    manager = gear_inventory._manager()  # noqa: SLF001
+    return [(gear_inventory._item_id(i), stats.unique_id(i), i) for i in manager.Backpack if i is not None]  # noqa: SLF001
+
+
+def _unmatched(side: list[Any], other: list[Any], key: Callable[[Any], Any]) -> list[Any]:
+    left = Counter(key(row) for row in other)
+    out = []
+    for row in side:
+        if left[key(row)] > 0:
+            left[key(row)] -= 1
+        else:
+            out.append(row)
+    return out
+
+
+def _add_problem(problem: str | None, destination: str, unique_id: int, new: int) -> str:
+    if problem and new == 0:
+        return problem
+    added = f"the game added {new} entries" + (f" (and said: {problem})" if problem else "")
+    return f"adding to the {destination} did not give exactly one new entry with UniqueId {unique_id}: {added}"
+
+
+def _cleanup_note(failures: list[str], vanished: list[str]) -> str:
+    if failures:
+        note = f"; removing the new entries failed: {'; '.join(failures)}"
+    else:
+        note = "; every new entry was removed again"
+    if vanished:
+        note += f"; these vanished while adding, re-import them: {', '.join(vanished)}"
+    return note
+
+
+def _take(rows: list[Any], counts: Counter[int], uid_of: Callable[[Any], int]) -> list[Any]:
+    """The rows (last first) that account for `counts`: as many per UniqueId as counted."""
+    wanted = Counter(counts)
+    out = []
+    for row in reversed(rows):
+        if wanted[uid_of(row)] > 0:
+            wanted[uid_of(row)] -= 1
+            out.append(row)
+    return out
+
+
+def _vanished_code(item: Any) -> str:
+    # A vanished object may still answer CreateSerialNumber (UNVERIFIED); else only its name is known.
+    return _safe(lambda: export_code(item)[0], f"{_safe(item.GetHumanReadableName, 'an item')} (no code)")
+
+
+def _add_verified_backpack(definition: Any, is_weapon: bool, unique_id: int, mark: int) -> dict[str, Any]:
+    before = _backpack_rows()
+    problem = place_definition(definition, is_weapon, "backpack", mark)
+    after = _backpack_rows()
+    lost = Counter(row[1] for row in before) - Counter(row[1] for row in after)
+    gained = Counter(row[1] for row in after) - Counter(row[1] for row in before)
+    new = _unmatched(after, before, key=lambda row: row[0])
+    if problem is None and gained == Counter({unique_id: 1}) and not lost:
+        row = next((r for r in reversed(new) if r[1] == unique_id), None) or next(
+            r for r in reversed(after) if r[1] == unique_id
+        )
+        return {"id": row[0], "name": row[2].GetHumanReadableName()}
+    # Remove only what is really new (as many per UniqueId as the backpack gained), never an existing item whose
+    # object the game may have re-created.
+    extra = _take(new, gained, lambda row: row[1])
+    failures: list[str] = []
+    for _item_id, _uid, item in extra:
+        try:
+            gear_inventory.remove_from_backpack(gear_inventory._manager(), item)  # noqa: SLF001
+        except ApiError as ex:
+            failures.append(str(ex))
+    gone = _unmatched(before, after, key=lambda row: row[0])
+    vanished = [_vanished_code(row[2]) for row in _take(gone, lost, lambda row: row[1])]
+    message = _add_problem(problem, "backpack", unique_id, len(extra))
+    if extra or lost:
+        message += _cleanup_note(failures, vanished)
+    raise ApiError(409, message)
+
+
+def _add_verified_bank(definition: Any, is_weapon: bool, unique_id: int) -> dict[str, Any]:
+    before = bank.snapshot()
+    problem = place_definition(definition, is_weapon, "bank")
+    after = bank.snapshot()
+    lost, gained = bank.uid_changes(before, after)
+    gone, new = bank.diff(before, after)
+    if problem is None and gained == Counter({unique_id: 1}) and not lost:
+        snap = next((s for s in reversed(new) if s.unique_id == unique_id), None)
+        if snap is None:
+            snap = next(s for s in reversed(after) if s.unique_id == unique_id)
+        return {"id": bank.bank_id(snap.index, unique_id), "name": bank.entry_card(snap.index, snap.entry)[0]["name"]}
+    # Remove only the entries that are really new: as many per UniqueId as the bank gained (a merely re-serialized
+    # entry keeps its UniqueId count and is left alone). Highest index first, so the lower indices stay valid.
+    extra = _take(new, gained, lambda snap: snap.unique_id)
+    failures: list[str] = []
+    for snap in sorted(extra, key=lambda s: s.index, reverse=True):
+        try:
+            bank.remove_exact(snap.index, snap.entry)
+        except ApiError as ex:
+            failures.append(str(ex))
+    vanished = bank.put_back(gone, lost) if lost else []
+    message = _add_problem(problem, "bank", unique_id, len(extra))
+    if extra or lost:
+        message += _cleanup_note(failures, vanished)
+        if lost and not vanished:
+            message += "; entries that vanished while adding were put back"
+    raise ApiError(409, message)
+
+
+def add_verified(
+    definition: Any, is_weapon: bool, destination: str, unique_id: int, mark: int = MARK_STANDARD,
+) -> dict[str, Any]:
+    """Adds `definition` to the destination and returns {id, name} of the new entry, verified by snapshots: the
+    destination must gain exactly one entry, carrying `unique_id`, and lose nothing. Otherwise every new entry is
+    removed (exactly) and ApiError 409 says what happened (a refused add keeps its own message, e.g. "the backpack is
+    full"). UNVERIFIED game calls (see place_definition, bank.snapshot, bank.remove_exact)."""
     if destination == "bank":
-        found = bank.find_by_unique_id(unique_id)
-        if found is None:
-            return None
-        index, entry = found
-        return {"id": bank.bank_id(index, unique_id), "name": bank.entry_card(index, entry)[0]["name"]}
-    item = gear_inventory.backpack_item(unique_id)
-    if item is None:
-        return None
-    return {"id": gear_inventory._item_id(item), "name": item.GetHumanReadableName()}  # noqa: SLF001
+        return _add_verified_bank(definition, is_weapon, unique_id)
+    return _add_verified_backpack(definition, is_weapon, unique_id, mark)
 
 
 def undo_add(destination: str, unique_id: int) -> None:
@@ -388,7 +619,7 @@ def undo_add(destination: str, unique_id: int) -> None:
     if destination == "bank":
         found = bank.find_by_unique_id(unique_id)
         if found is not None:
-            bank.remove_bank_entry(*found)
+            bank.remove_exact(*found)
         return
     item = gear_inventory.backpack_item(unique_id)
     if item is not None:
@@ -401,17 +632,6 @@ def restore_code(code: str, destination: str) -> dict[str, Any]:
     if not result["imported"]:
         logging.error(f"RTSE: could not restore a deleted item: {result['results'][0]['error']}")
     return result
-
-
-def check_codes(code_list: list[str]) -> None:
-    """ApiError 400 for the first code that is not a valid BL2 code or fails its checksum (used before a replace)."""
-    for number, code in enumerate(code_list, start=1):
-        try:
-            header = item_serial.read_header(item_serial.code_to_bytes(code))
-        except item_serial.SerialError as ex:
-            raise ApiError(400, f"code {number} is not a valid BL2 code ({ex}); nothing was removed") from None
-        if not header["checksum_ok"]:
-            raise ApiError(400, f"code {number} fails its checksum; nothing was removed")
 
 
 def _result(code: str) -> dict[str, Any]:
@@ -443,13 +663,10 @@ def _import_one(code: str, destination: str, used: set[int], template: Any | Non
         result["error"] = f"the game could not decode this code ({ex})"
         return result, None
     definition.UniqueId = unique_id  # belt and braces: the serial already carries it (UNVERIFIED struct write)
-    problem = place_definition(definition, is_weapon, destination, MARK_STANDARD)
-    if problem:
-        result["error"] = problem
-        return result, path
-    added = find_added(destination, unique_id)
-    if added is None:
-        result["error"] = "the item was not found right after adding it; check the backpack/bank in game before trying again"
+    try:
+        added = add_verified(definition, is_weapon, destination, unique_id, MARK_STANDARD)
+    except ApiError as ex:
+        result["error"] = str(ex)
         return result, path
     journal.record(
         "inventory.add", target=added["id"], before=None, after={"code": code, "unique_id": unique_id},
@@ -459,29 +676,71 @@ def _import_one(code: str, destination: str, used: set[int], template: Any | Non
     return result, path
 
 
-def import_pairs(pairs: list[tuple[str, str]]) -> dict[str, Any]:
-    """Imports each (code, destination). See the module docstring for the result shape and the errors."""
+class ImportBatch:
+    """The codes of one request: the UniqueIds already used (so each import gets a fresh one), the serial template,
+    and the result rows in order. gear_inventory adds its own "skipped" rows with skip()."""
+
+    def __init__(self) -> None:
+        self.used = gear_inventory.used_unique_ids()
+        self.template = _template()
+        self.results: list[dict[str, Any]] = []
+        self.paths: set[str] = set()
+        self.skipped = 0
+
+    def run(self, code: str, destination: str) -> dict[str, Any]:
+        result, path = _import_one(code, destination, self.used, self.template)
+        self.results.append(result)
+        if path is not None:
+            self.paths.add(path)
+        return result
+
+    def skip(self, result: dict[str, Any]) -> None:
+        self.results.append(result)
+        self.skipped += 1
+
+    def summary(self, total: int) -> dict[str, Any]:
+        """The reply: results, processed, remaining (of `total`), imported, failed (skipped rows not counted), path."""
+        imported = sum(1 for result in self.results if result["ok"])
+        path_name = "mixed" if len(self.paths) > 1 else (next(iter(self.paths)) if self.paths else "unpack")
+        processed = len(self.results)
+        return {
+            "results": self.results, "processed": processed, "remaining": total - processed, "imported": imported,
+            "failed": processed - imported - self.skipped, "path": path_name,
+        }  # fmt: skip
+
+
+def check_pairs(pairs: list[tuple[str, str]]) -> None:
+    """ApiError 400 for more than MAX_CODES pairs or an unknown destination (checked before anything is imported)."""
     if len(pairs) > MAX_CODES:
         raise ApiError(400, f"at most {MAX_CODES} codes at a time")
     if any(destination not in DESTINATIONS for _code, destination in pairs):
         raise ApiError(400, "destination must be backpack or bank")
-    used = gear_inventory.used_unique_ids()
-    template = _template()
-    results: list[dict[str, Any]] = []
-    paths: set[str] = set()
+
+
+def _import(pairs: list[tuple[str, str]], budget: Budget) -> dict[str, Any]:
+    check_pairs(pairs)
+    batch = ImportBatch()
     for code, destination in pairs:
-        result, path = _import_one(code, destination, used, template)
-        results.append(result)
-        if path is not None:
-            paths.add(path)
-    imported = sum(1 for result in results if result["ok"])
-    path_name = "mixed" if len(paths) > 1 else (next(iter(paths)) if paths else "unpack")
-    return {"results": results, "imported": imported, "failed": len(results) - imported, "path": path_name}
+        if budget.spent():
+            break
+        budget.step()
+        batch.run(code, destination)
+    return batch.summary(len(pairs))
+
+
+def import_pairs(pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    """Imports EVERY (code, destination), with no time budget. See the module docstring for the result and errors."""
+    return _import(pairs, Budget(unlimited=True))
 
 
 def import_items(codes: list[str], destination: str = "backpack") -> dict[str, Any]:
-    """Imports every code into one destination. See import_pairs."""
+    """Imports every code into one destination, with no time budget. See import_pairs."""
     return import_pairs([(code, destination) for code in codes])
+
+
+def import_chunk(codes: list[str], destination: str = "backpack") -> dict[str, Any]:
+    """Imports the first codes that fit in one request's budget (see the module docstring)."""
+    return _import([(code, destination) for code in codes], Budget())
 
 
 # --- Routes ----------------------------------------------------------------------------------------------
@@ -513,8 +772,12 @@ def preview_route(params: Params) -> dict[str, Any]:
     text = params.get("text", "")
     if not isinstance(text, str):
         raise ApiError(400, "'text' must be text")
-    entries = decode(text)
-    return {"entries": entries, "found": len(entries)}
+    start = params.get("start", 0)
+    if isinstance(start, str):  # a query string value
+        if not start.strip().isdigit():
+            raise ApiError(400, "'start' must be a whole number")
+        start = int(start)
+    return decode_chunk(text, start)
 
 
 def import_route(body: Params) -> dict[str, Any]:
@@ -522,7 +785,7 @@ def import_route(body: Params) -> dict[str, Any]:
     destination = body.get("destination", "backpack")
     if not isinstance(code_list, list) or not all(isinstance(code, str) for code in code_list):
         raise ApiError(400, "'codes' must be a list of text codes")
-    return import_items(code_list, destination)
+    return import_chunk(code_list, destination)
 
 
 def _record(report: dict[str, Any], key: str, read: Callable[[], Any]) -> None:

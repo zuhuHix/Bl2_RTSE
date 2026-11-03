@@ -21,12 +21,13 @@ from fakes_inventory import (
     SHIELD_CODE,
     STRUCT_OPTIONS,
     Item,
+    Obj,
     bad_checksum_code,
     chest_entry,
     install,
     make_definition,
 )
-from rtse import codes
+from rtse import bank, codes
 from rtse import item_serial as s
 from rtse.routing import ApiError
 
@@ -108,7 +109,7 @@ def test_more_than_200_codes_is_a_400():
 def test_preview_route_reports_found(monkeypatch):
     install(monkeypatch)
     out = codes.preview_route({"text": f"{PISTOL_CODE} junk {SHIELD_CODE}"})
-    assert out["found"] == 2 and len(out["entries"]) == 2
+    assert out["found"] == 2 and len(out["entries"]) == 2 and out["next"] is None
 
 
 # --- import ----------------------------------------------------------------------------------------
@@ -319,3 +320,259 @@ def test_debug_dump_survives_an_item_that_cannot_export(monkeypatch, tmp_path):
     assert report["items"][0]["round_trip"]["mismatches"] == []
     assert str(report["items"][1]["export"]).startswith("<error")
     assert report["items"][1]["round_trip"].startswith("<error")
+
+
+# --- chunking (one request does a bounded amount of game work) ----------------------------------------
+
+
+def _codes_text(count: int) -> str:
+    return "\n".join([PISTOL_CODE, SHIELD_CODE] * (count // 2) + [PISTOL_CODE] * (count % 2))
+
+
+def _slow_clock(monkeypatch) -> None:
+    clock = iter(range(0, 1_000_000, 5))  # every reading of the clock is 5 s after the last
+    monkeypatch.setattr(codes, "_now", lambda: next(clock))
+
+
+def test_decode_chunk_walks_45_codes_in_three_requests(monkeypatch):
+    install(monkeypatch)
+    text = _codes_text(45)
+    first = codes.decode_chunk(text)
+    assert first["found"] == 45 and first["next"] == 20
+    assert [entry["index"] for entry in first["entries"]] == list(range(20))
+    second = codes.decode_chunk(text, first["next"])
+    assert second["next"] == 40 and [entry["index"] for entry in second["entries"]] == list(range(20, 40))
+    assert second["entries"][0]["card"]["id"] == "preview:20"
+    third = codes.decode_chunk(text, second["next"])
+    assert third["next"] is None and [entry["index"] for entry in third["entries"]] == list(range(40, 45))
+
+
+def test_decode_chunk_time_budget_still_does_one_code(monkeypatch):
+    install(monkeypatch)
+    _slow_clock(monkeypatch)
+    out = codes.decode_chunk(_codes_text(3))
+    assert len(out["entries"]) == 1 and out["next"] == 1
+
+
+def test_decode_chunk_checks_start(monkeypatch):
+    install(monkeypatch)
+    assert codes.decode_chunk(PISTOL_CODE, 1) == {"entries": [], "found": 1, "next": None}
+    for bad in (-1, 2):
+        with pytest.raises(ApiError) as info:
+            codes.decode_chunk(PISTOL_CODE, bad)
+        assert info.value.status == 400
+    with pytest.raises(ApiError):
+        codes.preview_route({"text": PISTOL_CODE, "start": "x"})
+
+
+def test_preview_route_reads_start_from_the_query_string(monkeypatch):
+    install(monkeypatch)
+    out = codes.preview_route({"text": _codes_text(25), "start": "20"})
+    assert [entry["index"] for entry in out["entries"]] == [20, 21, 22, 23, 24] and out["next"] is None
+
+
+def test_decode_without_budget_returns_everything(monkeypatch):
+    install(monkeypatch)
+    _slow_clock(monkeypatch)
+    assert len(codes.decode(_codes_text(45))) == 45
+
+
+def test_import_chunk_walks_45_codes_in_three_requests(monkeypatch):
+    world = install(monkeypatch, slots=100)
+    remaining = [PISTOL_CODE] * 45
+    replies = []
+    while remaining:
+        reply = codes.import_route({"codes": remaining, "destination": "backpack"})
+        replies.append(reply)
+        assert len(reply["results"]) == reply["processed"]
+        remaining = remaining[reply["processed"]:]
+        assert reply["remaining"] == len(remaining)
+    assert [(r["processed"], r["remaining"], r["imported"]) for r in replies] == [(20, 25, 20), (20, 5, 20), (5, 0, 5)]
+    assert len(world.manager.Backpack) == 45
+    assert len({item.DefinitionData.UniqueId for item in world.manager.Backpack}) == 45
+
+
+def test_import_chunk_time_budget_still_imports_one(monkeypatch):
+    world = install(monkeypatch)
+    _slow_clock(monkeypatch)
+    reply = codes.import_chunk([PISTOL_CODE, SHIELD_CODE, PISTOL_CODE], "backpack")
+    assert reply["processed"] == 1 and reply["remaining"] == 2 and reply["imported"] == 1
+    assert len(world.manager.Backpack) == 1
+
+
+def test_import_items_has_no_budget(monkeypatch):
+    world = install(monkeypatch, slots=100)
+    _slow_clock(monkeypatch)
+    result = codes.import_items([PISTOL_CODE] * 45, "backpack")
+    assert result["processed"] == 45 and result["remaining"] == 0 and len(world.manager.Backpack) == 45
+
+
+# --- add_verified -----------------------------------------------------------------------------------
+
+
+def test_add_verified_returns_the_new_entry(monkeypatch):
+    world = install(monkeypatch)
+    added = codes.add_verified(make_definition(31, weapon=True), True, "bank", 31)
+    assert added["id"] == "bank:0:31" and world.bank.used() == 1
+    added = codes.add_verified(make_definition(32, weapon=True), True, "backpack", 32)
+    assert added["id"] == world.manager.Backpack[0]._path_name()
+
+
+def test_add_verified_bank_with_two_new_entries_removes_both(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.append(chest_entry(SHIELD_BYTES, weapon=False))
+    real_add = world.bank._add
+
+    def twice(definition, ignore_size, unique):
+        real_add(definition, weapon=True)
+        return real_add(definition, weapon=True)
+
+    world.bank.AddWeaponFromDef = twice
+    with pytest.raises(ApiError) as info:
+        codes.add_verified(make_definition(31, weapon=True), True, "bank", 31)
+    assert info.value.status == 409 and "added 2" in str(info.value)
+    assert [bank.entry_unique_id(e) for e in world.bank.TheChest] == [_uid(SHIELD_BYTES)]
+
+
+def test_add_verified_bank_true_but_nothing_added(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.AddWeaponFromDef = lambda definition, ignore_size, unique: True
+    with pytest.raises(ApiError) as info:
+        codes.add_verified(make_definition(31, weapon=True), True, "bank", 31)
+    assert info.value.status == 409 and "added 0" in str(info.value)
+
+
+def test_add_verified_bank_wrong_unique_id_is_removed(monkeypatch):
+    world = install(monkeypatch)
+    real_add = world.bank._add
+    world.bank.AddWeaponFromDef = lambda d, ignore_size, unique: real_add(make_definition(99, weapon=True), weapon=True)
+    with pytest.raises(ApiError) as info:
+        codes.add_verified(make_definition(31, weapon=True), True, "bank", 31)
+    assert info.value.status == 409 and "removed again" in str(info.value)
+    assert world.bank.used() == 0
+
+
+def test_add_verified_backpack_with_two_new_items_removes_both(monkeypatch):
+    world = install(monkeypatch)
+    kept = _owned(world, SHIELD_BYTES, weapon=False, name="Kept")
+    real_add = world.manager._add
+
+    def twice(definition, mark, ready=False):
+        real_add(definition, weapon=True, mark=mark)
+        real_add(definition, weapon=True, mark=mark)
+
+    world.manager.ClientAddWeaponToBackpack = twice
+    with pytest.raises(ApiError) as info:
+        codes.add_verified(make_definition(31, weapon=True), True, "backpack", 31)
+    assert info.value.status == 409 and "added 2" in str(info.value)
+    assert world.manager.Backpack == [kept]
+
+
+def test_import_into_the_bank_fails_when_the_wrong_item_appears(monkeypatch):
+    """The old import trusted the add; now the code fails and the bank is left as it was."""
+    world = install(monkeypatch)
+    real_add = world.bank._add
+    world.bank.AddItemFromDef = lambda d, ignore_size, unique: real_add(make_definition(99, weapon=False), weapon=False)
+    result = codes.import_items([SHIELD_CODE], "bank")
+    assert result["imported"] == 0 and "UniqueId" in result["results"][0]["error"]
+    assert world.bank.used() == 0 and world.journal == []
+
+
+# --- verified_backup ---------------------------------------------------------------------------------
+
+
+def test_verified_backup_returns_the_code(monkeypatch):
+    world = install(monkeypatch)
+    item = _owned(world, PISTOL_BYTES, weapon=True, name="Infinity")
+    assert codes.verified_backup(item, item.DefinitionData, True, name="Infinity") == PISTOL_CODE
+
+
+def test_verified_backup_refuses_a_bad_checksum(monkeypatch):
+    install(monkeypatch)
+    bad = s.code_to_bytes(bad_checksum_code())
+    item = Item(make_definition(_uid(bad), weapon=False), weapon=False, name="Broken", data=bad)
+    with pytest.raises(ApiError) as info:
+        codes.verified_backup(item, item.DefinitionData, False, name="Broken")
+    assert info.value.status == 409 and "could not make a restorable code for Broken" in str(info.value)
+    assert "checksum" in str(info.value)
+
+
+def test_verified_backup_refuses_an_unknown_version(monkeypatch):
+    install(monkeypatch)
+    data = bytearray(PISTOL_BYTES)
+    data[0] = (data[0] & 0x80) | 6  # version 6
+    item = Item(make_definition(_uid(PISTOL_BYTES), weapon=True), weapon=True, name="Old", data=bytes(data))
+    with pytest.raises(ApiError) as info:
+        codes.verified_backup(item, item.DefinitionData, True, name="Old")
+    assert "version" in str(info.value)
+
+
+def test_verified_backup_refuses_when_the_game_cannot_decode(monkeypatch):
+    world = install(monkeypatch)
+    item = _owned(world, PISTOL_BYTES, weapon=True)
+
+    def no_classes(name):
+        raise RuntimeError("no such class")
+
+    monkeypatch.setattr(codes, "_cdo", no_classes)
+    with pytest.raises(ApiError) as info:
+        codes.verified_backup(item, item.DefinitionData, True)
+    assert "could not decode" in str(info.value)
+
+
+def test_verified_backup_refuses_a_different_level(monkeypatch):
+    world = install(monkeypatch)
+    item = _owned(world, PISTOL_BYTES, weapon=True)
+    world.stage = 31  # the game decodes the code to a different level
+    with pytest.raises(ApiError) as info:
+        codes.verified_backup(item, item.DefinitionData, True, action="moved")
+    assert "GameStage" in str(info.value) and "not moved" in str(info.value)
+
+
+def test_verified_backup_refuses_a_different_part(monkeypatch):
+    world = install(monkeypatch)
+    item = _owned(world, PISTOL_BYTES, weapon=True)
+    item.DefinitionData.BarrelPartDefinition = Obj("/Game/Parts/Barrel_Special")
+    with pytest.raises(ApiError) as info:
+        codes.verified_backup(item, item.DefinitionData, True)
+    assert "BarrelPartDefinition" in str(info.value)
+
+
+# --- review item 5: a crafted serial never reaches the game's decoder ------------------------------------
+
+
+def _crafted_out_of_range_code() -> str:
+    """A real weapon code whose body part index is one past its sublibrary, re-signed so the checksum passes."""
+    from rtse import item_assets
+
+    data = s.code_to_bytes(PISTOL_CODE)
+    plain = s.decrypt(data)
+    layout = {f[0]: f for f in s.field_layout(s.read_header(data)["is_weapon"])}
+    _, group, start, width = layout["body"]
+    sublibrary_bits, asset_bits = item_assets.CONFIGS[group]
+    info = s.validate_assets(data)["fields"]["body"]
+    count = item_assets.SETS[info["set"]][group][info["sublibrary"]]
+    value = count | (info["sublibrary"] << asset_bits)
+    if info["set"] != 0:
+        value |= 1 << (asset_bits + sublibrary_bits - 1)
+    bits = int.from_bytes(plain, "little")
+    bits = (bits & ~(((1 << width) - 1) << start)) | (value << start)
+    plain = bytearray(bits.to_bytes(len(plain), "little"))
+    plain[5:7] = s.checksum(bytes(plain)).to_bytes(2, "big")
+    crafted = s.encrypt(bytes(plain))
+    assert s.read_header(crafted)["checksum_ok"]
+    return s.bytes_to_code(crafted)
+
+
+def test_crafted_asset_reference_never_reaches_the_game(monkeypatch):
+    install(monkeypatch)
+
+    def native(*_args, **_kwargs):
+        raise AssertionError("the game decoder was called with an unchecked serial")
+
+    monkeypatch.setattr(codes, "definition_from_serial", native)
+    crafted = _crafted_out_of_range_code()
+    [entry] = codes.decode(crafted)
+    assert entry["ok"] is False and entry["card"] is None and "out of range" in entry["error"]
+    result = codes.import_items([crafted], "backpack")
+    assert result["imported"] == 0 and "out of range" in result["results"][0]["error"]

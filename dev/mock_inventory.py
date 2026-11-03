@@ -4,7 +4,12 @@ Loaded by dev/mock_server.py, which serves /api/items itself. Backpack and Equip
 ITEMS list, so imports, copies and moves show up in the sidebar. The bank is a list kept here.
 
 A code is "BL2(" + base64 of a small JSON payload, so export and import round-trip inside the mock. A code whose
-base64 is valid but whose payload isn't ours gets a made-up card. RTSE_MOCK_BANK=closed makes the bank unavailable.
+base64 is valid but whose payload isn't ours gets a made-up card. A valid code whose body contains NOCARD (for
+example BL2(NOCARDAA)) gets no card, only a warning, like a game that could not decode it.
+RTSE_MOCK_BANK=closed makes the bank unavailable.
+
+Chunks: preview and import answer CHUNK codes or items per request (the real server budgets by time and by count, so
+the page must keep asking). Imports are additive: "replace" is refused, and "equipped" decides what happens to Equipped rows.
 """
 
 from __future__ import annotations
@@ -19,7 +24,9 @@ import sys
 
 BACKPACK_MAX = 39
 BANK_MAX = 24
-MAX_CODES = 200
+MAX_CODES = 200  # the most codes one preview text may hold
+CHUNK = 7  # codes or items per preview/import request; small on purpose, so the page shows several chunks
+EQUIPPED_RULES = ("skip", "backpack")
 BANK_OPEN = os.environ.get("RTSE_MOCK_BANK") != "closed"
 UNVERIFIED = "Bank access and item import use game calls nobody has tested in a live game yet"
 CODE = re.compile(r"BL2\(([^()\s]*)\)")
@@ -276,21 +283,42 @@ def _preview_entry(index: int, token: str, inner: str, used: set) -> dict:
     except ValueError as error:
         return {"index": index, "code": token, "ok": False, "error": str(error), "kind": None, "unique_id": None,
                 "card": None, "uid_clash": False}
+    kind = "weapon" if item.kind == "weapon" else "item"
+    if "NOCARD" in inner:  # the game decoded the code but could not build a card for it
+        return {
+            "index": index, "code": token, "ok": True, "error": None, "kind": kind, "unique_id": uid, "card": None,
+            "warning": "The game could not read this item's card. The code is valid and can still be imported.",
+            "uid_clash": uid in used,
+        }
     return {
         "index": index, "code": token, "ok": True, "error": None,
-        "kind": "weapon" if item.kind == "weapon" else "item", "unique_id": uid,
+        "kind": kind, "unique_id": uid,
         "card": _card(item, f"preview:{index}", uid), "uid_clash": uid in used,
     }
 
 
+def _int_param(params: dict, key: str, default: int) -> int:
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} must be a whole number") from None
+
+
 def _get_codes_preview(params):
     text = params.get("text") or ""
+    start = _int_param(params, "start", 0)
     matches = list(CODE.finditer(text))
     if len(matches) > MAX_CODES:
         raise ValueError(f"at most {MAX_CODES} codes at a time")
+    if not 0 <= start <= len(matches):
+        raise ValueError(f"start must be between 0 and {len(matches)}")
     used = {_uid(item) for item in _all_known()}
-    entries = [_preview_entry(i, m.group(0), m.group(1), used) for i, m in enumerate(matches)]
-    return {"entries": entries, "found": len(matches)}
+    end = min(start + CHUNK, len(matches))
+    entries = [_preview_entry(i, matches[i].group(0), matches[i].group(1), used) for i in range(start, end)]
+    return {"entries": entries, "found": len(matches), "next": end if end < len(matches) else None}
 
 
 def _failed(code: str, error: str) -> dict:
@@ -314,7 +342,8 @@ def _import_one(code: str, destination: str):
 
 def _summary(results: list, **extra) -> dict:
     imported = sum(1 for r in results if r["ok"])
-    return {"results": results, "imported": imported, "failed": len(results) - imported, **extra}
+    skipped = sum(1 for r in results if r.get("skipped"))
+    return {"results": results, "imported": imported, "failed": len(results) - imported - skipped, **extra}
 
 
 def _post_codes_import(body):
@@ -322,22 +351,21 @@ def _post_codes_import(body):
     destination = body.get("destination", "backpack")
     if not isinstance(codes, list) or not all(isinstance(code, str) for code in codes):
         raise ValueError("codes must be a list of strings")
-    if len(codes) > MAX_CODES:
-        raise ValueError(f"at most {MAX_CODES} codes at a time")
     if destination not in ("backpack", "bank"):
         raise ValueError("destination must be backpack or bank")
     if destination == "bank":
         _ensure_bank_open()
-    if codes and _free(destination) <= 0:
+    chunk = codes[:CHUNK]
+    if chunk and _free(destination) <= 0:
         raise ValueError(f"{destination} is full")
     results, sources = [], set()
-    for code in codes:
+    for code in chunk:
         result, from_export = _import_one(code, destination)
         results.append(result)
         if from_export is not None:
             sources.add(from_export)
     path = "mixed" if len(sources) == 2 else ("create" if sources == {False} else "unpack")
-    return _summary(results, path=path)
+    return _summary(results, path=path, processed=len(chunk), remaining=len(codes) - len(chunk))
 
 
 def _post_duplicate(body):
@@ -395,42 +423,49 @@ def _get_inventory_export(_params):
 
 
 def _post_inventory_import(body):
+    if "replace" in body and body["replace"] is not False:
+        raise ValueError("replace was removed: imports only add items; delete items separately")
     entries = body.get("items")
     destination = body.get("destination", "backpack")
+    equipped = body.get("equipped", "skip")
     if not isinstance(entries, list):
         raise ValueError("items must be a list")
     if destination not in ("backpack", "bank", "original"):
         raise ValueError("destination must be backpack, bank or original")
-    if len(entries) > MAX_CODES:
-        raise ValueError(f"at most {MAX_CODES} items at a time")
-    pairs = []
-    for entry in entries:
+    if equipped not in EQUIPPED_RULES:
+        raise ValueError("equipped must be skip or backpack")
+    chunk = entries[:CHUNK]
+    rows = []  # (code, target place, is an Equipped row)
+    for entry in chunk:
         code = entry.get("code") if isinstance(entry, dict) else None
         if not isinstance(code, str):
             raise ValueError("each item needs a code")
+        location = entry.get("location")
         if destination == "original":
-            target = "bank" if entry.get("location") == "Bank" else "backpack"
+            target = "bank" if location == "Bank" else "backpack"
         else:
             target = destination
-        pairs.append((code, target))
-    receivers = {target for _, target in pairs}
-    replace = bool(body.get("replace"))
+        rows.append((code, target, location == "Equipped"))
+    # an Equipped row goes to its target only when equipped == "backpack"; otherwise it is skipped
+    receivers = {target for _, target, is_equipped in rows if not is_equipped or equipped == "backpack"}
     if "bank" in receivers:
         _ensure_bank_open()
-    doomed = []
-    if replace and "backpack" in receivers:
-        doomed += [i for i in _items() if i.location == "Backpack"]
-    if replace and "bank" in receivers:
-        doomed += list(_bank())
-    # refuse before touching anything when a receiving place has no room even after the replace
     for target in receivers:
-        room = _free(target) + sum(1 for item in doomed if item.location == ("Bank" if target == "bank" else "Backpack"))
-        if room <= 0:
+        if _free(target) <= 0:
             raise ValueError(f"{target} is full")
-    for item in doomed:
-        _remove(item)
-    results = [_import_one(code, target)[0] for code, target in pairs]
-    return _summary(results, removed=len(doomed))
+    results, skipped = [], 0
+    for code, target, is_equipped in rows:
+        if is_equipped and equipped != "backpack":
+            skipped += 1
+            results.append({"code": code, "ok": False, "error": "equipped item skipped", "skipped": True,
+                            "id": None, "name": None, "unique_id": None})
+            continue
+        results.append(_import_one(code, target)[0])
+    warnings = []
+    if skipped:
+        warnings.append(f"{skipped} equipped {'item was' if skipped == 1 else 'items were'} skipped. "
+                        "Tick 'Also add equipped items to the backpack' to add them.")
+    return _summary(results, processed=len(chunk), remaining=len(entries) - len(chunk), skipped=skipped, warnings=warnings)
 
 
 def _get_debug_codes(_params):

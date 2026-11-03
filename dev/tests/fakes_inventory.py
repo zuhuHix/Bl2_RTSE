@@ -137,11 +137,25 @@ class Manager(Obj):
             self.Backpack.remove(item)
 
 
+class Chest(list):
+    """TheChest stand-in: a list whose `del chest[i]` can be refused (refuse_delete), so RTSE falls back to ByDef."""
+
+    refuse_delete = False
+
+    def __delitem__(self, index: Any) -> None:
+        if self.refuse_delete:
+            raise RuntimeError("this array does not support deletes")
+        super().__delitem__(index)
+
+
 class Bank(Obj):
-    """WillowInventoryStorage stand-in. Entries hold serials (Inventory None), like the chest data the game keeps."""
+    """WillowInventoryStorage stand-in. Entries hold serials (Inventory None), like the chest data the game keeps.
+    Remove*ByDef removes EVERY entry with the definition's UniqueId (the worst case RTSE must survive)."""
 
     def __init__(self, world: World, *, max_size: int = 24) -> None:
-        super().__init__("/Game/PC.Bank", Class=SimpleNamespace(Name="WillowInventoryStorage"), TheChest=[], MaxSlots=max_size)
+        super().__init__(
+            "/Game/PC.Bank", Class=SimpleNamespace(Name="WillowInventoryStorage"), TheChest=Chest(), MaxSlots=max_size,
+        )
         self.world = world
         self.max_size = max_size
         self.calls: list[tuple] = []
