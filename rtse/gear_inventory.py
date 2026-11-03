@@ -27,6 +27,9 @@ MAX_CHAIN_LENGTH = 64  # Guards against a corrupt linked list looping forever
 EQUIPPED = "Equipped"
 BACKPACK = "Backpack"
 BANK = "Bank"
+# The "method" of a delete or move reply: how the source was removed. A backpack removal is always the game's
+# RemoveFromInventory; a bank removal is bank.remove_exact's answer (bank.METHOD_GAME or bank.METHOD_DIRECT).
+METHOD_GAME = "game"
 
 
 def _manager() -> unreal.UObject:
@@ -296,7 +299,11 @@ def remove_from_backpack(manager: unreal.UObject, item: unreal.UObject) -> None:
 
 
 def inventory_export(_params: Params) -> dict[str, Any]:
-    """Every item (equipped, backpack, bank) as a code, for saving to a file. Items with no code are skipped with a warning."""
+    """Every item (equipped, backpack, bank) as a code, for saving to a file. Items with no code are skipped with a warning.
+
+    Bank entries are NOT decoded here (no game decode, so this stays fast): the code comes straight from the serial
+    bytes, and the name / class / level come from the card cache that /api/bank fills, else from the placeholder card
+    ("Not decoded yet", class from InventoryClass)."""
     from . import bank, codes  # local: both import this module
 
     found, warnings = _inventory(_manager())
@@ -312,7 +319,8 @@ def inventory_export(_params: Params) -> dict[str, Any]:
         warnings.append(f"bank: {ex}")
         entries = []
     for index, entry in entries:
-        card, warning = bank.entry_card(index, entry)
+        card, warning = bank.entry_card(index, entry, decode=False)
+        card.pop("pending", None)
         if warning:
             warnings.append(f"{card['name']}: {warning}")
         row = _export_row(card, bank.export_source(entry), warnings, codes)
@@ -392,7 +400,7 @@ def delete(params: Params) -> dict[str, Any]:
         destination = "bank"
         definition, is_weapon = _bank_definition(entry, name, "deleted")
         code = codes.verified_backup(bank.export_source(entry), definition, is_weapon, name=name)
-        bank.remove_exact(index, entry)
+        method = bank.remove_exact(index, entry)
     else:
         item, location = _find_item(params)
         if location == EQUIPPED:
@@ -406,11 +414,14 @@ def delete(params: Params) -> dict[str, Any]:
             if _item_id(item) in _backpack_ids(manager):
                 raise
             raise ApiError(409, f"{ex}; {name} itself was removed, its code to restore it: {code}") from None
+        method = METHOD_GAME
     journal.record(
         "inventory.delete", target=item_id, before={"name": name, "unique_id": unique_id, "code": code}, after=None,
         undo=lambda: codes.restore_code(code, destination),
     )  # fmt: skip
-    return {"ok": True, "deleted": {"name": name, "unique_id": unique_id, "code": code}, "warnings": []}
+    return {
+        "ok": True, "deleted": {"name": name, "unique_id": unique_id, "code": code}, "warnings": [], "method": method,
+    }
 
 
 def move(params: Params) -> dict[str, Any]:
@@ -445,7 +456,7 @@ def move(params: Params) -> dict[str, Any]:
         "inventory.move", target=result["id"], before={"location": origin, "unique_id": unique_id},
         after={"location": to}, undo=lambda: _move_by_uid(unique_id, origin),
     )  # fmt: skip
-    return {"ok": True, "id": result["id"], "name": result["name"], "to": to}
+    return {"ok": True, "id": result["id"], "name": result["name"], "to": to, "method": result["method"]}
 
 
 def _backpack_to_bank(item: unreal.UObject) -> dict[str, Any]:
@@ -474,7 +485,7 @@ def _backpack_to_bank(item: unreal.UObject) -> dict[str, Any]:
                 409, f"{ex}; the bank copy could not be removed again ({ex2}), so {name} may be in both places",
             ) from None
         raise ApiError(409, f"{ex}; the bank copy was removed again and {name} stays in the backpack") from None
-    return {"id": added["id"], "name": name, "_unique_id": unique_id}
+    return {"id": added["id"], "name": name, "_unique_id": unique_id, "method": METHOD_GAME}
 
 
 def _bank_uid_count(unique_id: int) -> int | None:
@@ -500,7 +511,7 @@ def _bank_to_backpack(index: int, entry: Any) -> dict[str, Any]:
     in_bank = _bank_uid_count(unique_id)
     added = codes.add_verified(copy, is_weapon, "backpack", unique_id, bank.entry_mark(entry))
     try:
-        bank.remove_exact(index, entry)
+        method = bank.remove_exact(index, entry)
     except ApiError as ex:
         still = _bank_uid_count(unique_id)
         if in_bank is None or still is None or still < in_bank:
@@ -518,7 +529,7 @@ def _bank_to_backpack(index: int, entry: Any) -> dict[str, Any]:
                 409, f"{ex}; the backpack copy could not be removed again ({ex2}), so {name} may be in both places",
             ) from None
         raise ApiError(409, f"{ex}; the backpack copy was removed again and {name} stays in the bank") from None
-    return {"id": added["id"], "name": name, "_unique_id": unique_id}
+    return {"id": added["id"], "name": name, "_unique_id": unique_id, "method": method}
 
 
 def _move_by_uid(unique_id: int, to: str) -> None:

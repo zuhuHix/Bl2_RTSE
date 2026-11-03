@@ -8,6 +8,10 @@ base64 is valid but whose payload isn't ours gets a made-up card. A valid code w
 example BL2(NOCARDAA)) gets no card, only a warning, like a game that could not decode it.
 RTSE_MOCK_BANK=closed makes the bank unavailable.
 
+The first /api/bank answer leaves the last PENDING_FIRST entries "pending" (placeholder cards, like a real bank too big
+to decode in one request), so the page's re-ask loop runs once; later answers are complete. Deletes and moves answer
+"method": "game", or "direct array edit (unverified)" with RTSE_MOCK_DIRECT=1 (the unverified fallback).
+
 Chunks: preview and import answer CHUNK codes or items per request (the real server budgets by time and by count, so
 the page must keep asking). Imports are additive: "replace" is refused, and "equipped" decides what happens to Equipped rows.
 """
@@ -28,6 +32,8 @@ MAX_CODES = 200  # the most codes one preview text may hold
 CHUNK = 7  # codes or items per preview/import request; small on purpose, so the page shows several chunks
 EQUIPPED_RULES = ("skip", "backpack")
 BANK_OPEN = os.environ.get("RTSE_MOCK_BANK") != "closed"
+METHOD = "direct array edit (unverified)" if os.environ.get("RTSE_MOCK_DIRECT") == "1" else "game"
+PENDING_FIRST = 3  # entries the first /api/bank answer leaves undecoded
 UNVERIFIED = "Bank access and item import use game calls nobody has tested in a live game yet"
 CODE = re.compile(r"BL2\(([^()\s]*)\)")
 GONE_BANK = "that bank entry is gone"
@@ -71,6 +77,7 @@ _LOCAL_ITEMS: list = []
 _BANK: list | None = None  # made on first use, from BANK_SEEDS
 _UIDS: dict[str, int] = {}  # item id -> UniqueId; an item keeps its id and UniqueId when it moves
 _last_number = [0]
+_bank_reads = [0]
 
 
 # ---------- the shared state ----------
@@ -258,12 +265,25 @@ def _get_bank(_params):
     if not BANK_OPEN:
         return {
             "available": False, "reason": "The bank is closed (the mock runs with RTSE_MOCK_BANK=closed). Open it in the game first.",
-            "slots": {"used": 0, "max": BANK_MAX}, "items": [], "warnings": [], "unverified": UNVERIFIED,
+            "slots": {"used": 0, "max": BANK_MAX}, "items": [], "warnings": [], "pending": 0, "unverified": UNVERIFIED,
         }
     bank = _bank()
+    _bank_reads[0] += 1
+    pending = min(PENDING_FIRST, len(bank)) if _bank_reads[0] == 1 else 0
+    items = [_card(item, _card_id(item), _uid(item)) for item in bank]
+    for index in range(len(items) - pending, len(items)):
+        items[index] = _pending_card(bank[index])
     return {
         "available": True, "reason": None, "slots": {"used": len(bank), "max": BANK_MAX},
-        "items": [_card(item, _card_id(item), _uid(item)) for item in bank], "warnings": [], "unverified": UNVERIFIED,
+        "items": items, "warnings": [], "pending": pending, "unverified": UNVERIFIED,
+    }
+
+
+def _pending_card(item) -> dict:
+    """What the real server sends for an entry it has not decoded yet."""
+    return {
+        "id": _card_id(item), "class": item.cls, "name": "Not decoded yet", "location": "Bank", "level": None,
+        "rarity": None, "type_path": None, "build": [], "hide_bones": [], "unique_id": _uid(item), "pending": True,
     }
 
 
@@ -384,8 +404,9 @@ def _post_delete(body):
         raise ValueError("unequip it first")
     unique_id = _uid(item)
     deleted = {"name": item.name, "unique_id": unique_id, "code": _encode(item, unique_id)}
+    deleted_from_bank = item.location == "Bank"
     _remove(item)
-    return {"ok": True, "deleted": deleted}
+    return {"ok": True, "deleted": deleted, "warnings": [], "method": METHOD if deleted_from_bank else "game"}
 
 
 def _post_move(body):
@@ -400,9 +421,10 @@ def _post_move(body):
     if _free(to) <= 0:
         raise ValueError(f"{to} is full")
     unique_id = _uid(item)
+    from_bank = item.location == "Bank"
     _remove(item)
     card_id, _ = _place(item, to, unique_id)
-    return {"ok": True, "id": card_id, "name": item.name, "to": to}
+    return {"ok": True, "id": card_id, "name": item.name, "to": to, "method": METHOD if from_bank else "game"}
 
 
 def _export_row(item) -> dict:

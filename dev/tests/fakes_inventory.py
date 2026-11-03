@@ -88,6 +88,7 @@ class World:
         self.journal = journal_calls
         self.game_decodes = True  # False: UnpackSerialNumber refuses, so the Create*FromSerialNumber fallback runs
         self.stage = 30
+        self.decodes = 0  # how many serials the fake game decoded (UnpackSerialNumber or Create*FromSerialNumber)
 
 
 def make_definition(uid: int, *, weapon: bool, stage: int = 30, maker: str = "Hyperion") -> Defn:
@@ -138,11 +139,17 @@ class Manager(Obj):
 
 
 class Chest(list):
-    """TheChest stand-in: a list whose `del chest[i]` can be refused (refuse_delete), so RTSE falls back to ByDef."""
+    """TheChest stand-in: a list whose `del chest[i]` can be refused (refuse_delete). Every `del` is recorded in
+    `calls` (the bank's call list) as ("del", index), so tests see which removal path ran."""
 
     refuse_delete = False
 
+    def __init__(self, calls: list | None = None) -> None:
+        super().__init__()
+        self.calls = calls if calls is not None else []
+
     def __delitem__(self, index: Any) -> None:
+        self.calls.append(("del", index))
         if self.refuse_delete:
             raise RuntimeError("this array does not support deletes")
         super().__delitem__(index)
@@ -153,12 +160,14 @@ class Bank(Obj):
     Remove*ByDef removes EVERY entry with the definition's UniqueId (the worst case RTSE must survive)."""
 
     def __init__(self, world: World, *, max_size: int = 24) -> None:
+        calls: list[tuple] = []
         super().__init__(
-            "/Game/PC.Bank", Class=SimpleNamespace(Name="WillowInventoryStorage"), TheChest=Chest(), MaxSlots=max_size,
+            "/Game/PC.Bank", Class=SimpleNamespace(Name="WillowInventoryStorage"), TheChest=Chest(calls),
+            MaxSlots=max_size,
         )
         self.world = world
         self.max_size = max_size
-        self.calls: list[tuple] = []
+        self.calls = calls
 
     def GetMaxSize(self) -> int:
         return self.max_size
@@ -216,6 +225,7 @@ class _FakeCDO:
         self.class_name = class_name
 
     def _decode(self, serial: Any) -> Defn | None:
+        self.world.decodes += 1
         data = codes.serial_bytes(serial)
         header = item_serial.read_header(data)
         if header["is_weapon"] != (self.class_name == "WillowWeapon"):
@@ -251,6 +261,7 @@ def install(monkeypatch, *, slots: int = 12, bank_max: int | None = 24, with_ban
     manager = Manager(world, slots=slots, bank=bank_obj)
     world.manager, world.bank = manager, bank_obj
 
+    bank.clear_card_cache()  # the decoded-card cache outlives a request, so each test starts without one
     monkeypatch.setattr(gear_inventory, "_manager", lambda: manager)
     monkeypatch.setattr(codes, "_cdo", lambda name: _FakeCDO(world, name))
     monkeypatch.setattr(codes, "_make_struct", _make_struct)

@@ -37,7 +37,9 @@ Public API (other streams call these; the routes at the bottom are the HTTP side
       The item's code, but only when RTSE could restore the item from it: the header reads (version 7), the checksum
       matches, and the game decodes the bytes back to a definition whose every field (UniqueId, GameStage,
       ManufacturerGradeIndex, BalanceDefinition, every part slot, ...) equals `definition`. Otherwise ApiError 409
-      "could not make a restorable code for <name>, so it was not <action> (...)". Delete and move call it first.
+      "could not make a restorable code for <name>, so it was not <action> (...)". A compared field that cannot be
+      read on EITHER side (the item or the decoded code) is also a 409: "could not read <field> of <name> (...), so
+      it was not <action>". Delete and move call it first.
 
   add_verified(definition, is_weapon, destination, unique_id, mark) -> {id, name}
       Adds a definition and checks the destination gained exactly one entry with `unique_id` (and lost nothing).
@@ -326,11 +328,17 @@ def export_code(source: Any) -> tuple[str, dict[str, Any] | None, list[str]]:
     return item_serial.bytes_to_code(data), header, warnings
 
 
+class FieldUnreadable(Exception):
+    """A definition field could not be read. Never compared: verified_backup refuses instead."""
+
+
 def _field_value(definition: Any, name: str) -> Any:
+    """A definition field as a comparable value (objects by path name). Raises FieldUnreadable when the read fails, so
+    two unreadable fields can never compare equal. A field this game build lacks fails too (UNVERIFIED field list)."""
     try:
         return _plain(getattr(definition, name))
-    except Exception:  # noqa: BLE001
-        return "<unreadable>"
+    except Exception as ex:  # noqa: BLE001
+        raise FieldUnreadable(f"{name}: {ex!r}") from None
 
 
 def verified_backup(source: Any, definition: Any, is_weapon: bool, *, name: str = "the item", action: str = "deleted") -> str:
@@ -361,7 +369,18 @@ def verified_backup(source: Any, definition: Any, is_weapon: bool, *, name: str 
     if decoded_weapon != is_weapon:
         raise refuse("the game decoded it as the wrong kind")
     fields = WEAPON_DEFINITION_FIELDS if is_weapon else ITEM_DEFINITION_FIELDS
-    different = [field for field in fields if _field_value(definition, field) != _field_value(decoded, field)]
+    different = []
+    for field in fields:
+        values = []
+        for side, source_definition in (("the item", definition), ("its decoded code", decoded)):
+            try:
+                values.append(_field_value(source_definition, field))
+            except FieldUnreadable as ex:
+                raise ApiError(
+                    409, f"could not read {field} of {name} ({side}: {ex}), so it was not {action}",
+                ) from None
+        if values[0] != values[1]:
+            different.append(field)
     if different:
         raise refuse(f"decoding it gives a different item: {', '.join(different)} differ")
     return code
@@ -585,20 +604,18 @@ def _add_verified_bank(definition: Any, is_weapon: bool, unique_id: int) -> dict
             snap = next(s for s in reversed(after) if s.unique_id == unique_id)
         return {"id": bank.bank_id(snap.index, unique_id), "name": bank.entry_card(snap.index, snap.entry)[0]["name"]}
     # Remove only the entries that are really new: as many per UniqueId as the bank gained (a merely re-serialized
-    # entry keeps its UniqueId count and is left alone). Highest index first, so the lower indices stay valid.
+    # entry keeps its UniqueId count and is left alone). remove_gained lets one removal take the other new twins too.
     extra = _take(new, gained, lambda snap: snap.unique_id)
-    failures: list[str] = []
-    for snap in sorted(extra, key=lambda s: s.index, reverse=True):
-        try:
-            bank.remove_exact(snap.index, snap.entry)
-        except ApiError as ex:
-            failures.append(str(ex))
-    vanished = bank.put_back(gone, lost) if lost else []
+    failures = bank.remove_gained(before) if extra else []
+    put =bank.put_back(gone, lost) if lost else bank.PutBack()  # each put-back verified by its own snapshots
+    vanished = put.failed
     message = _add_problem(problem, "bank", unique_id, len(extra))
     if extra or lost:
         message += _cleanup_note(failures, vanished)
         if lost and not vanished:
-            message += "; entries that vanished while adding were put back"
+            message += f"; entries that vanished while adding were put back ({', '.join(put.restored)})"
+        if put.notes:
+            message += f"; {'; '.join(put.notes)}"
     raise ApiError(409, message)
 
 
