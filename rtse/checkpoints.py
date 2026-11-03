@@ -57,7 +57,9 @@ MENU_MAP = "menumap"  # UNVERIFIED: the main menu's map name as GetMapName repor
 STABLE_SECONDS = 5.0  # a restore waits until the files it replaces haven't changed for this long (the game may be saving)
 VERIFY_SECONDS = 5.0  # ...and checks them again this long after writing, in case the game saved over them
 ORPHAN_GRACE_SECONDS = 3600.0  # a checkpoint folder without manifest.json (an interrupted copy) is pruned after this
-IGNORED_LABEL_PREFIXES = ("/api/checkpoints",)  # backup actions; an undo (/api/history/undo) is a game write, so not here
+# POSTs that don't change the save: backup actions, and the weapon lab's recording/snapshots (its part swaps go through
+# /api/item/set_part, which is gated). An undo (/api/history/undo) is a game write, so it isn't here.
+IGNORED_LABEL_PREFIXES = ("/api/checkpoints", "/api/lab/")
 IGNORED_LABELS = ("/api/parts/rescan",)
 _ID_RE = re.compile(r"\d{8}-\d{6}(?:-\d+)?")
 

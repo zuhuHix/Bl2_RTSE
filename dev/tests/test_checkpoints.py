@@ -310,15 +310,16 @@ def test_no_save_found_blocks_too():
 
 def test_first_write_skips_checkpoint_routes_and_parts_rescan():
     _make_tree()
-    for label in ("/api/checkpoints/create", "/api/parts/rescan"):
+    for label in ("/api/checkpoints/create", "/api/parts/rescan", "/api/lab/session/start", "/api/lab/snapshot"):
         assert checkpoints.before_first_write(label) is None
     assert _checkpoint_ids() == []
 
 
 def test_an_undo_is_a_game_write_so_it_goes_through_the_backup_gate():
     _make_tree()  # guessed: not verified
-    with pytest.raises(journal.WriteBlocked):
-        checkpoints.before_first_write("/api/history/undo")
+    for label in ("/api/history/undo", "/api/item/set_part"):  # including a part swap made from the weapon lab
+        with pytest.raises(journal.WriteBlocked):
+            checkpoints.before_first_write(label)
 
 
 def test_the_hook_blocks_a_real_write_through_the_route_registry(game):
