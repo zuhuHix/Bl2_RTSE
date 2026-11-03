@@ -3,10 +3,14 @@
 Also the inventory write routes: duplicate, delete, move between backpack and bank, and export/import of the whole
 inventory as item codes. codes.py and bank.py import this module at their top, so they are imported here inside the
 functions that need them (see the import notes on each route).
+
+The writes add or copy first, verify the result by UniqueId, and only then remove; on a mismatch they undo and answer
+409 (naming the code of anything that could not be put back). The JSON import only ever adds items.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from mods_base import get_pc
@@ -241,28 +245,51 @@ def _game_failed(action: str, ex: Exception) -> ApiError:
     return ApiError(409, f"{action} failed in the game ({ex})")
 
 
+def _backpack_ids(manager: unreal.UObject) -> list[str]:
+    return [_item_id(item) for item in manager.Backpack if item is not None]
+
+
+def _code_or_name(item: unreal.UObject) -> str:
+    """The item's code (UNVERIFIED CreateSerialNumber), else its name: what a user needs to get it back."""
+    from . import codes  # local: codes imports this module
+
+    try:
+        return codes.export_code(item)[0]
+    except Exception:  # noqa: BLE001
+        try:
+            return f"{item.GetHumanReadableName()} (no code could be made)"
+        except Exception:  # noqa: BLE001
+            return "an item (no code could be made)"
+
+
 def remove_from_backpack(manager: unreal.UObject, item: unreal.UObject) -> None:
-    """Removes a backpack item and checks it left the backpack. Raises ApiError (409) otherwise."""
+    """Removes a backpack item and checks the backpack lost exactly it: the ids before, minus the target, must equal
+    the ids after. Raises ApiError 409 otherwise; when other items vanished too, the message names them by the codes
+    taken just before the removal (UNVERIFIED: RemoveFromInventory, CreateSerialNumber)."""
     item_id = _item_id(item)
+    others = [other for other in manager.Backpack if other is not None and _item_id(other) != item_id]
+    backups = {_item_id(other): _code_or_name(other) for other in others}
+    before = Counter(_backpack_ids(manager))
     try:
         manager.RemoveFromInventory(item, False)  # UNVERIFIED call
     except Exception as ex:  # noqa: BLE001
         raise _game_failed("removing the item", ex) from None
-    if any(other is not None and _item_id(other) == item_id for other in manager.Backpack):
+    now = Counter(_backpack_ids(manager))
+    expected = before - Counter({item_id: 1})
+    if now == expected:
+        return
+    if now == before:
         raise ApiError(409, "the game did not remove the item from the backpack")
-
-
-def _code_for_removal(source: Any, name: str, warnings: list[str]) -> str | None:
-    """The code of an item about to be removed (so the removal can be undone), or None with a warning."""
-    from . import codes  # local: codes imports this module
-
-    try:
-        code, _header, code_warnings = codes.export_code(source)
-    except Exception as ex:  # noqa: BLE001
-        warnings.append(f"{name}: no code could be made ({ex}), so it cannot be restored by undo")
-        return None
-    warnings.extend(f"{name}: {w}" for w in code_warnings)
-    return code
+    problems = []
+    if now[item_id] > expected[item_id]:
+        problems.append("the item is still in the backpack")
+    vanished = expected - now
+    if vanished:
+        lost = [backups.get(other_id, other_id) for other_id in vanished.elements()]
+        problems.append(f"other items vanished from the backpack, re-import them: {', '.join(lost)}")
+    if now - expected - Counter({item_id: now[item_id]}):
+        problems.append("items RTSE did not expect appeared in the backpack")
+    raise ApiError(409, f"removing the item went wrong: {'; '.join(problems)}")
 
 
 # --- Routes: read ----------------------------------------------------------------------------------
@@ -308,6 +335,10 @@ def _export_row(card: dict[str, Any], source: Any, warnings: list[str], codes: A
 
 
 # --- Routes: writes ----------------------------------------------------------------------------------
+#
+# Every destructive step follows one rule: add or copy first, verify the exact result by UniqueId
+# (codes.add_verified, bank.remove_exact, remove_from_backpack), only then remove the source; on any mismatch,
+# undo what was done and answer 409. Nothing is removed unless its code passed codes.verified_backup.
 
 
 def duplicate(params: Params) -> dict[str, Any]:
@@ -329,12 +360,7 @@ def duplicate(params: Params) -> dict[str, Any]:
         copy.UniqueId = unique_id  # UNVERIFIED: writing a struct field
     except Exception as ex:  # noqa: BLE001
         raise _game_failed(f"copying {source_name}", ex) from None
-    problem = codes.place_definition(copy, is_weapon, destination, mark)
-    if problem:
-        raise ApiError(409, problem)
-    added = codes.find_added(destination, unique_id)
-    if added is None:
-        raise ApiError(409, f"the game did not add the copy of {source_name} to the {destination}")
+    added = codes.add_verified(copy, is_weapon, destination, unique_id, mark)
     journal.record(
         "inventory.add", target=added["id"], before=None,
         after={"source": item_id, "unique_id": unique_id},
@@ -343,44 +369,57 @@ def duplicate(params: Params) -> dict[str, Any]:
     return {"ok": True, "id": added["id"], "name": added["name"], "unique_id": unique_id, "destination": destination}
 
 
+def _bank_definition(entry: Any, name: str, action: str) -> tuple[Any, bool]:
+    """A bank entry's (definition, is_weapon), or the refusal a delete or move gives when it cannot be read."""
+    from . import bank  # local: bank imports this module
+
+    try:
+        return bank.entry_definition(entry)
+    except ApiError as ex:
+        raise ApiError(409, f"could not make a restorable code for {name}, so it was not {action} ({ex})") from None
+
+
 def delete(params: Params) -> dict[str, Any]:
-    """Deletes a backpack or bank item. The code is made first, so the reply can carry it for restoring."""
+    """Deletes a backpack or bank item. Refused unless the item's code passes codes.verified_backup, so the code the
+    reply carries (and the undo re-imports) really gives the same item back."""
     from . import bank, codes  # local: both import this module
 
     item_id = _need_id(params)
-    warnings: list[str] = []
     if item_id.startswith("bank:"):
         index, entry = bank.find_bank_entry(item_id)
         name = bank.entry_card(index, entry)[0]["name"]
         unique_id = bank.entry_unique_id(entry)
         destination = "bank"
-        code = _code_or_refuse(bank.export_source(entry), name, warnings, codes)
-        warnings.extend(bank.remove_bank_entry(index, entry))
+        definition, is_weapon = _bank_definition(entry, name, "deleted")
+        code = codes.verified_backup(bank.export_source(entry), definition, is_weapon, name=name)
+        bank.remove_exact(index, entry)
     else:
         item, location = _find_item(params)
         if location == EQUIPPED:
             raise ApiError(409, "unequip it first")
         name, unique_id, destination = item.GetHumanReadableName(), stats.unique_id(item), "backpack"
-        code = _code_or_refuse(item, name, warnings, codes)
-        remove_from_backpack(_manager(), item)
+        code = codes.verified_backup(item, item.DefinitionData, _is_weapon(item), name=name)
+        manager = _manager()
+        try:
+            remove_from_backpack(manager, item)
+        except ApiError as ex:
+            if _item_id(item) in _backpack_ids(manager):
+                raise
+            raise ApiError(409, f"{ex}; {name} itself was removed, its code to restore it: {code}") from None
     journal.record(
         "inventory.delete", target=item_id, before={"name": name, "unique_id": unique_id, "code": code}, after=None,
         undo=lambda: codes.restore_code(code, destination),
     )  # fmt: skip
-    return {"ok": True, "deleted": {"name": name, "unique_id": unique_id, "code": code}, "warnings": warnings}
-
-
-def _code_or_refuse(source: Any, name: str, warnings: list[str], codes: Any) -> str:
-    try:
-        code, _header, code_warnings = codes.export_code(source)
-    except Exception as ex:  # noqa: BLE001
-        raise ApiError(409, f"could not make a code for {name}, so it was not deleted ({ex})") from None
-    warnings.extend(f"{name}: {w}" for w in code_warnings)
-    return code
+    return {"ok": True, "deleted": {"name": name, "unique_id": unique_id, "code": code}, "warnings": []}
 
 
 def move(params: Params) -> dict[str, Any]:
-    """Moves an item between the backpack and the bank. Its UniqueId stays the same."""
+    """Moves an item between the backpack and the bank. Its UniqueId stays the same.
+
+    The copy is added and verified at the destination first; only then is the source removed (verified too). If the
+    source removal fails while the source is still there, the copy is removed again. Success means both ends were
+    verified, and the returned id is the verified destination id.
+    """
     to = params.get("to")
     if to not in ("bank", "backpack"):
         raise ApiError(400, "'to' must be bank or backpack")
@@ -412,20 +451,39 @@ def move(params: Params) -> dict[str, Any]:
 def _backpack_to_bank(item: unreal.UObject) -> dict[str, Any]:
     from . import bank, codes  # local: both import this module
 
-    unique_id, name = stats.unique_id(item), item.GetHumanReadableName()
+    manager = _manager()
+    unique_id, name, weapon = stats.unique_id(item), item.GetHumanReadableName(), _is_weapon(item)
+    item_id = _item_id(item)
+    code = codes.verified_backup(item, item.DefinitionData, weapon, name=name, action="moved")
     try:
-        copy = codes.copy_definition(item.DefinitionData, _is_weapon(item))
+        copy = codes.copy_definition(item.DefinitionData, weapon)
     except Exception as ex:  # noqa: BLE001
         raise _game_failed(f"reading {name}", ex) from None
-    if not bank.add_def_to_bank(copy, _is_weapon(item)):
-        raise ApiError(409, "the bank is full or refused the item")
+    added = codes.add_verified(copy, weapon, "bank", unique_id, mark_of(item))
     try:
-        remove_from_backpack(_manager(), item)
-    except ApiError:
-        _undo_quietly(lambda: bank.remove_bank_entry(*bank.find_by_unique_id(unique_id)), "bank copy")
-        raise
-    added = codes.find_added("bank", unique_id)
-    return {"id": added["id"] if added else None, "name": name, "_unique_id": unique_id}
+        remove_from_backpack(manager, item)
+    except ApiError as ex:
+        if item_id not in _backpack_ids(manager):
+            raise ApiError(
+                409, f"{ex}; {name} itself left the backpack and is in the bank now (its code: {code})",
+            ) from None
+        try:
+            bank.remove_exact(*bank.find_bank_entry(added["id"]))
+        except ApiError as ex2:
+            raise ApiError(
+                409, f"{ex}; the bank copy could not be removed again ({ex2}), so {name} may be in both places",
+            ) from None
+        raise ApiError(409, f"{ex}; the bank copy was removed again and {name} stays in the backpack") from None
+    return {"id": added["id"], "name": name, "_unique_id": unique_id}
+
+
+def _bank_uid_count(unique_id: int) -> int | None:
+    from . import bank  # local: bank imports this module
+
+    try:
+        return sum(1 for snap in bank.snapshot() if snap.unique_id == unique_id)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _bank_to_backpack(index: int, entry: Any) -> dict[str, Any]:
@@ -433,27 +491,38 @@ def _bank_to_backpack(index: int, entry: Any) -> dict[str, Any]:
 
     name = bank.entry_card(index, entry)[0]["name"]
     unique_id = bank.entry_unique_id(entry)
-    definition, is_weapon = bank.entry_definition(entry)
+    definition, is_weapon = _bank_definition(entry, name, "moved")
+    code = codes.verified_backup(bank.export_source(entry), definition, is_weapon, name=name, action="moved")
     try:
         copy = codes.copy_definition(definition, is_weapon)
     except Exception as ex:  # noqa: BLE001
         raise _game_failed(f"reading {name}", ex) from None
-    problem = codes.place_definition(copy, is_weapon, "backpack", bank.entry_mark(entry))
-    if problem:
-        raise ApiError(409, problem)
-    if codes.find_added("backpack", unique_id) is None:
-        raise ApiError(409, f"the game did not add {name} to the backpack; it is still in the bank")
+    in_bank = _bank_uid_count(unique_id)
+    added = codes.add_verified(copy, is_weapon, "backpack", unique_id, bank.entry_mark(entry))
     try:
-        bank.remove_bank_entry(index, entry)
-    except ApiError:
-        _undo_quietly(lambda: codes.undo_add("backpack", unique_id), "backpack copy")
-        raise
-    added = codes.find_added("backpack", unique_id)
-    return {"id": added["id"] if added else None, "name": name, "_unique_id": unique_id}
+        bank.remove_exact(index, entry)
+    except ApiError as ex:
+        still = _bank_uid_count(unique_id)
+        if in_bank is None or still is None or still < in_bank:
+            raise ApiError(
+                409, f"{ex}; {name} is in the backpack now and may be gone from the bank (its code: {code})",
+            ) from None
+        manager = _manager()
+        copy_item = next((i for i in manager.Backpack if i is not None and _item_id(i) == added["id"]), None)
+        try:
+            if copy_item is None:
+                raise ApiError(409, "the copy is no longer in the backpack")
+            remove_from_backpack(manager, copy_item)
+        except ApiError as ex2:
+            raise ApiError(
+                409, f"{ex}; the backpack copy could not be removed again ({ex2}), so {name} may be in both places",
+            ) from None
+        raise ApiError(409, f"{ex}; the backpack copy was removed again and {name} stays in the bank") from None
+    return {"id": added["id"], "name": name, "_unique_id": unique_id}
 
 
 def _move_by_uid(unique_id: int, to: str) -> None:
-    """Undo of a move: finds the item by UniqueId wherever it is now and moves it to `to`."""
+    """Undo of a move: finds the item by UniqueId wherever it is now and moves it to `to` (verified the same way)."""
     from . import bank  # local: bank imports this module
 
     if to == BACKPACK:
@@ -466,105 +535,62 @@ def _move_by_uid(unique_id: int, to: str) -> None:
         _backpack_to_bank(item)
 
 
-def _undo_quietly(action: Any, what: str) -> None:
-    try:
-        action()
-    except Exception as ex:  # noqa: BLE001
-        logging.error(f"RTSE: could not undo the {what} after a failed move: {ex!r}")
+REPLACE_REMOVED = "replace was removed: imports only add items; delete items separately"
+EQUIPPED_CHOICES = ("skip", "backpack")
+EQUIPPED_SKIPPED = "equipped item skipped"
 
 
 def inventory_import(params: Params) -> dict[str, Any]:
-    """Imports codes (from inventory_export or a list of codes). replace=true first removes the backpack and/or bank
-    items of the places that receive items (never equipped items). Nothing is removed unless every code is valid."""
-    from . import bank, codes  # local: both import this module
+    """Imports codes (from inventory_export or a list of codes). ADDITIVE ONLY: nothing is ever removed.
 
+    destination "original" sends Bank rows to the bank and Backpack rows to the backpack; "backpack" / "bank" send
+    every row there. Equipped rows are skipped (equipped "skip", the default: the item is still equipped, so importing
+    it again would duplicate it) or go to the backpack (equipped "backpack"). One call imports at most one chunk
+    (codes.Budget); the caller re-sends items[processed:] until remaining is 0. Skipped rows do not use the budget.
+    """
+    from . import codes  # local: codes imports this module
+
+    if "replace" in params and params["replace"] is not False:
+        raise ApiError(400, REPLACE_REMOVED)
     entries = params.get("items")
     destination = params.get("destination", "backpack")
+    equipped = params.get("equipped", "skip")
     if not isinstance(entries, list):
         raise ApiError(400, "'items' must be a list")
     if destination not in ("backpack", "bank", "original"):
         raise ApiError(400, "destination must be backpack, bank or original")
+    if equipped not in EQUIPPED_CHOICES:
+        raise ApiError(400, "equipped must be skip or backpack")
     if len(entries) > codes.MAX_CODES:
         raise ApiError(400, f"at most {codes.MAX_CODES} items at a time")
-    pairs: list[tuple[str, str]] = []
+    rows: list[tuple[str, str | None]] = []  # (code, destination), None = skipped
     for entry in entries:
         code = entry.get("code") if isinstance(entry, dict) else None
         if not isinstance(code, str):
             raise ApiError(400, "each item needs a code")
-        if destination == "original":
-            target = "bank" if entry.get("location") == BANK else "backpack"
+        location = entry.get("location")
+        if location == EQUIPPED:
+            target = "backpack" if equipped == "backpack" else None
+        elif destination == "original":
+            target = "bank" if location == BANK else "backpack"
         else:
             target = destination
-        pairs.append((code, target))
+        rows.append((code, target))
 
-    warnings: list[str] = []
-    removed: list[dict[str, Any]] = []
-    if params.get("replace"):
-        receivers = {target for _code, target in pairs}
-        codes.check_codes([code for code, _target in pairs])
-        manager = _manager()
-        if "backpack" in receivers:
-            backpack_items = [item for item in manager.Backpack if item is not None]
-            room = manager.GetEmptyBackpackSlots() + len(backpack_items)  # UNVERIFIED call
-            needed = sum(1 for _code, target in pairs if target == "backpack")
-            if room < needed:
-                raise ApiError(409, f"the backpack would have room for {room} after the replace; the import has {needed}")
-            removed += _clear_backpack(manager, warnings, codes)
-        if "bank" in receivers:
-            capacity = bank.capacity()
-            needed = sum(1 for _code, target in pairs if target == "bank")
-            if capacity is not None and capacity < needed:
-                raise ApiError(409, f"the bank holds {capacity} items after the replace; the import has {needed}")
-            removed += _clear_bank(warnings, bank, codes)
-
-    result = codes.import_pairs(pairs)
-    result["removed"] = len(removed)
-    result["warnings"] = warnings
-    if removed:
-        journal.record(
-            "inventory.replace", target=destination, before={"removed": removed}, after={"imported": result["imported"]},
-            undo=lambda: _restore_removed(removed),
-        )  # fmt: skip
+    batch, budget = codes.ImportBatch(), codes.Budget()
+    for code, target in rows:
+        if budget.spent():
+            break
+        if target is None:
+            batch.skip({"code": code, "ok": False, "skipped": True, "error": EQUIPPED_SKIPPED, "id": None, "name": None,
+                        "unique_id": None})  # fmt: skip
+            continue
+        budget.step()
+        batch.run(code, target)
+    result = batch.summary(len(rows))
+    result["skipped"] = batch.skipped
+    result["warnings"] = [f"{batch.skipped} equipped items were skipped (they are still equipped)"] if batch.skipped else []
     return result
-
-
-def _clear_backpack(manager: unreal.UObject, warnings: list[str], codes: Any) -> list[dict[str, Any]]:
-    removed: list[dict[str, Any]] = []
-    for item in [i for i in manager.Backpack if i is not None]:
-        name = item.GetHumanReadableName()
-        code = _code_for_removal(item, name, warnings)
-        try:
-            remove_from_backpack(manager, item)
-        except ApiError as ex:
-            raise ApiError(ex.status, f"{ex} (the replace stopped after removing {len(removed)} items)") from None
-        if code is not None:
-            removed.append({"code": code, "name": name, "location": BACKPACK})
-    return removed
-
-
-def _clear_bank(warnings: list[str], bank: Any, codes: Any) -> list[dict[str, Any]]:
-    removed: list[dict[str, Any]] = []
-    for _ in range(codes.MAX_CODES):
-        entries = bank.bank_entries()
-        if not entries:
-            return removed
-        index, entry = entries[-1]
-        name = bank.entry_card(index, entry)[0]["name"]
-        code = _code_for_removal(bank.export_source(entry), name, warnings)
-        try:
-            warnings.extend(bank.remove_bank_entry(index, entry))
-        except ApiError as ex:
-            raise ApiError(ex.status, f"{ex} (the replace stopped after removing {len(removed)} bank items)") from None
-        if code is not None:
-            removed.append({"code": code, "name": name, "location": BANK})
-    raise ApiError(409, "the bank still holds items after the replace; reload and try again")
-
-
-def _restore_removed(removed: list[dict[str, Any]]) -> None:
-    from . import codes  # local: codes imports this module
-
-    for row in removed:
-        codes.restore_code(row["code"], "bank" if row["location"] == BANK else "backpack")
 
 
 # --- Routes (paths are the API; api.py collects these) ---

@@ -1,5 +1,6 @@
-"""rtse/bank.py: the /api/bank card list, bank ids and their UniqueId check, adds into a full bank, removals by
-definition, the exact-slot removal for identical twins, and the warnings when the bank does not change as expected.
+"""rtse/bank.py: the /api/bank card list, bank ids and their UniqueId check, adds into a full bank, snapshots and
+their diff, and remove_exact: the exact-slot delete, the ByDef fallback, and the put-back (with the codes named when
+it fails) whenever the bank does not lose exactly the target.
 
     python -I -m pytest dev/tests -k bank
 """
@@ -131,51 +132,123 @@ def test_capacity_reads_the_bank_size(monkeypatch):
     assert bank.capacity() == 9
 
 
+# --- snapshots ---------------------------------------------------------------------------------------
+
+
+def _uids(world) -> list[int]:
+    return [bank.entry_unique_id(e) for e in world.bank.TheChest]
+
+
+def test_snapshot_reads_index_uid_and_bytes_and_diff_counts_twins(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
+    before = bank.snapshot()
+    assert [(snap.index, snap.unique_id, snap.data) for snap in before] == [
+        (0, _uid(PISTOL_BYTES), PISTOL_BYTES), (1, _uid(PISTOL_BYTES), PISTOL_BYTES), (2, _uid(SHIELD_BYTES), SHIELD_BYTES),
+    ]
+    del world.bank.TheChest[0]
+    gone, new = bank.diff(before, bank.snapshot())
+    assert [snap.data for snap in gone] == [PISTOL_BYTES] and new == []
+    lost, gained = bank.uid_changes(before, bank.snapshot())
+    assert lost == {_uid(PISTOL_BYTES): 1} and not gained
+
+
 # --- removals ----------------------------------------------------------------------------------------
 
 
-def test_remove_uses_remove_by_def_for_a_single_entry(monkeypatch):
+def test_remove_exact_deletes_only_that_slot(monkeypatch):
     world = install(monkeypatch)
-    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
-    world.bank.TheChest.append(chest_entry(SHIELD_BYTES, weapon=False))
-    index, entry = bank.bank_entries()[0]
-    assert bank.remove_bank_entry(index, entry) == []
-    assert world.bank.calls[-1] == ("remove_by_def", True, _uid(PISTOL_BYTES))
-    assert [bank.entry_unique_id(e) for e in world.bank.TheChest] == [_uid(SHIELD_BYTES)]
-
-
-def test_identical_twins_are_removed_by_index(monkeypatch):
-    world = install(monkeypatch)
-    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
-    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
+    other = s.with_unique_id(PISTOL_BYTES, 4242)
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(other), chest_entry(SHIELD_BYTES, weapon=False)])
     index, entry = bank.bank_entries()[1]
-    assert bank.remove_bank_entry(index, entry) == []
-    assert len(world.bank.TheChest) == 1
+    bank.remove_exact(index, entry)
+    assert _uids(world) == [_uid(PISTOL_BYTES), _uid(SHIELD_BYTES)]
     assert not any(call[0] == "remove_by_def" for call in world.bank.calls)
 
 
-def test_removing_more_than_one_is_reported(monkeypatch):
+def test_remove_exact_removes_one_of_identical_twins(monkeypatch):
     world = install(monkeypatch)
-    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
-    world.bank.TheChest.append(chest_entry(SHIELD_BYTES, weapon=False))
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
+    index, entry = bank.bank_entries()[1]
+    bank.remove_exact(index, entry)
+    assert _uids(world) == [_uid(PISTOL_BYTES)]
+
+
+def test_remove_exact_falls_back_to_remove_by_def(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
+    index, entry = bank.bank_entries()[0]
+    bank.remove_exact(index, entry)
+    assert world.bank.calls[-1] == ("remove_by_def", True, _uid(PISTOL_BYTES))
+    assert _uids(world) == [_uid(SHIELD_BYTES)]
+
+
+def test_by_def_removing_both_twins_puts_both_back_and_is_a_409(monkeypatch):
+    """The old code removed both twins by definition and only kept one code; now both come back."""
+    world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
+    index, entry = bank.bank_entries()[0]
+    with pytest.raises(ApiError) as info:
+        bank.remove_exact(index, entry)
+    assert info.value.status == 409 and "everything it removed was put back" in str(info.value)
+    assert sorted(_uids(world)) == sorted([_uid(PISTOL_BYTES), _uid(PISTOL_BYTES), _uid(SHIELD_BYTES)])
+    assert [bank.codes.serial_bytes(e.InventorySerialNumber) for e in world.bank.TheChest].count(PISTOL_BYTES) == 2
+
+
+def test_a_removal_that_takes_another_item_too_is_undone(monkeypatch):
+    """The old code only warned ("went from 2 to 0"); now the bank is put back and the removal fails."""
+    world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
     world.bank.RemoveWeaponsByDef = lambda definition: world.bank.TheChest.clear()  # a game that over-removes
     index, entry = bank.bank_entries()[0]
-    warnings = bank.remove_bank_entry(index, entry)
-    assert warnings and "went from 2 to 0" in warnings[0]
+    with pytest.raises(ApiError) as info:
+        bank.remove_exact(index, entry)
+    assert info.value.status == 409
+    assert sorted(_uids(world)) == sorted([_uid(PISTOL_BYTES), _uid(SHIELD_BYTES)])
+
+
+def test_a_failed_put_back_names_the_codes(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
+    world.bank.AddWeaponFromDef = lambda definition, ignore_size, unique: False  # the put-back is refused
+    index, entry = bank.bank_entries()[0]
+    with pytest.raises(ApiError) as info:
+        bank.remove_exact(index, entry)
+    message = str(info.value)
+    assert info.value.status == 409 and "could NOT be put back" in message
+    assert message.count(s.bytes_to_code(PISTOL_BYTES)) == 2
+
+
+def test_a_put_back_that_does_not_show_up_is_reported(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
+    world.bank.AddWeaponFromDef = lambda definition, ignore_size, unique: True  # says yes, adds nothing
+    index, entry = bank.bank_entries()[0]
+    with pytest.raises(ApiError) as info:
+        bank.remove_exact(index, entry)
+    assert s.bytes_to_code(PISTOL_BYTES) in str(info.value)
 
 
 def test_a_removal_that_does_nothing_is_an_error(monkeypatch):
     world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
     world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
     world.bank.RemoveWeaponsByDef = lambda definition: None
     index, entry = bank.bank_entries()[0]
     with pytest.raises(ApiError) as info:
-        bank.remove_bank_entry(index, entry)
+        bank.remove_exact(index, entry)
     assert info.value.status == 409 and "still in the bank" in str(info.value)
+    assert world.bank.used() == 1
 
 
 def test_a_removal_the_game_raises_on_is_an_error(monkeypatch):
     world = install(monkeypatch)
+    world.bank.TheChest.refuse_delete = True
     world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
 
     def boom(definition):
@@ -184,5 +257,16 @@ def test_a_removal_the_game_raises_on_is_an_error(monkeypatch):
     world.bank.RemoveWeaponsByDef = boom
     index, entry = bank.bank_entries()[0]
     with pytest.raises(ApiError) as info:
-        bank.remove_bank_entry(index, entry)
+        bank.remove_exact(index, entry)
     assert info.value.status == 409 and "bank locked" in str(info.value)
+    assert world.bank.used() == 1
+
+
+def test_remove_exact_refuses_a_slot_that_moved(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
+    _index, shield_entry = bank.bank_entries()[1]
+    with pytest.raises(ApiError) as info:
+        bank.remove_exact(0, shield_entry)  # index 0 holds the pistol, not the shield
+    assert info.value.status == 404
+    assert world.bank.used() == 2

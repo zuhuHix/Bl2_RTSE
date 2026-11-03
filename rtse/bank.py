@@ -5,12 +5,17 @@ moved gets a 404 ("reload") rather than the wrong item.
 
 Verified offline: nothing here (this module is game-only). Every game call is UNVERIFIED: TheBank, TheChest and its
 ChestData fields (Inventory, InventorySerialNumber, InventoryClass), GetMaxSize / MaxSlots, AddWeaponFromDef /
-AddItemFromDef, RemoveWeaponsByDef / RemoveItemsByDef, and `del TheChest[index]`. A failed call becomes an ApiError
+AddItemFromDef, `del TheChest[index]` and RemoveWeaponsByDef / RemoveItemsByDef. A failed call becomes an ApiError
 or a warning, never a crash.
+
+Every removal goes through remove_exact: a snapshot before and after must differ by exactly the target entry, and
+anything else is put back from the removed entries' own serial bytes. codes.add_verified does the same for adds.
 """
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any
 
 from unrealsdk import logging
@@ -179,44 +184,161 @@ def _balance_path(definition: Any) -> str | None:
         return None
 
 
-def _entry_balance(entry: Any) -> str | None:
+# --- Snapshots and the verified removal ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Snap:
+    """One occupied bank slot as it was when the snapshot was taken.
+
+    `data` is the entry's serial bytes (its live item's CreateSerialNumber, else its InventorySerialNumber; UNVERIFIED)
+    or None when they cannot be read. `balance` is read only from a live item (cheap); a serial-only entry's balance is
+    inside `data`, which identifies it. `entry` is the ChestData as read (not compared).
+    """
+
+    index: int
+    unique_id: int
+    balance: str | None
+    data: bytes | None
+    entry: Any = field(compare=False, repr=False)
+
+    @property
+    def key(self) -> tuple[int, str | None, bytes | None]:
+        """What two snapshots compare: the same UniqueId, balance and bytes is the same item."""
+        return self.unique_id, self.balance, self.data
+
+
+def _entry_bytes(entry: Any) -> bytes | None:
     try:
-        return _balance_path(entry_definition(entry)[0])
+        if entry.Inventory is not None:
+            return codes.serial_bytes(entry.Inventory.CreateSerialNumber())  # UNVERIFIED call
+        return codes.serial_bytes(entry.InventorySerialNumber)  # UNVERIFIED field
     except Exception:  # noqa: BLE001
         return None
 
 
-def remove_bank_entry(index: int, entry: Any) -> list[str]:
-    """Removes one bank entry and checks that the bank lost exactly one item.
+def _snap(index: int, entry: Any) -> Snap:
+    balance = None
+    if entry.Inventory is not None:
+        balance = _balance_path(getattr(entry.Inventory, "DefinitionData", None))
+    return Snap(index, entry_unique_id(entry), balance, _entry_bytes(entry), entry)
 
-    Remove*ByDef removes by definition, so when other entries share this one's UniqueId and balance the exact slot
-    is deleted from TheChest instead. Returns warnings (empty when all went as expected). ApiError 409 when nothing
-    was removed.
+
+def snapshot() -> list[Snap]:
+    """Every occupied bank slot, in TheChest order. ApiError 409 when the bank is not loaded."""
+    return [_snap(index, entry) for index, entry in bank_entries()]
+
+
+def diff(before: list[Snap], after: list[Snap]) -> tuple[list[Snap], list[Snap]]:
+    """(gone, new) as multisets by `key`: the snaps of `before` with no match left in `after`, and the snaps of `after`
+    with no match left in `before`. Two identical twins count twice."""
+
+    def unmatched(side: list[Snap], other: list[Snap]) -> list[Snap]:
+        left = Counter(snap.key for snap in other)
+        out: list[Snap] = []
+        for snap in side:
+            if left[snap.key] > 0:
+                left[snap.key] -= 1
+            else:
+                out.append(snap)
+        return out
+
+    return unmatched(before, after), unmatched(after, before)
+
+
+def uid_changes(before: list[Snap], after: list[Snap]) -> tuple[Counter[int], Counter[int]]:
+    """(lost, gained) UniqueId counts between two snapshots. An entry the game only re-serialized changes neither."""
+    old = Counter(snap.unique_id for snap in before)
+    now = Counter(snap.unique_id for snap in after)
+    return old - now, now - old
+
+
+def describe(snap: Snap) -> str:
+    """The entry's code (to re-import it), or a note that it has none."""
+    if snap.data is not None:
+        try:
+            return item_serial.bytes_to_code(snap.data)
+        except item_serial.SerialError:
+            pass
+    return f"(an entry with UniqueId {snap.unique_id} whose code could not be read)"
+
+
+def put_back(gone: list[Snap], lost: Counter[int]) -> list[str]:
+    """Re-adds removed entries from their own serial bytes (game decode + Add*FromDef, so the UniqueId is kept).
+
+    Only as many entries per UniqueId as the bank really lost are re-added, so an entry the game merely re-serialized
+    is not doubled. Each re-add is checked (the bank gains exactly that UniqueId once). Returns the codes (or notes)
+    of the entries that could not be put back. UNVERIFIED game calls.
+    """
+    failed: list[str] = []
+    wanted = Counter(lost)
+    for snap in gone:
+        if wanted[snap.unique_id] <= 0:
+            continue
+        wanted[snap.unique_id] -= 1
+        if snap.data is None:
+            failed.append(describe(snap))
+            continue
+        try:
+            definition, is_weapon, _path = codes.definition_of_code_bytes(snap.data)  # UNVERIFIED game decode
+            before = snapshot()
+            added = add_def_to_bank(definition, is_weapon)  # UNVERIFIED call
+            vanished, gained = uid_changes(before, snapshot())
+            restored = added and gained == Counter({snap.unique_id: 1}) and not vanished
+        except Exception as ex:  # noqa: BLE001
+            logging.error(f"RTSE: putting a bank entry back failed: {ex!r}")
+            restored = False
+        if not restored:
+            failed.append(describe(snap))
+    return failed
+
+
+def restore_message(problem: str, failed: list[str]) -> str:
+    """A 409 message after a rollback: everything was put back, or which codes the user must re-import."""
+    if not failed:
+        return f"{problem}; everything it removed was put back"
+    return f"{problem}; these could NOT be put back, re-import them: {', '.join(failed)}"
+
+
+def remove_exact(index: int, entry: Any) -> None:
+    """Removes the bank entry at `index` and nothing else, or raises ApiError 409 with the bank as it was.
+
+    First deletes that slot from TheChest (`del TheChest[index]`, UNVERIFIED). If that raises, falls back to
+    Remove(Weapons|Items)ByDef (UNVERIFIED), which can remove every entry with the same definition. Either way the
+    snapshots before and after must differ by exactly the target entry (same UniqueId and bytes; nothing else lost or
+    gained). Otherwise every entry that went is put back from its own serial bytes and a 409 says so, naming by code
+    any entry that could not be put back. 404 when the slot no longer holds that item.
     """
     bank = _the_bank()
-    definition, is_weapon = entry_definition(entry)
-    unique_id = entry_unique_id(entry)
-    balance = _balance_path(definition)
-    twins = sum(
-        1 for _other_index, other in _content_entries(bank)
-        if entry_unique_id(other) == unique_id and _entry_balance(other) == balance
-    )  # fmt: skip
-    before = len(_content_entries(bank))
+    before = snapshot()
+    target = next((snap for snap in before if snap.index == index), None)
+    if target is None or target.unique_id != entry_unique_id(entry):
+        raise ApiError(404, "that bank item moved; reload")
+    problems: list[str] = []
     try:
-        if twins > 1:
-            del bank.TheChest[index]  # UNVERIFIED: array delete through pyunrealsdk
-        elif is_weapon:
-            bank.RemoveWeaponsByDef(definition)  # UNVERIFIED call
-        else:
-            bank.RemoveItemsByDef(definition)  # UNVERIFIED call
+        del bank.TheChest[index]  # UNVERIFIED: array delete through pyunrealsdk (WrappedArray.__delitem__)
     except Exception as ex:  # noqa: BLE001
-        raise ApiError(409, f"the game refused to remove that bank item ({ex})") from None
-    after = len(_content_entries(bank))
-    if after >= before:
-        raise ApiError(409, "the game did not remove that bank item; it is still in the bank")
-    if before - after != 1:
-        return [f"the bank went from {before} to {after} items after removing one; check the bank in game"]
-    return []
+        problems.append(f"deleting the slot failed ({ex})")
+        try:
+            definition, is_weapon = entry_definition(entry)
+            if is_weapon:
+                bank.RemoveWeaponsByDef(definition)  # UNVERIFIED call
+            else:
+                bank.RemoveItemsByDef(definition)  # UNVERIFIED call
+        except Exception as ex2:  # noqa: BLE001
+            problems.append(f"removing by definition failed ({ex2})")
+    after = snapshot()
+    gone, new = diff(before, after)
+    if [snap.key for snap in gone] == [target.key] and not new:
+        return
+    if not gone and not new:
+        detail = f" ({'; '.join(problems)})" if problems else ""
+        raise ApiError(409, f"the game did not remove that bank item; it is still in the bank{detail}")
+    lost, gained = uid_changes(before, after)
+    problem = f"removing one bank item removed {len(gone)} entries and changed or added {len(new)}, so it was undone"
+    if gained:
+        problem += f" (entries that appeared were left in place: UniqueIds {sorted(gained)})"
+    raise ApiError(409, restore_message(problem, put_back(gone, lost)))
 
 
 # --- Routes ----------------------------------------------------------------------------------------
