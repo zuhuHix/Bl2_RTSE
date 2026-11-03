@@ -34,6 +34,7 @@ const state = {
   notes: null, // { title, lines }: the warnings from the last save or import
   dialog: null, // the in-page confirm; see ask()
   shownLink: null, // { name, link } when the browser refused the clipboard
+  codeImport: null, // the "Import missing from code" flow: see openCodeImport()
   scrollTo: null, // a selector to bring into view on the next render
 };
 let current = null; // the last ctx we were rendered with, for load() calls without one
@@ -68,6 +69,13 @@ function show(value) {
   if (typeof value === "number") return value.toLocaleString();
   if (typeof value === "string") return short(value);
   return JSON.stringify(value);
+}
+
+/** The notice for a save, import or export: its warnings and notes in one list, or null when there are none. */
+function noticeFor(verb, name, warnings = [], notes = []) {
+  const lines = [...warnings, ...notes];
+  if (lines.length === 0) return null;
+  return { title: `${verb} "${name}" ${warnings.length ? "with warnings" : "with notes"}`, lines };
 }
 
 function downloadJson(name, data) {
@@ -187,8 +195,7 @@ async function savePreset(ctx) {
   if (!reply) return;
   state.list = { ...state.list, presets: reply.presets };
   state.save.name = "";
-  const warnings = reply.warnings || [];
-  state.notes = warnings.length ? { title: `Saved "${reply.preset.name}" with warnings`, lines: warnings } : null;
+  state.notes = noticeFor("Saved", reply.preset.name, reply.warnings, reply.notes);
   ctx.toast(reply.preset.partial ? `Saved "${reply.preset.name}" as partial` : `Saved "${reply.preset.name}"`);
   ctx.rerender();
 }
@@ -221,8 +228,7 @@ async function importPreset(ctx) {
   if (!reply) return;
   state.list = { ...state.list, presets: reply.presets };
   state.imp = { text: "", rename: "", file: null };
-  const warnings = reply.warnings || [];
-  state.notes = warnings.length ? { title: `Imported "${reply.preset.name}" with warnings`, lines: warnings } : null;
+  state.notes = noticeFor("Imported", reply.preset.name, reply.warnings, reply.notes);
   ctx.toast(`Imported "${reply.preset.name}"`);
   ctx.rerender();
 }
@@ -239,6 +245,11 @@ async function exportCharacter(ctx) {
   }
   downloadJson(warnings.length > 0 ? `${reply.preset.name}-partial` : reply.preset.name, reply.preset);
   ctx.toast(`Downloaded ${reply.preset.name} (not saved in Builds)`);
+  const note = noticeFor("Exported", reply.preset.name, [], reply.notes);
+  if (note) {
+    state.notes = note;
+    ctx.rerender();
+  }
 }
 
 async function downloadPreset(ctx, name) {
@@ -402,12 +413,123 @@ function reportToast(r) {
   return { text: `${where}: ${rest}.${r.summary.rollback_failed ? " Reload the save before playing." : ""}` };
 }
 
-async function importMissing(ctx, name) {
-  const reply = await ctx.guarded(() => ctx.api("POST", "/api/loadouts/import_missing", { name }));
-  if (!reply) return;
-  const failed = reply.results.filter((r) => !r.ok);
-  ctx.toast(failed.length ? `${failed.length} item(s) not imported: ${failed[0].error || "unknown error"}` : "Imported the missing items", failed.length > 0);
-  replan(ctx);
+// ---------- import missing items from their item codes ----------
+// state.codeImport: { name, planId, loading, found, rows, skipped, unverified, error, ticked, run, result }.
+// planId is the IMPORT PREVIEW's plan_id (not the build preview's): it goes with every later preview chunk and the import.
+
+/**
+ * Reads the import preview from the start, one chunk per request. The first request sends no plan_id; each later one
+ * sends the plan_id the preview returned. A stale plan (409) starts the read again from the start.
+ */
+async function readCodePreview(ctx, name) {
+  const ci = state.codeImport;
+  let start = 0;
+  let restarts = 0;
+  Object.assign(ci, { loading: true, error: null, rows: [], skipped: [], result: null });
+  ctx.rerender();
+  try {
+    for (;;) {
+      const query = new URLSearchParams({ name, start: String(start) });
+      if (start > 0) query.set("plan_id", ci.planId);
+      let reply;
+      try {
+        reply = await ctx.api("GET", `/api/loadouts/import_preview?${query}`);
+      } catch (error) {
+        if (!/changed since the preview/i.test(error.message) || restarts >= 2) throw error;
+        restarts += 1;
+        ctx.toast("The game changed since the preview: reading the codes again");
+        Object.assign(ci, { rows: [], skipped: [] });
+        start = 0;
+        continue;
+      }
+      if (start === 0) {
+        ci.planId = reply.plan_id;
+        ci.unverified = reply.unverified;
+        ci.skipped = reply.skipped || [];
+      }
+      ci.found = reply.found;
+      ci.rows.push(...reply.entries);
+      ctx.rerender();
+      if (reply.next == null) break;
+      if (!(reply.next > start)) throw new Error("the game did not move on to the next codes");
+      start = reply.next;
+    }
+  } catch (error) {
+    ci.error = error.message;
+  } finally {
+    ci.loading = false;
+  }
+  // the rows start ticked when they read and the item is the build's (ok and matches)
+  ci.ticked = new Set(ci.rows.filter((r) => r.ok && r.matches !== false).map((r) => r.entry));
+  ctx.rerender();
+}
+
+async function openCodeImport(ctx, name) {
+  if (state.busy) return;
+  state.codeImport = { name, planId: null, loading: true, found: null, rows: [], skipped: [], unverified: "", error: null, ticked: new Set(), run: null, result: null };
+  state.scrollTo = "#lo-import";
+  await readCodePreview(ctx, name);
+}
+
+function toggleCode(ctx, entry, on) {
+  const ticked = state.codeImport.ticked;
+  if (on) ticked.add(entry);
+  else ticked.delete(entry);
+  ctx.rerender();
+}
+
+/**
+ * Imports the ticked codes into the backpack. The first request starts the import and imports the first code; each
+ * request after it (run_id and cursor) imports the next one, until the reply says it is done. Then the build preview
+ * is re-planned, so the imported items show as matched.
+ */
+async function importCodes(ctx) {
+  const ci = state.codeImport;
+  const entries = [...ci.ticked].sort((a, b) => a - b);
+  if (state.busy || ci.loading || entries.length === 0) return;
+  state.busy = true;
+  Object.assign(ci, { error: null, result: null, run: { total: entries.length, cursor: 0, chunk: 0 } });
+  state.scrollTo = "#lo-import";
+  ctx.rerender();
+  let reply = null;
+  let error = null;
+  let notice = null;
+  try {
+    reply = await ctx.api("POST", "/api/loadouts/import_missing", { name: ci.name, plan_id: ci.planId, entries });
+  } catch (e) {
+    error = e.message;
+  }
+  while (!error && reply.state === "running") {
+    ci.run = reply;
+    ctx.rerender();
+    try {
+      reply = await ctx.api("POST", "/api/loadouts/import_missing", { run_id: reply.run_id, cursor: reply.cursor });
+    } catch (e) {
+      // the request failed, so the server may or may not have imported the code: read the import back before going on
+      const found = await ctx.api("GET", `/api/loadouts/import_run?run_id=${enc(reply.run_id)}`).catch(() => null);
+      if (!found) {
+        error = `${e.message}. The result is unknown: check your backpack before importing again.`;
+        break;
+      }
+      notice = `The request failed mid-import (${e.message}). The result below is what the server holds now.`;
+      reply = found;
+    }
+  }
+  state.busy = false;
+  ci.run = null;
+  if (error) {
+    if (/changed since the preview/i.test(error)) {
+      ctx.toast("The game changed since the preview: reading the codes again");
+      return readCodePreview(ctx, ci.name);
+    }
+    ci.error = error;
+    ctx.toast(error, true);
+    return ctx.rerender();
+  }
+  ci.result = { ...reply, notice };
+  ctx.toast(reply.message, reply.summary.failed + reply.summary.remove_failed > 0);
+  await replan(ctx); // the build preview now shows what the backpack holds
+  ctx.rerender();
 }
 
 // ---------- building blocks ----------
@@ -474,6 +596,7 @@ function presetRow(ctx, p, currentClass) {
   const facts = [
     c.gear !== undefined && `${c.gear} gear (${c.equipped ?? 0} equipped, ${c.backpack ?? 0} backpack)`,
     c.skills !== undefined && plural(c.skills, "skill"),
+    c.codes !== undefined && `${plural(c.codes, "item code")}`,
     c.character && (typeof c.character === "number" ? plural(c.character, "character value") : "character values"),
   ].filter(Boolean);
   const created = typeof p.created === "string" ? p.created.slice(0, 10) : "";
@@ -589,20 +712,20 @@ function foldBlock(ctx, rows) {
     h("ul", {}, rows.map((row) => h("li", {}, h("b", { text: row.label }), h("span", { class: "lo-why", text: row.reason })))));
 }
 
-function missingBlock(ctx, rows, name) {
+function missingBlock(ctx, rows, name, importable) {
   const { h, icon } = ctx;
-  const canImport = rows.some((m) => m.can_import);
   return h("div", { class: "lo-block" },
     h("h3", { class: "lo-sub", text: `Missing from the game (${rows.length})` }),
     h("p", { class: "note", text: "These items are not in your inventory, and RTSE does not create items. Their steps are left out." }),
     h("ul", { class: "lo-rows" }, rows.map((m) => h("li", { class: "lo-row-flat" },
-      h("div", {}, h("b", { text: m.name }), h("span", { class: "lo-meta", text: ` ${m.kind} · ${m.location} · L${m.level}` }))))),
+      h("div", {}, h("b", { text: m.name }), h("span", { class: "lo-meta", text: ` ${m.kind} · ${m.location} · L${m.level}` }),
+        h("span", { class: `lo-pill ${m.has_code ? "ok" : "not_run"}`, text: m.has_code ? "code saved" : "no code" }))))),
     h("div", { class: "tools" },
-      h("button", {
-        class: "btn sm", disabled: !canImport || null, title: canImport ? "" : "Coming with item codes",
-        onclick: () => importMissing(ctx, name),
-      }, icon("plus", 13), "Import from item code"),
-      !canImport && h("span", { class: "lo-why", text: "Coming with item codes: not available yet." })));
+      importable > 0 && h("button", {
+        class: "btn sm", disabled: state.busy || null, title: "Reads the saved codes first. Nothing is added until you confirm.",
+        onclick: () => openCodeImport(ctx, name),
+      }, icon("plus", 13), `Import missing from code (${importable})`),
+      h("span", { class: "lo-why", text: importable > 0 ? "Reads the saved codes first. Nothing is added until you confirm." : "No missing item has a saved code." })));
 }
 
 function blockedBlock(ctx, rows) {
@@ -629,7 +752,7 @@ function planView(ctx, p, plan) {
       ? stepsTable(ctx, steps)
       : h("div", { class: "note", text: "Nothing to change: the save already matches this build, or every step is blocked or skipped." }),
     plan.unchanged.length > 0 && foldBlock(ctx, plan.unchanged),
-    plan.missing.length > 0 && missingBlock(ctx, plan.missing, p.name),
+    plan.missing.length > 0 && missingBlock(ctx, plan.missing, p.name, s.importable),
     plan.blocked.length > 0 && blockedBlock(ctx, plan.blocked),
     h("div", { class: "lo-apply" },
       h("button", {
@@ -644,7 +767,7 @@ function previewCard(ctx) {
   return h("section", { class: "lo-card lo-preview", id: "lo-preview" },
     h("div", { class: "lo-head" },
       h("h2", { class: "lo-h", text: `Preview: ${p.name}` }),
-      h("button", { class: "btn sm ghost", onclick: () => { state.preview = null; ctx.rerender(); } }, "Close")),
+      h("button", { class: "btn sm ghost", onclick: () => { state.preview = null; state.codeImport = null; ctx.rerender(); } }, "Close")),
     h("p", { class: "note", text: "A dry run: nothing is written until you press Apply. Changing an option re-plans." }),
     p.error && h("div", { class: "warn-banner" }, icon("alert", 18), p.error),
     p.available && previewOptions(ctx, p),
@@ -709,6 +832,96 @@ function reportCard(ctx) {
           h("td", { class: "lo-why", text: s.error || "" })))))));
 }
 
+const IMPORT_PILL = { imported: "ok", failed: "failed", removed: "rolled_back", remove_failed: "rollback_failed", pending: "not_run" };
+
+/** One code the preview read: the build's item, the card the code gives, and the pill. Only ok rows can be ticked. */
+function codeRow(ctx, ci, row) {
+  const { h } = ctx;
+  const card = row.card;
+  const pill = !row.ok ? ["failed", "error"] : card ? ["ok", "ok"] : ["not_run", "no card"];
+  return h("li", { class: `lo-imp-row${row.ok ? "" : " bad"}` },
+    h("label", { class: "lo-imp-check" },
+      h("input", {
+        type: "checkbox", checked: ci.ticked.has(row.entry) || null, disabled: !row.ok || null, "aria-label": `Import ${row.name}`,
+        onchange: (e) => toggleCode(ctx, row.entry, e.target.checked),
+      })),
+    h("div", { class: "lo-imp-body" },
+      h("div", { class: "lo-name", text: row.name }),
+      h("div", { class: "lo-meta", text: `In the build: ${row.location} · L${row.level}` }),
+      card && h("div", { class: "lo-meta", text: `Card: ${card.name} · L${card.level}` }),
+      card && card.build.length > 0 && h("div", { class: "lo-why", text: card.build.map((p) => p.name).join(" · ") }),
+      row.error && h("div", { class: "lo-why", text: row.error }),
+      row.warning && h("div", { class: "lo-why", text: row.warning }),
+      row.matches === false && h("div", { class: "lo-imp-warn", text: "Different item: this code is not the build's item class. Importing it would be removed again." })),
+    h("span", { class: `lo-pill ${pill[0]}`, text: pill[1] }));
+}
+
+/** A gear entry the preview skipped: it has no saved code. */
+function skippedRow(ctx, s) {
+  const { h } = ctx;
+  return h("li", { class: "lo-imp-row skip" },
+    h("span", { class: "lo-imp-check" }),
+    h("div", { class: "lo-imp-body" }, h("div", { class: "lo-name", text: s.name }), h("div", { class: "lo-why", text: s.reason })),
+    h("span", { class: "lo-pill not_run", text: "no code" }));
+}
+
+function codeList(ctx, ci) {
+  const { h, icon } = ctx;
+  const n = ci.ticked.size;
+  const rows = [...ci.rows.map((row) => codeRow(ctx, ci, row)), ...ci.skipped.map((s) => skippedRow(ctx, s))];
+  return h("div", {},
+    rows.length > 0 ? h("ul", { class: "lo-imp-list" }, rows) : h("div", { class: "note", text: "No missing item has a saved code." }),
+    h("p", { class: "note", text: "These go to your backpack with fresh IDs. RTSE can't equip them. Nothing is added until you press Import." }),
+    h("div", { class: "tools" },
+      h("button", { class: "btn primary", disabled: n === 0 || state.busy || null, onclick: () => importCodes(ctx) },
+        icon("plus", 15), `Import ${n} into backpack`)));
+}
+
+function codeProgress(ctx, run) {
+  const { h } = ctx;
+  const total = run.total || 0;
+  const cursor = run.cursor || 0;
+  const pct = total ? Math.round((cursor / total) * 100) : 0;
+  return h("div", {},
+    h("div", { class: "lo-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(total), "aria-valuenow": String(cursor) },
+      h("i", { style: { width: `${pct}%` } })),
+    h("div", { class: "lo-run-text", text: `Importing ${cursor} of ${total}` }));
+}
+
+function codeResult(ctx, r) {
+  const { h, icon } = ctx;
+  const s = r.summary;
+  return h("div", {},
+    r.notice && h("div", { class: "warn-banner" }, icon("alert", 18), r.notice),
+    h("p", { class: "lo-msg", text: r.message }),
+    s.remove_failed > 0 && h("div", { class: "warn-banner" }, icon("alert", 18),
+      "Check your backpack: an imported item that doesn't match the build may still be there."),
+    h("div", { class: "lo-chips" }, ["imported", "removed", "failed", "remove_failed"].map((k) =>
+      h("span", { class: "lo-chip" }, k.replace("_", " "), h("b", { text: String(s[k]) })))),
+    h("div", { class: "lo-tablewrap" },
+      h("table", { class: "lo-table" },
+        h("thead", {}, h("tr", {}, h("th", { text: "Build item" }), h("th", { text: "Result" }), h("th", { text: "New item" }), h("th", { text: "Detail" }))),
+        h("tbody", {}, r.results.map((row) => h("tr", {},
+          h("td", { text: row.name }),
+          h("td", {}, h("span", { class: `lo-pill ${IMPORT_PILL[row.status] || "not_run"}`, text: row.status.replace("_", " ") })),
+          h("td", { class: "lo-mono", text: row.id ? `${row.item_name} · ${row.id}` : "" }),
+          h("td", { class: "lo-why", text: row.error || "" })))))));
+}
+
+function codeImportCard(ctx) {
+  const { h, icon } = ctx;
+  const ci = state.codeImport;
+  const body = ci.result ? codeResult(ctx, ci.result) : ci.run ? codeProgress(ctx, ci.run) : null;
+  return h("section", { class: "lo-card lo-wide lo-import", id: "lo-import", "aria-live": "polite" },
+    h("div", { class: "lo-head" },
+      h("h2", { class: "lo-h", text: `Import missing from code: ${ci.name}` }),
+      h("button", { class: "btn sm ghost", disabled: state.busy || null, onclick: () => { state.codeImport = null; ctx.rerender(); } }, "Close")),
+    ci.unverified && h("p", { class: "note", text: ci.unverified }),
+    ci.error && h("div", { class: "warn-banner" }, icon("alert", 18), ci.error),
+    ci.loading && h("div", { class: "lo-run-text", text: ci.found == null ? "Reading codes..." : `Reading code ${ci.rows.length} of ${ci.found}` }),
+    body || (!ci.loading && codeList(ctx, ci)));
+}
+
 function dialogView(ctx) {
   const { h } = ctx;
   const d = state.dialog;
@@ -756,6 +969,7 @@ export function render(root, ctx) {
         d && listCard(ctx, d),
         state.run && runCard(ctx),
         state.preview && previewCard(ctx),
+        state.codeImport && codeImportCard(ctx),
         state.report && reportCard(ctx))),
     ctx.dropdown("loadoutsdev", "Build dev tools", "", h("div", {},
       h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => ctx.dump("/api/debug/loadouts") }, "Save build dump")))),

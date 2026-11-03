@@ -1,5 +1,5 @@
 """rtse/loadouts.py: validation, the link codec, storage, matching, the plan, apply (rollback, journal outcome, readback),
-the import hook and the route tables. The save is a FakeSave: an in-memory character, skill tree and inventory whose write
+importing missing items from their codes, and the route tables. The save is a FakeSave: an in-memory character, skill tree and inventory whose write
 functions are patched in over the real modules, so nothing touches the game and nothing is written under rtse/.
 
     python -I -m pytest dev/tests -k loadouts
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from rtse import api, character, gear_edit, gear_inventory, gear_parts, journal, loadouts, skills
+from rtse import api, character, codes, gear_edit, gear_inventory, gear_parts, item_serial, journal, loadouts, skills
 from rtse.gear_parts import PartRef, Slot
 from rtse.routing import ApiError
 from rtse.loadouts import LoadoutError
@@ -213,7 +213,6 @@ def stored_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Builds and the debug dump go to tmp_path, never into rtse/."""
     monkeypatch.setattr(loadouts, "PRESETS_FILE", tmp_path / "loadouts.json")
     monkeypatch.setattr(loadouts, "DEBUG_FILE", tmp_path / "debug_loadouts.json")
-    monkeypatch.setattr(loadouts, "IMPORT_MISSING_HOOK", None)
     monkeypatch.setattr(loadouts, "_last_report", None)
     return tmp_path
 
@@ -253,7 +252,7 @@ def statuses(report: dict[str, Any]) -> list[str]:
 def test_a_valid_preset_round_trips_through_validate():
     preset = build(character={"level": 72, "xp": 123, "money": 1}, skills=[{"path": "GD_A.B.C", "level": 5}],
                    gear=[gun_entry(parts={"Barrel": "Barrel.A"})])
-    assert loadouts.validate(preset) == preset
+    assert loadouts.validate(preset) == {**preset, "version": 2}  # a version 1 build is upgraded as it loads
 
 
 @pytest.mark.parametrize(
@@ -265,7 +264,7 @@ def test_a_valid_preset_round_trips_through_validate():
         (build(gear=[{**gun_entry(), "colour": "red"}]), "unknown key 'colour' in gear #1"),
         (build(gear=[gun_entry(parts={"Wings": None})]), "unknown key 'Wings' in gear #1 parts"),
         ({**build(), "version": True}, "version must be a whole number"),
-        ({**build(), "version": 2}, "unsupported preset version 2"),
+        ({**build(), "version": 3}, "unsupported preset version 3"),
         ({**build(), "format": "other"}, "not a build preset"),
         (build(character={"level": True}), "level must be a whole number"),
         (build(character={"level": 101}), "level must be 1-100"),
@@ -480,7 +479,7 @@ def test_an_exact_match_is_unchanged_and_plans_no_steps(save):
     result = loadouts.plan(loadouts.validate(build(gear=[gun_entry(parts={"Barrel": "Barrel.A"}, level=10)])))
     assert result["steps"] == []
     assert result["unchanged"] == [{"section": "gear", "label": "Logan's Gun (Equipped)", "reason": "already matches"}]
-    assert result["summary"] == {"changes": 0, "unchanged": 1, "missing": 0, "blocked": 0}
+    assert result["summary"] == {"changes": 0, "unchanged": 1, "missing": 0, "blocked": 0, "importable": 0}
 
 
 def test_the_best_remaining_candidate_wins_on_score(save):
@@ -496,7 +495,7 @@ def test_each_live_item_is_used_once_and_the_extra_entry_is_missing(save):
     gear = [gun_entry(parts={"Barrel": "Barrel.A"}), gun_entry(parts={"Barrel": "Barrel.A"})]
     result = loadouts.plan(build(gear=gear))
     assert [m["entry"] for m in result["missing"]] == [1]
-    assert result["missing"][0]["can_import"] is False
+    assert result["missing"][0]["can_import"] is False and result["missing"][0]["has_code"] is False
     assert len(result["unchanged"]) == 1
 
 
@@ -504,7 +503,8 @@ def test_an_entry_with_no_candidate_is_missing_with_its_details(save):
     save.add(make_gun("Guns.Pistol.A", balance="Balance.Other"))
     result = loadouts.plan(build(gear=[gun_entry(balance="Balance.Pistol", level=40, name="Zer0's Gun")]))
     assert result["missing"] == [{"entry": 0, "name": "Zer0's Gun", "kind": "weapon", "class": "WillowWeapon",
-                                  "location": "Equipped", "balance": "Balance.Pistol", "level": 40, "can_import": False}]
+                                  "location": "Equipped", "balance": "Balance.Pistol", "level": 40, "has_code": False,
+                                  "can_import": False}]
 
 
 def test_a_gun_in_the_backpack_is_a_location_note_and_its_parts_are_still_planned(save):
@@ -710,47 +710,222 @@ def test_apply_rejects_a_bad_on_failure_and_needs_a_plan_id(save, stored_in_tmp)
         loadouts.apply(request)
 
 
-# --- import from item codes (the stream B hook) --------------------------------------------------
+# --- import missing items from their codes (rtse/codes.py) --------------------------------------
+# Real published Gibbed codes (also used by test_item_serial.py): they pass the same offline checks B runs.
+WEAPON_CODE = "BL2(h2/V3n+mGlXGeO8zxX8PVUyUhQuLayUPJYlikvHB65/Ell/prsQL)"  # Infinity (pistol)
+ITEM_CODE = "BL2(B5RV2vkR7ysJhQXfl8v1nRLlvtqvzJp2ZBtfyYW/kw/XD2axxG8=)"  # Fabled Tortoise (shield)
+BAD_CODE = WEAPON_CODE.replace("h2/V3n", "h2/V3m")  # one character off: the checksum fails
 
 
-def test_import_missing_without_a_hook_is_a_501(stored_in_tmp):
-    store(build(gear=[gun_entry()]))
+def coded_build(save: FakeSave) -> dict[str, Any]:
+    """The save holds the gun of entry 0; entry 1 (another pistol, with a code) and entry 2 (no code) are missing."""
+    save.add(make_gun("Guns.Pistol.A", parts={"Barrel": "Barrel.A"}))
+    gear = [gun_entry(parts={"Barrel": "Barrel.A"}, name="Kept"),
+            {**gun_entry(balance="Balance.Infinity", name="Infinity"), "code": WEAPON_CODE},
+            gun_entry(balance="Balance.Other", name="No code")]
+    return store({**build(gear=gear), "version": 2}, overwrite=True)
+
+
+class FakeCodes:
+    """codes.decode_chunk / import_chunk / undo_add with B's reply shapes, at most `per_call` codes per call."""
+
+    def __init__(self, save: FakeSave, monkeypatch: pytest.MonkeyPatch, per_call: int = 1) -> None:
+        self.save, self.per_call = save, per_call
+        self.imported: dict[int, SimpleNamespace] = {}
+        self.balance = "Balance.Infinity"  # what an imported code turns into
+        self.undone: list[int] = []
+        self.undo_works = True
+        self.fail: set[str] = set()
+        self.next_uid = 500
+        monkeypatch.setattr(codes, "decode_chunk", self.decode_chunk)
+        monkeypatch.setattr(codes, "import_chunk", self.import_chunk)
+        monkeypatch.setattr(codes, "undo_add", self.undo_add)
+        monkeypatch.setattr(gear_inventory, "backpack_item", self.imported.get)
+
+    def decode_chunk(self, text: str, start: int = 0) -> dict[str, Any]:
+        found = item_serial.extract_codes(text)
+        entries = []
+        for index in range(start, min(len(found), start + self.per_call)):
+            card = {"name": "Infinity", "class": "WillowWeapon", "level": 50, "build": [], "type_path": None}
+            entries.append({"index": index, "code": found[index], "ok": True, "error": None, "kind": "weapon",
+                            "unique_id": 1, "card": card, "uid_clash": False, "warning": None})
+        end = start + len(entries)
+        return {"entries": entries, "found": len(found), "next": end if end < len(found) else None}
+
+    def import_chunk(self, code_list: list[str], destination: str = "backpack") -> dict[str, Any]:
+        assert destination == "backpack"
+        results = []
+        for code in code_list[: self.per_call]:
+            if code in self.fail:
+                results.append({"code": code, "ok": False, "error": "the game refused to add it", "id": None,
+                                "name": None, "unique_id": None})
+                continue
+            self.next_uid += 1
+            gun = make_gun(f"Guns.Imported.{self.next_uid}", balance=self.balance, name="Infinity")
+            self.imported[self.next_uid] = gun
+            results.append({"code": code, "ok": True, "error": None, "id": gun.path, "name": "Infinity",
+                            "unique_id": self.next_uid})
+        return {"results": results, "processed": len(results), "remaining": len(code_list) - len(results),
+                "imported": sum(r["ok"] for r in results), "failed": sum(not r["ok"] for r in results),
+                "path": "unpack"}
+
+    def undo_add(self, destination: str, unique_id: int) -> None:
+        self.undone.append(unique_id)
+        if self.undo_works:
+            self.imported.pop(unique_id, None)
+
+
+def test_a_v2_entry_keeps_its_code_and_bad_codes_are_refused():
+    entry = {**gun_entry(), "code": WEAPON_CODE}
+    assert loadouts.validate({**build(gear=[entry]), "version": 2})["gear"][0]["code"] == WEAPON_CODE
+    with pytest.raises(LoadoutError, match="code isn't valid"):  # a malformed code (checksum)
+        loadouts.validate({**build(gear=[{**entry, "code": BAD_CODE}]), "version": 2})
+    with pytest.raises(LoadoutError, match="code isn't valid"):
+        loadouts.validate({**build(gear=[{**entry, "code": "BL2(not base64!)"}]), "version": 2})
+    with pytest.raises(LoadoutError, match="not a weapon"):  # a shield's code on a weapon entry
+        loadouts.validate({**build(gear=[{**entry, "code": ITEM_CODE}]), "version": 2})
+
+
+def test_a_version_1_build_still_loads_without_codes_and_cannot_carry_one():
+    old = build(gear=[gun_entry()])
+    assert old["version"] == 1
+    assert loadouts.validate(old)["version"] == 2  # upgraded; nothing else changes
+    with pytest.raises(LoadoutError, match="unknown key 'code'"):
+        loadouts.validate(build(gear=[{**gun_entry(), "code": WEAPON_CODE}]))
+    with pytest.raises(LoadoutError, match="unsupported preset version 3"):
+        loadouts.validate({**old, "version": 3})
+
+
+def test_capture_saves_each_items_code_and_notes_the_ones_without(save, monkeypatch):
+    save.add(make_gun("Guns.Pistol.A", parts={"Barrel": "Barrel.A"}))
+    save.add(make_gun("Guns.Pistol.B", parts={"Barrel": "Barrel.A"}, name="Broken"))
+
+    def export(item: Any) -> tuple[str, dict[str, Any], list[str]]:
+        if item.path == "Guns.Pistol.B":
+            raise RuntimeError("CreateSerialNumber failed")
+        return WEAPON_CODE, {"checksum_ok": True}, []
+
+    monkeypatch.setattr(codes, "export_code", export)
+    notes: list[str] = []
+    preset, warnings = loadouts.capture("Coded", {"equipped": True}, notes=notes)
+    assert preset["version"] == 2 and warnings == [] and "left_out" not in preset  # not a partial build
+    assert [g.get("code") for g in preset["gear"]] == [WEAPON_CODE, None]
+    assert notes and notes[0].startswith("1 item was saved without a code") and "Broken" in notes[0]
+
+
+def test_capture_stops_asking_for_codes_after_its_time(save, monkeypatch):
+    for i in range(3):
+        save.add(make_gun(f"Guns.Pistol.{i}"))
+    monkeypatch.setattr(codes, "export_code", lambda _item: (WEAPON_CODE, {"checksum_ok": True}, []))
+    ticks = iter(range(1000))
+    monkeypatch.setattr(loadouts, "_clock", lambda: next(ticks) * 0.9)
+    notes: list[str] = []
+    preset, _warnings = loadouts.capture("Slow", {"equipped": True}, notes=notes)
+    assert 1 <= sum("code" in g for g in preset["gear"]) < 3
+    assert "stopped asking the game for codes" in notes[0]
+
+
+def test_the_plan_marks_missing_items_that_have_a_code(save, stored_in_tmp):
+    coded_build(save)
+    result = preview("Test build")
+    assert [(m["name"], m["has_code"], m["can_import"]) for m in result["missing"]] == [
+        ("Infinity", True, True), ("No code", False, False)]
+    assert result["summary"]["importable"] == 1
+
+
+def test_import_preview_then_import_into_the_backpack(save, stored_in_tmp, monkeypatch):
+    coded_build(save)
+    fake = FakeCodes(save, monkeypatch)
+    first = loadouts.import_preview({"name": "Test build", "start": "0"})
+    assert first["found"] == 1 and first["next"] is None
+    (row,) = first["entries"]
+    assert (row["entry"], row["name"], row["ok"], row["matches"]) == (1, "Infinity", True, True)
+    assert first["skipped"] == [{"entry": 2, "name": "No code", "location": "Equipped", "level": 10,
+                                 "reason": "no code was saved for this item"}]
+    with journal.transaction("/api/loadouts/import_missing") as tx:
+        reply = loadouts.import_missing({"name": "Test build", "plan_id": first["plan_id"], "entries": [1]})
+    assert tx.outcome == "committed" and tx.label == "Build 'Test build': import missing 1"
+    assert reply["state"] == "done" and reply["summary"]["imported"] == 1
+    assert reply["results"][0]["status"] == "imported" and reply["results"][0]["id"] == "Guns.Imported.501"
+    assert "code" not in reply["results"][0]
+    # the imported gun is now in the save, so the build preview matches it
+    save.add(fake.imported[501], gear_inventory.BACKPACK)
+    assert [m["name"] for m in preview("Test build")["missing"]] == ["No code"]
+
+
+def test_import_runs_in_slices_with_a_cursor(save, stored_in_tmp, monkeypatch):
+    save.add(make_gun("Guns.Pistol.A"))
+    gear = [{**gun_entry(balance="Balance.Infinity", name=f"Infinity {i}"), "code": WEAPON_CODE} for i in range(3)]
+    store({**build(gear=gear), "version": 2}, overwrite=True)
+    FakeCodes(save, monkeypatch, per_call=2)
+    first = loadouts.import_preview({"name": "Test build", "start": 0})
+    assert first["next"] == 2 and len(first["entries"]) == 2
+    rest = loadouts.import_preview({"name": "Test build", "start": "2", "plan_id": first["plan_id"]})
+    assert rest["next"] is None and [e["index"] for e in rest["entries"]] == [2] and rest["skipped"] == []
+    reply = loadouts.import_missing({"name": "Test build", "plan_id": first["plan_id"], "entries": [0, 1, 2]})
+    assert (reply["state"], reply["cursor"], reply["summary"]["pending"]) == ("running", 2, 1)
     with pytest.raises(LoadoutError) as caught:
-        loadouts.import_missing({"name": "Test build"})
-    assert caught.value.status == 501
-    assert "item-codes feature" in str(caught.value)
+        loadouts.import_missing({"run_id": reply["run_id"], "cursor": 0})
+    assert caught.value.status == 409
+    assert loadouts.import_run_route({"run_id": reply["run_id"]})["cursor"] == 2
+    with pytest.raises(LoadoutError) as caught:  # an import run is not an apply run
+        loadouts.run_route({"run_id": reply["run_id"]})
+    assert caught.value.status == 404
+    done = loadouts.import_missing({"run_id": reply["run_id"], "cursor": 2})
+    assert done["state"] == "done" and done["summary"]["imported"] == 3
 
 
-def test_import_missing_hands_the_missing_gear_to_the_hook_and_checks_its_shape(save, stored_in_tmp, monkeypatch):
-    store(build(gear=[gun_entry(name="Zer0's Gun"), gun_entry(balance="Balance.Other", name="Other")]))
-    save.add(make_gun("Guns.Pistol.A", balance="Balance.Pistol"))  # matches entry 0; entry 1 is missing
-    seen: list[list[dict[str, Any]]] = []
-
-    def hook(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        seen.append(entries)
-        return [{"ok": True, "id": "Guns.Imported.1", "error": None}]
-
-    monkeypatch.setattr(loadouts, "IMPORT_MISSING_HOOK", hook)
-    assert loadouts.plan(loadouts.get_preset({"name": "Test build"})["preset"])["missing"][0]["can_import"] is True
-    result = loadouts.import_missing({"name": "Test build"})
-    assert result == {"results": [{"ok": True, "id": "Guns.Imported.1", "error": None}]}
-    assert [e["name"] for e in seen[0]] == ["Other"]
+def test_an_imported_item_that_is_not_the_builds_item_is_removed_again(save, stored_in_tmp, monkeypatch):
+    coded_build(save)
+    fake = FakeCodes(save, monkeypatch)
+    fake.balance = "Balance.SomethingElse"
+    plan_id = loadouts.import_preview({"name": "Test build"})["plan_id"]
+    reply = loadouts.import_missing({"name": "Test build", "plan_id": plan_id, "entries": [1]})
+    assert reply["results"][0]["status"] == "removed" and fake.undone == [501] and fake.imported == {}
+    assert "removed again" in reply["results"][0]["error"]
 
 
-@pytest.mark.parametrize(
-    "returned",
-    [
-        [],  # the wrong count
-        [{"ok": True, "id": None}],  # missing "error"
-        [{"ok": "yes", "id": None, "error": None}],  # ok must be a real bool
-    ],
-)
-def test_a_hook_result_of_the_wrong_shape_is_a_500(save, stored_in_tmp, monkeypatch, returned):
-    store(build(gear=[gun_entry()]))
-    monkeypatch.setattr(loadouts, "IMPORT_MISSING_HOOK", lambda _entries: returned)
-    with pytest.raises(LoadoutError) as caught:
-        loadouts.import_missing({"name": "Test build"})
-    assert caught.value.status == 500
+def test_a_removal_that_does_not_verify_is_remove_failed(save, stored_in_tmp, monkeypatch):
+    coded_build(save)
+    fake = FakeCodes(save, monkeypatch)
+    fake.balance, fake.undo_works = "Balance.SomethingElse", False
+    plan_id = loadouts.import_preview({"name": "Test build"})["plan_id"]
+    reply = loadouts.import_missing({"name": "Test build", "plan_id": plan_id, "entries": [1]})
+    assert reply["results"][0]["status"] == "remove_failed" and "check your backpack" in reply["results"][0]["error"]
+
+
+def test_a_code_the_importer_refuses_is_failed_with_its_reason(save, stored_in_tmp, monkeypatch):
+    coded_build(save)
+    fake = FakeCodes(save, monkeypatch)
+    fake.fail.add(WEAPON_CODE)
+    plan_id = loadouts.import_preview({"name": "Test build"})["plan_id"]
+    reply = loadouts.import_missing({"name": "Test build", "plan_id": plan_id, "entries": [1]})
+    assert reply["results"][0] == {"entry": 1, "name": "Infinity", "status": "failed", "id": None, "item_name": None,
+                                   "error": "the game refused to add it"}
+
+
+def test_a_build_without_codes_has_nothing_to_import(save, stored_in_tmp, monkeypatch):
+    save.add(make_gun("Guns.Pistol.A"))
+    store(build(gear=[gun_entry(balance="Balance.Other", name="Old")]), overwrite=True)  # a version 1 build
+    FakeCodes(save, monkeypatch)
+    first = loadouts.import_preview({"name": "Test build"})
+    assert first["entries"] == [] and first["found"] == 0 and [s["name"] for s in first["skipped"]] == ["Old"]
+    with pytest.raises(LoadoutError, match="has no code"):
+        loadouts.import_missing({"name": "Test build", "plan_id": first["plan_id"], "entries": [0]})
+
+
+def test_import_needs_the_previews_id_and_a_fresh_one(save, stored_in_tmp, monkeypatch):
+    coded_build(save)
+    FakeCodes(save, monkeypatch)
+    plan_id = loadouts.import_preview({"name": "Test build"})["plan_id"]
+    save._item("Guns.Pistol.A").ExpLevel = 33  # the inventory changed after the preview
+    for call in (lambda: loadouts.import_missing({"name": "Test build", "plan_id": plan_id, "entries": [1]}),
+                 lambda: loadouts.import_preview({"name": "Test build", "plan_id": plan_id, "start": 1})):
+        with pytest.raises(LoadoutError) as caught:
+            call()
+        assert caught.value.status == 409 and "preview again" in str(caught.value)
+    with pytest.raises(LoadoutError, match="tick at least one"):
+        loadouts.import_missing({"name": "Test build", "plan_id": plan_id, "entries": []})
 
 
 # --- routes and the debug dump -------------------------------------------------------------------
@@ -759,7 +934,8 @@ def test_a_hook_result_of_the_wrong_shape_is_a_500(save, stored_in_tmp, monkeypa
 def test_routes_are_collected_once_through_the_api_registry():
     gets, posts = api.collect([loadouts])
     assert set(gets) == {"/api/loadouts", "/api/loadouts/get", "/api/loadouts/link", "/api/loadouts/plan",
-                         "/api/loadouts/run", "/api/loadouts/export_character", "/api/debug/loadouts"}
+                         "/api/loadouts/run", "/api/loadouts/import_preview", "/api/loadouts/import_run",
+                         "/api/loadouts/export_character", "/api/debug/loadouts"}
     assert set(posts) == {"/api/loadouts/save", "/api/loadouts/import", "/api/loadouts/delete", "/api/loadouts/apply",
                           "/api/loadouts/import_missing"}
 
@@ -774,7 +950,7 @@ def test_the_list_route_works_outside_a_save(monkeypatch, stored_in_tmp):
     listing = loadouts.list_presets({})
     assert listing["class_key"] is None
     assert [p["name"] for p in listing["presets"]] == ["Offline"]
-    assert listing["can_import_missing"] is False and listing["schema_version"] == 1
+    assert listing["can_import_missing"] is True and listing["schema_version"] == 2
 
 
 def test_the_save_route_stores_a_capture_and_answers_with_the_summary(save, stored_in_tmp):

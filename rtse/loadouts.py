@@ -7,8 +7,9 @@ in reverse, journal outcome, item ids that change after a rebuild).
 
 NOT verified in a live game: nothing here has been run against Borderlands 2. Every write goes through the same functions
 as the editor pages, so each step carries the same unverified risks those pages have (README, "What is not verified in a
-live game"). Skill writes ignore the tier lock, as rtse/skills.py does. Items that are missing from the save can't be
-created yet: IMPORT_MISSING_HOOK is wired by the item-codes feature.
+live game"). Skill writes ignore the tier lock, as rtse/skills.py does. Missing items are never created silently: a
+build saves each item's code (schema version 2), and the user can preview, then import, the missing ones through
+rtse/codes.py's budgeted decode_chunk / import_chunk (see "Import missing items" below).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import re
 import shutil
 import time
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,12 +31,15 @@ from typing import Any
 
 from unrealsdk import logging
 
-from . import character, gear_edit, gear_inventory, gear_parts, journal, skills
+from . import character, codes, gear_edit, gear_inventory, gear_parts, item_serial, journal, skills
 from .gear_parts import ITEM_SLOTS, WEAPON_SLOTS
 from .routing import ApiError, Params, Route
 
 FORMAT = "rtse.loadout"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2 added gear "code"; version 1 builds (no codes) still load and are upgraded on save
+SUPPORTED_VERSIONS = (1, 2)
+CODE_LIMIT = 80  # a BL2(...) code of the longest (40-byte) serial is 61 characters
+CODE_EXPORT_SECONDS = 2.0  # a capture stops asking the game for item codes after this long (the rest have none)
 STORE_FORMAT = "rtse.loadouts"
 STORE_VERSION = 1
 LINK_PREFIX = "RTSE-L1:"
@@ -71,7 +75,8 @@ SECTION_CHARACTER, SECTION_SKILLS, SECTION_GEAR = SECTIONS
 GEAR_KINDS = ("weapon", "item")
 LOCATIONS = (gear_inventory.EQUIPPED, gear_inventory.BACKPACK)
 PRESET_KEYS = ("format", "version", "kind", "name", "created", "class_key", "left_out", "character", "skills", "gear")
-GEAR_KEYS = ("kind", "class", "name", "location", "balance", "definition", "manufacturer", "level", "parts")
+GEAR_KEYS_V1 = ("kind", "class", "name", "location", "balance", "definition", "manufacturer", "level", "parts")
+GEAR_KEYS = (*GEAR_KEYS_V1, "code")
 CHARACTER_KEYS = ("level", "xp", "skill_points", "money", "eridium", "seraph", "torgue")
 CHARACTER_BOUNDS: dict[str, tuple[int, int]] = {
     "level": (character.MIN_LEVEL, MAX_LEVEL),
@@ -184,10 +189,26 @@ def _parts(raw: Any, slots: tuple[str, ...], what: str) -> dict[str, str | None]
     return {slot: _check_path(value, f"{what} part {slot}") for slot, value in section.items()}
 
 
-def _gear_entry(raw: Any, index: int) -> dict[str, Any]:
+def _code(raw: Any, kind: str, what: str) -> str:
+    """An item code, checked offline the way rtse/codes.py checks a pasted one before the game sees it: BL2(...) form,
+    version 7, checksum, every asset reference inside Gibbed's tables, and the weapon/item bit matching `kind`."""
+    if not isinstance(raw, str) or len(raw) > CODE_LIMIT:
+        raise LoadoutError(400, f"{what}: code must be a BL2(...) item code")
+    try:
+        data = item_serial.code_to_bytes(raw)
+        assets = item_serial.validate_assets(data)
+    except item_serial.SerialError as ex:
+        raise LoadoutError(400, f"{what}: the item code isn't valid ({ex})") from None
+    if assets["is_weapon"] != (kind == "weapon"):
+        raise LoadoutError(400, f"{what}: the item code is {'a weapon' if assets['is_weapon'] else 'not a weapon'}, "
+                                f"but the entry's kind is {kind}")
+    return item_serial.bytes_to_code(data)
+
+
+def _gear_entry(raw: Any, index: int, version: int = SCHEMA_VERSION) -> dict[str, Any]:
     what = f"gear #{index + 1}"
     section = _dict(raw, what)
-    _unknown_keys(section, GEAR_KEYS, what)
+    _unknown_keys(section, GEAR_KEYS if version >= 2 else GEAR_KEYS_V1, what)
     kind = section.get("kind")
     if kind not in GEAR_KINDS:
         raise LoadoutError(400, f'{what}: kind must be "weapon" or "item"')
@@ -205,15 +226,17 @@ def _gear_entry(raw: Any, index: int) -> dict[str, Any]:
     entry["level"] = _whole(section.get("level"), 1, MAX_LEVEL, f"{what} level")
     slots = WEAPON_SLOTS if kind == "weapon" else ITEM_SLOTS
     entry["parts"] = _parts(section.get("parts"), slots, what)
+    if "code" in section:
+        entry["code"] = _code(section["code"], kind, what)
     return entry
 
 
-def _gear(raw: Any) -> list[dict[str, Any]]:
+def _gear(raw: Any, version: int = SCHEMA_VERSION) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise LoadoutError(400, "gear must be a list")
     if len(raw) > MAX_GEAR:
         raise LoadoutError(400, f"too many gear items ({len(raw)}; the limit is {MAX_GEAR})")
-    return [_gear_entry(entry, index) for index, entry in enumerate(raw)]
+    return [_gear_entry(entry, index, version) for index, entry in enumerate(raw)]
 
 
 def validate(data: Any) -> dict[str, Any]:
@@ -236,7 +259,7 @@ def validate(data: Any) -> dict[str, Any]:
     version = data.get("version")
     if type(version) is not int:
         raise LoadoutError(400, "version must be a whole number")
-    if version != SCHEMA_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise LoadoutError(400, f"unsupported preset version {version}")
     kind = data.get("kind")
     if kind not in ("loadout", "character"):
@@ -263,7 +286,7 @@ def validate(data: Any) -> dict[str, Any]:
     if "skills" in data:
         out["skills"] = _skills(data["skills"])
     if "gear" in data:
-        out["gear"] = _gear(data["gear"])
+        out["gear"] = _gear(data["gear"], version)
     length = len(to_link(out))
     if length > LINK_LIMIT:
         raise LoadoutError(400, f"this build is too big to share: its link would be {length} characters and the limit is "
@@ -425,7 +448,9 @@ def _summary(preset: dict[str, Any]) -> dict[str, Any]:
             "backpack": sum(1 for g in gear if g["location"] == gear_inventory.BACKPACK),
             "skills": len(preset.get("skills", [])),
             "character": len(preset.get("character", {})),
+            "codes": sum(1 for g in gear if "code" in g),
         },
+        "schema_version": preset["version"],
     }
 
 
@@ -508,6 +533,18 @@ def _live_gear() -> list[dict[str, Any]]:
     return [_live_item(item, location) for item, location in found]
 
 
+def _item_code(item: Any, kind: str) -> tuple[str | None, str | None]:
+    """(code, None) or (None, why not). codes.export_code is the same export the inventory page uses (UNVERIFIED call:
+    CreateSerialNumber); the code is then checked like any imported one, so a build never stores a code B would refuse."""
+    try:
+        code, _header, _warnings = codes.export_code(item)
+        return _code(code, kind, "the item"), None
+    except LoadoutError as ex:
+        return None, str(ex).removeprefix("the item: ")
+    except Exception as ex:  # noqa: BLE001 - a code is optional: the build still saves the item without one
+        return None, f"the game's serial couldn't be read ({str(ex) or ex.__class__.__name__})"
+
+
 def _gear_entry_of(live: dict[str, Any]) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "kind": live["kind"],
@@ -524,14 +561,33 @@ def _gear_entry_of(live: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
-def _capture_gear(*, equipped: bool, backpack: bool, warnings: list[str]) -> list[dict[str, Any]]:
-    found, notes = gear_inventory._inventory(gear_inventory._manager())  # noqa: SLF001
-    warnings.extend(notes)
+def _capture_gear(*, equipped: bool, backpack: bool, warnings: list[str], notes: list[str]) -> list[dict[str, Any]]:
+    """The gear section. Each item also gets its code, for importing it again if it goes missing; asking the game for
+    codes stops after CODE_EXPORT_SECONDS (soft: checked before each item), and items without a code are listed in
+    `notes`, which don't make the build partial: its build data is complete."""
+    found, problems = gear_inventory._inventory(gear_inventory._manager())  # noqa: SLF001
+    warnings.extend(problems)
     gear = []
+    deadline = _clock() + CODE_EXPORT_SECONDS
+    no_code: list[str] = []
     for item, location in found:
         if (location == gear_inventory.EQUIPPED and not equipped) or (location == gear_inventory.BACKPACK and not backpack):
             continue
-        gear.append(_gear_entry_of(_live_item(item, location)))
+        live = _live_item(item, location)
+        entry = _gear_entry_of(live)
+        if _clock() >= deadline:
+            code, why = None, "RTSE stopped asking the game for codes after 2 seconds"
+        else:
+            code, why = _item_code(item, live["kind"])
+        if code is None:
+            no_code.append(f"{live['name'] or live['class']}: {why}")
+        else:
+            entry["code"] = code
+        gear.append(entry)
+    if no_code:
+        notes.append(f"{len(no_code)} item{'s were' if len(no_code) > 1 else ' was'} saved without a code, so "
+                     f"{'they' if len(no_code) > 1 else 'it'} can't be imported if you lose "
+                     f"{'them' if len(no_code) > 1 else 'it'} (first: {no_code[0]})")
     return gear
 
 
@@ -565,11 +621,15 @@ def _default_name(class_key: str | None, level: Any) -> str:
     return f"{label} L{level} {day}" if level is not None else f"{label} {day}"
 
 
-def capture(name: str | None, include: dict[str, bool], *, whole: bool = False) -> tuple[dict[str, Any], list[str]]:
+def capture(name: str | None, include: dict[str, bool], *, whole: bool = False,
+            notes: list[str] | None = None) -> tuple[dict[str, Any], list[str]]:
     """The current build as a validated preset, not saved. `whole` exports the whole character: every section, every
-    character key (xp included) and all gear. `name` None gives a name from the class, level and date."""
+    character key (xp included) and all gear. `name` None gives a name from the class, level and date. Returns the
+    preset and its warnings (what was left out: a partial build); informational notes (items saved without a code)
+    are appended to `notes` when given."""
     flags = {key: True for key in INCLUDE_KEYS} if whole else include
     warnings: list[str] = []
+    notes = [] if notes is None else notes
     with _game_errors():
         char_state = character.read()
         class_key = char_state.get("class_key")
@@ -594,6 +654,7 @@ def capture(name: str | None, include: dict[str, bool], *, whole: bool = False) 
                 equipped=bool(flags.get("equipped") or whole),
                 backpack=bool(flags.get("backpack") or whole),
                 warnings=warnings,
+                notes=notes,
             )
     if not sections:
         raise LoadoutError(400, "tick something to save (gear, skills or character)")
@@ -778,7 +839,8 @@ def _missing(index: int, entry: dict[str, Any]) -> dict[str, Any]:
         "location": entry["location"],
         "balance": entry["balance"],
         "level": entry["level"],
-        "can_import": IMPORT_MISSING_HOOK is not None,
+        "has_code": "code" in entry,
+        "can_import": "code" in entry,
     }
 
 
@@ -910,7 +972,7 @@ def plan(preset: dict[str, Any], *, sections: list[str] | None = None, over_max:
         "missing": draft.missing,
         "blocked": draft.blocked,
         "summary": {"changes": len(steps), "unchanged": len(draft.unchanged), "missing": len(draft.missing),
-                    "blocked": len(draft.blocked)},
+                    "blocked": len(draft.blocked), "importable": sum(1 for m in draft.missing if m["has_code"])},
         "unverified": UNVERIFIED_NOTE,
     }
 
@@ -1166,12 +1228,19 @@ def _make_room() -> None:
         del _runs[min(finished, key=lambda run: run.touched).run_id]
 
 
-def _find_run(raw: Any) -> _Run:
+def _find_run(raw: Any) -> Any:
     _forget_expired_runs()  # expiry is enforced on every lookup, not only when a run starts
     run = _runs.get(raw) if isinstance(raw, str) else None
     if run is None:
         raise LoadoutError(404, "that apply run is unknown or expired - preview the build again")
     run.touched = _clock()
+    return run
+
+
+def _find_apply(raw: Any) -> _Run:
+    run = _find_run(raw)
+    if not isinstance(run, _Run):
+        raise LoadoutError(404, "that apply run is unknown or expired - preview the build again")
     return run
 
 
@@ -1356,7 +1425,7 @@ def apply(params: Params) -> dict[str, Any]:
     while the reply's state is "running"; GET /api/loadouts/run answers where a run stands.
     """
     if "run_id" in params:
-        run = _find_run(params.get("run_id"))
+        run = _find_apply(params.get("run_id"))
         cursor = params.get("cursor")
         if type(cursor) is not int or cursor != run.cursor:
             raise LoadoutError(409, f"this run is at step {run.cursor + 1}, not {cursor} - ask /api/loadouts/run where it stands")
@@ -1458,7 +1527,7 @@ def list_presets(_params: Params) -> dict[str, Any]:
         "warnings": warnings,
         "class_key": current_class,
         "schema_version": SCHEMA_VERSION,
-        "can_import_missing": IMPORT_MISSING_HOOK is not None,
+        "can_import_missing": True,
     }
 
 
@@ -1472,7 +1541,7 @@ def link(params: Params) -> dict[str, Any]:
 
 def run_route(params: Params) -> dict[str, Any]:
     """Where an apply run stands, for a page that lost a chunk's answer (a timeout or a dropped connection)."""
-    return _reply(_find_run(params.get("run_id")), ran=None)
+    return _reply(_find_apply(params.get("run_id")), ran=None)
 
 
 def plan_route(params: Params) -> dict[str, Any]:
@@ -1481,17 +1550,19 @@ def plan_route(params: Params) -> dict[str, Any]:
 
 
 def export_character(_params: Params) -> dict[str, Any]:
-    preset, warnings = capture(None, {}, whole=True)
-    return {"preset": preset, "link": to_link(preset), "warnings": warnings}
+    notes: list[str] = []
+    preset, warnings = capture(None, {}, whole=True, notes=notes)
+    return {"preset": preset, "link": to_link(preset), "warnings": warnings, "notes": notes}
 
 
 def save(params: Params) -> dict[str, Any]:
     name = _text(params.get("name"), "name", NAME_LIMIT)
-    preset, warnings = capture(name, _include(params.get("include")))
+    notes: list[str] = []
+    preset, warnings = capture(name, _include(params.get("include")), notes=notes)
     if warnings and not _flag(params.get("allow_partial"), "allow_partial"):
         # Nothing is stored: the page shows what couldn't be read and asks before saving a partial build.
-        return {"saved": False, "partial": True, "warnings": warnings}
-    return _store(preset, overwrite=_flag(params.get("overwrite"), "overwrite"), warnings=warnings)
+        return {"saved": False, "partial": True, "warnings": warnings, "notes": notes}
+    return {**_store(preset, overwrite=_flag(params.get("overwrite"), "overwrite"), warnings=warnings), "notes": notes}
 
 
 def import_preset(params: Params) -> dict[str, Any]:
@@ -1511,42 +1582,210 @@ def delete(params: Params) -> dict[str, Any]:
     return {"presets": [_summary(p) for p in presets], "warnings": warnings, "deleted": removed["name"]}
 
 
-def import_missing(params: Params) -> dict[str, Any]:
-    """Hands the preset's missing gear to the item-code importer (IMPORT_MISSING_HOOK) and returns its results."""
-    if IMPORT_MISSING_HOOK is None:
-        raise LoadoutError(501, "importing items from codes isn't available yet (needs the item-codes feature)")
+# --- Import missing items from their codes (rtse/codes.py, stream B) ------------------------------------------
+#
+# A missing build item that carries a code can be imported, in two page-driven, budgeted loops over B's API:
+#   1. preview (read-only): codes.decode_chunk, one budgeted slice per request. B validates each code offline
+#      (checksum, asset references) and asks the game for a card. The reply's plan_id is this preview's own id.
+#   2. import (after the user ticks what they want): codes.import_chunk, one budgeted slice per request. B gives each
+#      item a fresh UniqueId and verifies every add. RTSE then checks the new item is the build's item (same class and
+#      balance) and removes it again with codes.undo_add if it isn't.
+# Items always go to the backpack; RTSE can't equip them.
+
+
+def _importable(preset: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The build's missing gear right now: (rows with a code, rows without). Read-only."""
+    missing = plan(preset, sections=[SECTION_GEAR])["missing"]
+    gear = preset.get("gear", [])
+    rows: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for m in missing:
+        entry = gear[m["entry"]]
+        row = {"entry": m["entry"], "name": m["name"], "location": entry["location"], "level": entry["level"]}
+        if entry.get("code"):
+            rows.append({**row, "code": entry["code"], "class": entry["class"]})
+        else:
+            skipped.append({**row, "reason": "no code was saved for this item"})
+    return rows, skipped
+
+
+def _import_id(name: str, rows: list[dict[str, Any]]) -> str:
+    """The import preview's id: the build, which entries are missing with which codes, and the inventory as it is."""
+    return _digest([name, [[r["entry"], r["code"]] for r in rows], _basis([SECTION_GEAR])])
+
+
+def import_preview(params: Params) -> dict[str, Any]:
+    """One budgeted slice of the import preview (codes.decode_chunk). start=0 needs no plan_id and answers this
+    preview's own plan_id; later slices must send it back, so they describe the same missing items."""
     preset = _find_stored(params.get("name"))
-    missing = plan(preset)["missing"]
-    entries = [preset["gear"][m["entry"]] for m in missing]
-    if not entries:
-        return {"results": []}
+    start = params.get("start", 0)
+    if isinstance(start, str):
+        start = int(start) if start.strip().isdigit() else -1
+    if type(start) is not int or start < 0:
+        raise LoadoutError(400, "start must be a whole number")
+    with _game_errors():
+        rows, skipped = _importable(preset)
+        import_id = _import_id(preset["name"], rows)
+        if start and params.get("plan_id") != import_id:
+            raise LoadoutError(409, "the game changed since the preview - preview again")
+        if not rows:
+            return {"plan_id": import_id, "found": 0, "next": None, "entries": [], "skipped": skipped,
+                    "unverified": codes.UNVERIFIED}
+        chunk = codes.decode_chunk("\n".join(r["code"] for r in rows), start)
+    if chunk["found"] != len(rows):  # every stored code is a validated BL2(...) code, so this would be a bug
+        raise LoadoutError(500, f"the item-code reader found {chunk['found']} codes in {len(rows)}")
+    entries = []
+    for decoded in chunk["entries"]:
+        row = rows[decoded["index"]]
+        card = decoded.get("card")
+        entries.append({
+            "index": decoded["index"], "entry": row["entry"], "name": row["name"], "location": row["location"],
+            "level": row["level"], "ok": bool(decoded.get("ok")), "error": decoded.get("error"),
+            "warning": decoded.get("warning"), "card": card,
+            "matches": None if not card else card.get("class") == row["class"],
+            "uid_clash": bool(decoded.get("uid_clash")),
+        })
+    return {"plan_id": import_id, "found": chunk["found"], "next": chunk["next"], "entries": entries,
+            "skipped": skipped if start == 0 else [], "unverified": codes.UNVERIFIED}
+
+
+class _ImportRun:
+    """One confirmed import of missing build items, a budgeted slice per request (shares the run slots with apply)."""
+
+    def __init__(self, preset: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        self.run_id = os.urandom(12).hex()
+        self.name = preset["name"]
+        self.gear = preset.get("gear", [])
+        self.rows = [{"entry": r["entry"], "name": r["name"], "status": "pending", "id": None, "item_name": None,
+                      "error": None, "code": r["code"]} for r in rows]
+        self.cursor = 0
+        self.chunk = 0
+        self.state = "running"
+        self.message = f"Ready to import {len(rows)} items."
+        self.touched = _clock()
+
+
+def _same_item(entry: dict[str, Any], live: dict[str, Any]) -> bool:
+    """The build's identity for an item (as matching uses it): the same class and balance (or definition)."""
+    if live["class"] != entry["class"]:
+        return False
+    return live["balance"] == entry["balance"] if entry["balance"] is not None else live["definition"] == entry["definition"]
+
+
+def _check_import(run: _ImportRun, row: dict[str, Any], result: dict[str, Any]) -> None:
+    """B imported a code. If the new item isn't the build's item, it is removed again and the removal checked."""
+    row.update(status="imported", id=result.get("id"), item_name=result.get("name"))
+    unique_id = result.get("unique_id")
+    item = gear_inventory.backpack_item(unique_id) if type(unique_id) is int else None
+    if item is None:
+        row["error"] = "imported, but RTSE couldn't find it again to compare it with the build"
+        return
+    live = _live_item(item, gear_inventory.BACKPACK)
+    if _same_item(run.gear[row["entry"]], live):
+        return
+    why = f"the code holds {live['name'] or live['class']}, not the build's {row['name']}"
     try:
-        returned = IMPORT_MISSING_HOOK(entries)
-    except Exception as ex:  # noqa: BLE001
-        raise LoadoutError(500, f"the item-code importer failed: {ex}") from None
-    return {"results": _hook_results(returned, len(entries))}
+        codes.undo_add("backpack", unique_id)
+        gone = gear_inventory.backpack_item(unique_id) is None
+    except Exception as ex:  # noqa: BLE001 - reported
+        gone, why = False, f"{why}; removing it failed ({str(ex) or ex.__class__.__name__})"
+    if gone:
+        row.update(status="removed", error=f"{why}, so it was removed again")
+    else:
+        row.update(status="remove_failed", error=f"{why}, and it could not be removed - check your backpack")
 
 
-def _hook_results(returned: Any, expected: int) -> list[dict[str, Any]]:
-    if not isinstance(returned, list) or len(returned) != expected:
-        raise LoadoutError(500, f"the item-code importer returned the wrong number of results (wanted {expected})")
-    out = []
-    for result in returned:
-        if (
-            not isinstance(result, dict)
-            or not {"ok", "id", "error"} <= result.keys()
-            or type(result["ok"]) is not bool
-            or not (result["id"] is None or isinstance(result["id"], str))
-            or not (result["error"] is None or isinstance(result["error"], str))
-        ):
-            raise LoadoutError(500, "the item-code importer returned a result of the wrong shape")
-        out.append({"ok": result["ok"], "id": result["id"], "error": result["error"]})
-    return out
+def _import_reply(run: _ImportRun) -> dict[str, Any]:
+    global _last_import  # noqa: PLW0603
+    keys = ("imported", "failed", "removed", "remove_failed", "pending")
+    report = {
+        "run_id": run.run_id, "name": run.name, "state": run.state, "total": len(run.rows), "cursor": run.cursor,
+        "chunk": run.chunk,
+        "results": [{k: v for k, v in row.items() if k != "code"} for row in run.rows],
+        "summary": {k: sum(1 for row in run.rows if row["status"] == k) for k in keys},
+        "message": run.message,
+    }
+    _last_import = report
+    return report
+
+
+def _import_chunk(run: _ImportRun) -> dict[str, Any]:
+    """One budgeted codes.import_chunk call (at most 20 codes / 2 s, always one), then the identity check of each."""
+    if run.state != "running":
+        raise LoadoutError(409, "this import has already finished")
+    run.chunk += 1
+    left = run.rows[run.cursor:]
+    label = f"Build {run.name!r}: import missing {run.chunk}"
+    with journal.transaction(label, {"run_id": run.run_id, "chunk": run.chunk}) as tx:
+        _label(tx, label)
+        with _game_errors():
+            reply = codes.import_chunk([row["code"] for row in left], "backpack")
+        processed = reply.get("processed")
+        results = reply.get("results")
+        if type(processed) is not int or not 1 <= processed <= len(left) or not isinstance(results, list) \
+                or len(results) < processed:
+            raise LoadoutError(500, "the item-code importer answered in a shape RTSE doesn't know")
+        for row, result in zip(left[:processed], results[:processed]):
+            if result.get("ok"):
+                _check_import(run, row, result)
+            else:
+                row.update(status="failed", error=result.get("error") or "the import failed")
+    run.cursor += processed
+    done = sum(1 for row in run.rows if row["status"] == "imported")
+    if run.cursor >= len(run.rows):
+        run.state = "done"
+        run.message = f"Imported {done} of {len(run.rows)} into your backpack. Preview the build again to apply it."
+    else:
+        run.message = f"Imported {run.cursor} of {len(run.rows)} so far."
+    return _import_reply(run)
+
+
+def _find_import(raw: Any) -> _ImportRun:
+    run = _find_run(raw)
+    if not isinstance(run, _ImportRun):
+        raise LoadoutError(404, "that import is unknown or expired - preview it again")
+    return run
+
+
+def import_missing(params: Params) -> dict[str, Any]:
+    """Start: {name, plan_id (from the import preview), entries: [gear entry indexes the user ticked]}.
+    Continue: {run_id, cursor}. Only entries that are missing right now and carry a code can be imported."""
+    if "run_id" in params:
+        run = _find_import(params.get("run_id"))
+        cursor = params.get("cursor")
+        if type(cursor) is not int or cursor != run.cursor:
+            raise LoadoutError(409, f"this import is at item {run.cursor + 1}, not {cursor} - ask /api/loadouts/import_run")
+        return _import_chunk(run)
+
+    preset = _find_stored(params.get("name"))
+    wanted = params.get("entries")
+    if not isinstance(wanted, list) or not wanted or any(type(i) is not int for i in wanted):
+        raise LoadoutError(400, "entries must list the build items to import (tick at least one)")
+    with _game_errors():
+        rows, _skipped = _importable(preset)
+        if params.get("plan_id") != _import_id(preset["name"], rows):
+            raise LoadoutError(409, "the game changed since the preview - preview again")
+    by_entry = {row["entry"]: row for row in rows}
+    unknown = [i for i in wanted if i not in by_entry]
+    if unknown:
+        raise LoadoutError(400, f"build item {unknown[0] + 1} isn't missing or has no code")
+    _make_room()
+    run = _ImportRun(preset, [by_entry[i] for i in sorted(set(wanted))])
+    _runs[run.run_id] = run
+    return _import_chunk(run)
+
+
+def import_run_route(params: Params) -> dict[str, Any]:
+    """Where an import stands, for a page that lost a slice's answer."""
+    return _import_reply(_find_import(params.get("run_id")))
+
+
+_last_import: dict[str, Any] | None = None
 
 
 def debug_dump(_params: Params) -> dict[str, Any]:
     """Saves what RTSE sees for a build (a full capture, the raw identity of each item, the stored names, the last
-    apply report and the hook state) to DEBUG_FILE. Works outside a save too: the capture then carries the error."""
+    apply report and the last import) to DEBUG_FILE. Works outside a save too: the capture then carries the error."""
     try:
         capture_state: dict[str, Any] = {"ok": True, "preset": capture(None, {}, whole=True)[0]}
     except Exception as ex:  # noqa: BLE001 - the dump is for diagnosing exactly this
@@ -1565,21 +1804,12 @@ def debug_dump(_params: Params) -> dict[str, Any]:
         "stored": [_summary(p) for p in presets],
         "warnings": warnings,
         "last_apply": _last_report,
-        "hook": {
-            "installed": IMPORT_MISSING_HOOK is not None,
-            "name": getattr(IMPORT_MISSING_HOOK, "__qualname__", None),
-        },
+        "last_import": _last_import,
     }
     DEBUG_FILE.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     return {"saved_to": str(DEBUG_FILE), "items": len(items)}
 
 
-# ---- HOOK: stream B (item codes) -------------------------------------------------------------------------------
-# Wired by the hub after stream B merges. Set IMPORT_MISSING_HOOK to a callable
-#     (entries: list[dict]) -> list[dict]
-# taking the preset's gear entries (schema above) and returning one {"ok": bool, "id": str | None, "error": str | None}
-# per entry, in order. Until then it is None, the plan says can_import=false and the route answers 501.
-IMPORT_MISSING_HOOK: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
 
 
 # --- Routes (paths are the API; api.py collects these) ---
@@ -1592,6 +1822,8 @@ GET_ROUTES: dict[str, Route] = {
     "/api/loadouts/link": link,
     "/api/loadouts/plan": plan_route,
     "/api/loadouts/run": run_route,
+    "/api/loadouts/import_preview": import_preview,
+    "/api/loadouts/import_run": import_run_route,
     "/api/loadouts/export_character": export_character,
     "/api/debug/loadouts": debug_dump,
 }

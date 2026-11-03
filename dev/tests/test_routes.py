@@ -52,6 +52,8 @@ GET_PATHS = [
     "/api/loadouts",
     "/api/loadouts/export_character",
     "/api/loadouts/get",
+    "/api/loadouts/import_preview",
+    "/api/loadouts/import_run",
     "/api/loadouts/link",
     "/api/loadouts/plan",
     "/api/loadouts/run",

@@ -87,6 +87,18 @@
 .lo-dialog-text { color: var(--bone); font-weight: 600; margin: 8px 0 0; overflow-wrap: anywhere; }
 .lo-dialog-list { margin: 8px 0 0; padding-left: 18px; color: var(--bone); font-weight: 600; overflow-wrap: anywhere; }
 .lo-dialog .tools { justify-content: flex-end; }
+.lo-row-flat .lo-pill { margin-left: 8px; }
+.lo-import { margin-top: 24px; scroll-margin-top: 16px; }
+.lo-imp-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.lo-imp-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 10px 12px; background: var(--ink); border: 2px solid #000; border-left: 8px solid var(--good); min-width: 0; }
+.lo-imp-row.bad { border-left-color: var(--blaze); }
+.lo-imp-row.skip { border-left-color: var(--plate-dim); opacity: .75; }
+.lo-imp-check { display: flex; padding-top: 2px; }
+.lo-imp-check input { accent-color: var(--hazard); width: 18px; height: 18px; margin: 0; }
+.lo-imp-check input:disabled { opacity: .35; }
+.lo-imp-body { min-width: 0; display: grid; gap: 3px; }
+.lo-imp-body > div { min-width: 0; overflow-wrap: anywhere; }
+.lo-imp-warn { color: var(--blaze); font-weight: 700; font-size: 12.5px; overflow-wrap: anywhere; }
 @media (max-width: 900px) {
   .lo-grid { grid-template-columns: minmax(0, 1fr); }
   .lo-body { padding: 4px 16px 20px; }
