@@ -33,6 +33,9 @@ const KIND_WORDS = {
   "world.playthrough": "Playthrough",
   "world.stations": "Fast travel",
   "world.challenge": "Challenges",
+  "inventory.add": "Item added",
+  "inventory.delete": "Item deleted",
+  "inventory.move": "Item moved",
   "checkpoint.create": "Checkpoint created",
   "checkpoint.restore": "Checkpoint restore staged",
 };

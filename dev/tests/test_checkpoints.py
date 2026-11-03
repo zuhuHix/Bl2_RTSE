@@ -317,7 +317,9 @@ def test_first_write_skips_checkpoint_routes_and_parts_rescan():
 
 def test_an_undo_is_a_game_write_so_it_goes_through_the_backup_gate():
     _make_tree()  # guessed: not verified
-    for label in ("/api/history/undo", "/api/item/set_part"):  # including a part swap made from the weapon lab
+    # an undo, a part swap made from the weapon lab, and the Bank & codes writes (#10)
+    for label in ("/api/history/undo", "/api/item/set_part", "/api/codes/import", "/api/inventory/duplicate",
+                  "/api/inventory/delete", "/api/inventory/move", "/api/inventory/import"):
         with pytest.raises(journal.WriteBlocked):
             checkpoints.before_first_write(label)
 
