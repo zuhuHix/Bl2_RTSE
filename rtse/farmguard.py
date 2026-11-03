@@ -14,8 +14,9 @@ midget spawns.") and offers:
   dismiss      close an alert about a change that was blocked (nothing to undo)
 With the profile's auto_block on (off by default), the change is blocked in a pre-hook instead (the game function
 never runs), so there is nothing to undo.
-No undo after a turn-in: once the guarded mission is Complete (and wasn't in the snapshot), its rewards are already given
-and can't be taken back, so the alert offers keep only (with "note" saying why) and resolve refuses undo, checked live.
+No undo after a turn-in: once ANY current record of the guarded mission (tracker or saved copy) is Complete (and
+wasn't in the snapshot), its rewards are already given and can't be taken back, so the alert offers keep only (with
+"note" saying why) and resolve refuses undo, checked live. A record whose status can't be read turns undo off too.
 
 Game hooks (names checked with dev/class_index.py; what they do at runtime is NOT verified in a live game):
   WillowGame.MissionTracker:SetMissionStatus(InMission, MissionStatus, WillowPC)  pre + post
@@ -89,6 +90,7 @@ BLOCK = getattr(_hooks, "Block", None)  # returned from a pre-hook, the game fun
 NM_CLIENT = 3  # ENetMode: NM_Standalone, NM_DedicatedServer, NM_ListenServer, NM_Client
 HOST_MODES = (0, 2)  # solo, co-op host: the only modes in which farm guard writes or blocks
 NO_UNDO_AFTER_TURN_IN = "Rewards already given can't be taken back, so undo is off once the mission is turned in."
+NO_UNDO_UNREADABLE = "RTSE can't read this mission's state in every record right now, so undo is off (it can't rule out a turn-in)."
 MAX_ALERTS = 20
 MAX_DROPS = 200
 MAX_TRACE = 100
@@ -372,19 +374,31 @@ def _add_alert(profile: dict[str, Any], change: str, *, objective: str | None = 
     return alert
 
 
-def _turned_in(profile: dict[str, Any], change: str, live: dict[str, Any] | None) -> bool:
-    """True once the guarded mission was turned in after the snapshot (its rewards are out, so no undo)."""
-    snap = _primary(_state[profile["id"]]["snapshot"]) or {}
-    if snap.get("status") == "complete":
-        return False
-    return change == "complete" or (live or {}).get("status") == "complete"
+def _undo_blocker(profile: dict[str, Any], change: str) -> str | None:
+    """Why undo must be off right now, or None. Reads EVERY current record of the mission (tracker and saved copy):
+    a turn-in, any record confirmed Complete that wasn't Complete in the snapshot, or any record whose status can't be
+    read (or no records at all) turns undo off. Unknown means no undo."""
+    if change == "complete":
+        return NO_UNDO_AFTER_TURN_IN
+    records = world.mission_records(profile["mission"])
+    if not records:
+        return NO_UNDO_UNREADABLE
+    entries = (_state[profile["id"]]["snapshot"] or {}).get("entries") or {}
+    for source, state in records.items():
+        if "status" in (state.get("unreadable") or ()) or state.get("status") not in world.STATUS_ORDER:
+            return NO_UNDO_UNREADABLE
+        if state["status"] == "complete" and ((entries.get(source) or {}).get("status") != "complete"):
+            return NO_UNDO_AFTER_TURN_IN
+    return None
 
 
 def _set_actions(alert: dict[str, Any], profile: dict[str, Any]) -> None:
     if alert["blocked"]:
         alert.update({"actions": ["dismiss"], "note": None})
-    elif _turned_in(profile, alert["change"], alert.get("after")):
-        alert.update({"actions": ["keep"], "note": NO_UNDO_AFTER_TURN_IN})
+        return
+    blocker = _undo_blocker(profile, alert["change"])
+    if blocker:
+        alert.update({"actions": ["keep"], "note": blocker})
     else:
         alert.update({"actions": ["keep", "undo", "undo_reload"], "note": None})
 
@@ -859,11 +873,13 @@ def resolve(params: dict[str, Any]) -> dict[str, Any]:
     if action in ("keep", "undo", "undo_reload"):
         _require_writable()
     if action in ("undo", "undo_reload"):
-        live = world.mission_state(profile["mission"])
-        if _turned_in(profile, alert["change"], live):  # checked live, not from the alert
-            alert["after"] = _summary(live)
+        blocker = _undo_blocker(profile, alert["change"])  # checked live on every record, not from the alert
+        if blocker:
+            live = world.mission_state(profile["mission"])
+            if live is not None:
+                alert["after"] = _summary(live)
             _set_actions(alert, profile)  # now offers keep only
-            raise FarmError(409, NO_UNDO_AFTER_TURN_IN)
+            raise FarmError(409, blocker)
         if action == "undo_reload":
             safe, why = reload_safety()
             if not safe:

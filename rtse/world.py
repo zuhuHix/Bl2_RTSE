@@ -1290,26 +1290,43 @@ def _snapshot_entries(owners: dict[str, Any], mission_id: str) -> dict[str, Any]
 
 
 def _entry_state(entry: Any) -> dict[str, Any]:
-    """One MissionData entry as plain JSON: status, objective numbers, active set and sub-sets (paths)."""
-    state: dict[str, Any] = {"status": "unknown", "status_raw": None, "progress": None, "active_set": None, "sub_sets": None}
+    """One MissionData entry as plain JSON: status, objective numbers, active set and sub-sets (paths).
+
+    "unreadable" lists every field that couldn't be read (or, for the status, isn't a known EMissionStatus). A field
+    that reads as null (no active set) is a known value, not unreadable."""
+    unreadable: list[str] = []
+    state: dict[str, Any] = {"status": "unknown", "status_raw": None, "progress": None, "active_set": None, "sub_sets": None,
+                             "unreadable": unreadable}
     try:
         raw = getattr(entry, MISSION_STATUS[0])
         state["status"] = _status_key(raw)
-        state["status_raw"] = int(raw)
-    except Exception:  # noqa: BLE001, S110
-        pass
-    raw_progress, _name = _first(entry, OBJECTIVE_PROGRESS)
-    if raw_progress is not None:
         try:
-            state["progress"] = [int(v) for v in raw_progress]
+            state["status_raw"] = int(raw)
         except Exception:  # noqa: BLE001, S110
             pass
-    active, _name = _first(entry, OBJECTIVE_ACTIVE_SET)
-    state["active_set"] = _path(active) if active is not None else None
-    subs, name = _first(entry, ("SubObjectiveSets",))
-    if name is not None:
-        state["sub_sets"] = [_path(s) for s in _items(subs)]
+    except Exception:  # noqa: BLE001, S110
+        pass
+    if state["status"] not in STATUS_ORDER:
+        unreadable.append("status")
+    try:
+        state["progress"] = [int(v) for v in getattr(entry, OBJECTIVE_PROGRESS[0])]
+    except Exception:  # noqa: BLE001
+        unreadable.append("progress")
+    try:
+        active = getattr(entry, OBJECTIVE_ACTIVE_SET[0])
+        state["active_set"] = _path(active) if active is not None else None
+    except Exception:  # noqa: BLE001
+        unreadable.append("active_set")
+    try:
+        subs = getattr(entry, "SubObjectiveSets")
+        state["sub_sets"] = [] if subs is None else [_path(x) for x in subs if x is not None]
+    except Exception:  # noqa: BLE001
+        unreadable.append("sub_sets")
     return state
+
+
+def _unreadable(states: dict[str, dict[str, Any]]) -> list[str]:
+    return [f"{source}.{field}" for source, state in states.items() for field in state.get("unreadable") or ()]
 
 
 def mission_snapshot(mission_id: str) -> dict[str, Any]:
@@ -1328,6 +1345,9 @@ def mission_snapshot(mission_id: str) -> dict[str, Any]:
     entries = _snapshot_entries(owners, mission_id)
     if not entries:
         raise WorldError(404, "that mission isn't in this playthrough's mission list (is its DLC installed?)")
+    bad = _unreadable({source: _entry_state(entry) for source, entry in entries.items()})
+    if bad:
+        raise WorldError(409, f"RTSE can't read {', '.join(bad)} of this mission, so it won't snapshot it - run the farm dump")
     return _build_snapshot(owners, mission_id, entries, identity)
 
 
@@ -1347,6 +1367,16 @@ def _build_snapshot(owners: dict[str, Any], mission_id: str, entries: dict[str, 
         "entries": {source: _entry_state(entries[source]) if source in entries else None for source in SNAPSHOT_SOURCES},
         "set_classes": set_classes,
     }
+
+
+def mission_records(mission_id: str) -> dict[str, dict[str, Any]] | None:
+    """Every current record of the mission ({"tracker": state, "saved": state}, whichever exist), or None if the game
+    can't be read at all. Each state carries "unreadable" (see _entry_state)."""
+    try:
+        entries = _snapshot_entries(_owners(), mission_id)
+    except Exception:  # noqa: BLE001
+        return None
+    return {source: _entry_state(entry) for source, entry in entries.items()}
 
 
 def mission_state(mission_id: str) -> dict[str, Any] | None:
@@ -1397,74 +1427,80 @@ def _write_progress(entry: Any, values: list[int]) -> None:
 
 
 class _Plan(NamedTuple):
-    """What to write into one entry. Objects are already resolved; a field left as None is not written."""
+    """Everything to write into one entry, objects already resolved. Every field is always written."""
 
     source: str
     entry: Any
-    progress: list[int] | None
-    set_active: bool
+    progress: list[int]
     active_set: Any
-    sub_sets: list[Any] | None
-    status: str | None
+    sub_sets: list[Any]
+    status: str
 
 
 def _plan_from_snapshot(source: str, entry: Any, want: dict[str, Any], definition: Any, classes: dict[str, str]) -> _Plan:
     """Resolves every reference the snapshot names (raises WorldError before anything is written)."""
-    progress = want.get("progress")
-    sub_sets = want.get("sub_sets")
-    status = want.get("status")
-    return _Plan(
-        source, entry, list(progress) if progress is not None else None, "active_set" in want,
-        _resolve_set(definition, want.get("active_set"), classes) if "active_set" in want else None,
-        [_resolve_set(definition, p, classes) for p in sub_sets] if sub_sets is not None else None,
-        status if status in STATUS_ORDER else None,
-    )
+    missing = [f for f in SNAPSHOT_FIELDS if f not in want] + list(want.get("unreadable") or ())
+    if missing or want.get("status") not in STATUS_ORDER or want.get("progress") is None or want.get("sub_sets") is None:
+        raise WorldError(409, f"the snapshot of {source} is incomplete ({', '.join(missing) or 'status'}) - take a new one")
+    return _Plan(source, entry, list(want["progress"]), _resolve_set(definition, want["active_set"], classes),
+                 [_resolve_set(definition, path, classes) for path in want["sub_sets"]], want["status"])
 
 
-def _plan_from_entry(source: str, entry: Any) -> _Plan:
-    """What the entry holds right now, with its live objects (for a rollback; nothing to resolve)."""
-    state = _entry_state(entry)
-    subs, name = _first(entry, ("SubObjectiveSets",))
-    return _Plan(source, entry, state["progress"], True, _first(entry, OBJECTIVE_ACTIVE_SET)[0],
-                 list(_items(subs)) if name is not None else None, state["status"] if state["status"] in STATUS_ORDER else None)
+def _plan_from_entry(source: str, entry: Any, state: dict[str, Any]) -> _Plan:
+    """What the entry holds right now, with its live objects (for a rollback; nothing to resolve). state is fully readable."""
+    subs = getattr(entry, "SubObjectiveSets")
+    return _Plan(source, entry, list(state["progress"]), getattr(entry, OBJECTIVE_ACTIVE_SET[0]),
+                 [] if subs is None else [x for x in subs if x is not None], state["status"])
 
 
-def _apply_plan(owners: dict[str, Any], plan: _Plan, definition: Any) -> list[str]:
-    """Writes one entry; returns how each field was written. Raises on the first write the game refuses."""
+def _write_status(owners: dict[str, Any], plan: _Plan, definition: Any, via: list[str]) -> None:
+    entry, source, key = plan.entry, plan.source, plan.status
+    if _status_key(getattr(entry, MISSION_STATUS[0])) == key:
+        return
+    sample = getattr(entry, MISSION_STATUS[0])
+    tracker = owners.get("missions")
+    if source == "tracker" and tracker is not None:
+        try:
+            value = _status_value(sample, key)
+            _call(tracker, MISSION_SETTERS[0][1], {"InMission": definition, "MissionStatus": value, "WillowPC": owners["pc"]}, (definition, value, owners["pc"]))
+            via.append(f"missions.{MISSION_SETTERS[0][1]}()")
+        except Exception:  # noqa: BLE001, S110
+            pass  # the direct write below still sets it
+    if _status_key(getattr(entry, MISSION_STATUS[0])) != key:
+        setattr(entry, MISSION_STATUS[0], _status_value(sample, key))
+        via.append(f"{source}.{MISSION_STATUS[0]}")
+
+
+def _apply_plan(owners: dict[str, Any], plan: _Plan, definition: Any, *, best_effort: bool = False) -> tuple[list[str], list[str]]:
+    """Writes one entry field by field; returns (how each field was written, the fields that raised).
+
+    Without best_effort the first refused write raises; with it (a rollback) every field is still attempted."""
     via: list[str] = []
+    errors: list[str] = []
     entry, source = plan.entry, plan.source
-    if plan.progress is not None:
-        _write_progress(entry, plan.progress)
-        via.append(f"{source}.{OBJECTIVE_PROGRESS[0]}")
-    if plan.set_active:
-        setattr(entry, OBJECTIVE_ACTIVE_SET[0], plan.active_set)
-        via.append(f"{source}.{OBJECTIVE_ACTIVE_SET[0]}")
-    if plan.sub_sets is not None:
-        setattr(entry, "SubObjectiveSets", list(plan.sub_sets))
-        via.append(f"{source}.SubObjectiveSets")
-    key = plan.status
-    if key is not None and _status_key(getattr(entry, MISSION_STATUS[0])) != key:
-        sample = getattr(entry, MISSION_STATUS[0])
-        tracker = owners.get("missions")
-        if source == "tracker" and tracker is not None:
-            try:
-                value = _status_value(sample, key)
-                _call(tracker, MISSION_SETTERS[0][1], {"InMission": definition, "MissionStatus": value, "WillowPC": owners["pc"]}, (definition, value, owners["pc"]))
-                via.append(f"missions.{MISSION_SETTERS[0][1]}()")
-            except Exception:  # noqa: BLE001, S110
-                pass  # the direct write below still sets it
-        if _status_key(getattr(entry, MISSION_STATUS[0])) != key:
-            setattr(entry, MISSION_STATUS[0], _status_value(sample, key))
-            via.append(f"{source}.{MISSION_STATUS[0]}")
-    return via
+    steps = (
+        ("progress", lambda: (_write_progress(entry, plan.progress), via.append(f"{source}.{OBJECTIVE_PROGRESS[0]}"))),
+        ("active_set", lambda: (setattr(entry, OBJECTIVE_ACTIVE_SET[0], plan.active_set), via.append(f"{source}.{OBJECTIVE_ACTIVE_SET[0]}"))),
+        ("sub_sets", lambda: (setattr(entry, "SubObjectiveSets", list(plan.sub_sets)), via.append(f"{source}.SubObjectiveSets"))),
+        ("status", lambda: _write_status(owners, plan, definition, via)),
+    )
+    for field, step in steps:
+        try:
+            step()
+        except Exception as ex:  # noqa: BLE001
+            if not best_effort:
+                raise
+            errors.append(f"{source}.{field} ({type(ex).__name__})")
+    return via, errors
 
 
 def _mismatch(entries: dict[str, Any], wanted: dict[str, dict[str, Any]]) -> list[str]:
+    """Every field (null values included) that doesn't read back as wanted, or can't be read back at all."""
     out = []
     for source, entry in entries.items():
         state, want = _entry_state(entry), wanted.get(source) or {}
         for field in SNAPSHOT_FIELDS:
-            if field in want and want[field] is not None and state.get(field) != want[field]:
+            if field in state["unreadable"] or field not in want or state[field] != want[field]:
                 out.append(f"{source}.{field}")
     return out
 
@@ -1483,10 +1519,12 @@ def _notify(owners: dict[str, Any], definition: Any, via: list[str]) -> None:
 def restore_mission_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Puts a mission back to a snapshot taken by mission_snapshot(): all of it, or none of it.
 
-    Refused (409) unless the current playthrough is known and equals the snapshot's, and the save identity matches.
-    Every object is resolved before the first write. If a write raises, or the read-back doesn't match the snapshot,
-    every entry is rolled back to what it held just before, and WorldError 500 says what failed (and whether the rollback
-    worked). On success returns {"mission", "name", "before": {source: state}, "after": {source: state}, "matches": True,
+    Refused (409) before anything is written unless: the current playthrough is known and equals the snapshot's; the
+    save identity matches; the mission has exactly the records (tracker / saved) the snapshot holds, no fewer and no
+    more; every field of the snapshot and of the current records reads cleanly; every objective set resolves.
+    If a write raises, or the read-back doesn't match (null values included), every field of every record is rolled
+    back best effort to what it held just before, and WorldError 500 lists what failed and every field still off.
+    On success returns {"mission", "name", "before": {source: state}, "after": {source: state}, "matches": True,
     "mismatch": [], "via": [...]} and journals one world.restore record whose undo puts the pre-restore state back.
     """
     owners = _owners()
@@ -1503,23 +1541,35 @@ def restore_mission_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         who = taken.get("character") or snapshot.get("character") or "another save"
         raise WorldError(409, f"the snapshot belongs to {who} (save {taken.get('save_id')}), not this save - take a new one")
     entries = _snapshot_entries(owners, mission_id)
-    if not entries:
-        raise WorldError(404, "that mission isn't in this playthrough's mission list any more")
+    wanted_raw = snapshot.get("entries") or {}
+    held = sorted(source for source, state in wanted_raw.items() if state)
+    if not held:
+        raise WorldError(409, "the snapshot holds no mission records - take a new one")
+    missing = [source for source in held if source not in entries]
+    if missing:
+        raise WorldError(409, f"the mission's {' and '.join(missing)} record that the snapshot holds can't be found now, so an undo "
+                              "would only be partial; nothing was changed")
+    extra = sorted(source for source in entries if source not in held)
+    if extra:
+        raise WorldError(409, f"the game now has a {' and '.join(extra)} record of this mission that the snapshot didn't capture; "
+                              "nothing was changed - take a new snapshot")
     definition, _name = _first(entries.get("tracker", entries.get("saved")), MISSION_DEF)
     classes = snapshot.get("set_classes") or {}
-    wanted_raw = snapshot.get("entries") or {}
-    wanted = {source: wanted_raw.get(source) or wanted_raw.get("tracker") or wanted_raw.get("saved") or {} for source in entries}
+    wanted = {source: wanted_raw[source] for source in entries}
     # 1. preflight: resolve everything, and capture what's there now (for the rollback and the journal's undo)
-    plans = [_plan_from_snapshot(source, entry, wanted[source], definition, classes) for source, entry in entries.items() if wanted[source]]
-    rollback = [_plan_from_entry(source, entry) for source, entry in entries.items()]
-    prior = _build_snapshot(owners, mission_id, entries, identity)
     before = {source: _entry_state(entry) for source, entry in entries.items()}
-    # 2. write; 3. read back. Any failure rolls every entry back.
+    bad = _unreadable(before)
+    if bad:
+        raise WorldError(409, f"RTSE can't read {', '.join(bad)} right now, so a failed undo couldn't be rolled back; nothing was changed")
+    plans = [_plan_from_snapshot(source, entry, wanted[source], definition, classes) for source, entry in entries.items()]
+    rollback = [_plan_from_entry(source, entry, before[source]) for source, entry in entries.items()]
+    prior = _build_snapshot(owners, mission_id, entries, identity)
+    # 2. write; 3. read back. Any failure rolls every field of every record back.
     via: list[str] = []
     failure = None
     try:
         for plan in plans:
-            via += _apply_plan(owners, plan, definition)
+            via += _apply_plan(owners, plan, definition)[0]
     except Exception as ex:  # noqa: BLE001
         failure = f"the game refused a write ({type(ex).__name__}: {ex})"
     if failure is None:
@@ -1527,16 +1577,17 @@ def restore_mission_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         if mismatch:
             failure = f"the game didn't keep {', '.join(mismatch)}"
     if failure is not None:
-        rollback_errors = []
+        rollback_errors: list[str] = []
         for plan in rollback:
-            try:
-                _apply_plan(owners, plan, definition)
-            except Exception as ex:  # noqa: BLE001
-                rollback_errors.append(f"{plan.source} ({type(ex).__name__})")
+            rollback_errors += _apply_plan(owners, plan, definition, best_effort=True)[1]
         left = _mismatch(entries, before)
         _notify(owners, definition, [])
-        outcome = ("and putting the mission back as it was ALSO failed for " + ", ".join(rollback_errors + left) + " - run the farm dump"
-                   if rollback_errors or left else "so the mission was put back exactly as it was before the undo")
+        if rollback_errors or left:
+            parts = ([f"writes refused: {', '.join(rollback_errors)}"] if rollback_errors else []) + (
+                [f"still not as before: {', '.join(left)}"] if left else [])
+            outcome = f"and putting the mission back as it was ALSO failed ({'; '.join(parts)}) - run the farm dump"
+        else:
+            outcome = "so the mission was put back exactly as it was before the undo"
         logging.error(f"RTSE: world restore of {mission_id} failed: {failure}; {outcome}")
         raise WorldError(500, f"undo failed: {failure}, {outcome}")
     _notify(owners, definition, via)
