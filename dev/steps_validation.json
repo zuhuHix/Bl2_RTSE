@@ -25,79 +25,37 @@
       "wait": 900
     },
     {
-      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card')].find((x) => x.querySelector('.pstat')?.textContent === 'DLC'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+      "eval": "(() => { const f = document.querySelector('#filters'); if (!f) return 'NOT FOUND'; f.scrollTop = f.scrollHeight; return 'ok'; })()"
     },
     {
-      "wait": 1000
+      "shot": "dev/out/validation_a_picker_chips.png"
     },
     {
-      "shot": "dev/out/validation_a_picker_equipped.png"
-    },
-    {
-      "eval": "(() => { const b = [...document.querySelectorAll('.picker .preview button')].find((x) => x.textContent.includes('Save validation dump')); if (!b) return 'NOT FOUND'; b.click(); return 'ok'; })()"
-    },
-    {
-      "wait": 600
-    },
-    {
-      "clickText": "Close"
-    },
-    {
-      "wait": 400
-    },
-    {
-      "clickText": "Slag Storm"
+      "eval": "(() => { const f = [...document.querySelectorAll('.picker .fchip')].find((x) => x.textContent.startsWith('Unknown')); if (!f) return 'NOT FOUND'; f.click(); return 'ok'; })()"
     },
     {
       "wait": 700
     },
     {
-      "click": ".leg[data-slot=\"Barrel\"]"
+      "shot": "dev/out/validation_b_unknown_filter.png"
     },
     {
-      "wait": 500
-    },
-    {
-      "clickText": "Any gun"
-    },
-    {
-      "wait": 700
-    },
-    {
-      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card:not(.cur)')].find((x) => x.querySelector('.pstat')?.textContent === 'Custom'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card:not(.cur)')].find((x) => x.querySelector('.pstat')?.textContent === \"DLC unknown\"); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
     },
     {
       "wait": 900
     },
     {
-      "clickText": "Run save check"
+      "shot": "dev/out/validation_c_preview_dlc_unknown.png"
     },
     {
-      "wait": 1400
-    },
-    {
-      "shot": "dev/out/validation_b_save_check_backpack.png"
-    },
-    {
-      "eval": "(() => { const c = document.querySelector('.picker .card[title^=\"GD_Weap_SniperRifles.Barrel.SR_Barrel_Hyperion\"]'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
+      "eval": "(() => { const cards = [...document.querySelectorAll('.picker .card:not(.cur)')]; const pick = (t) => cards.find((x) => x.querySelector('.pstat')?.textContent === t); const c = pick('Unknown weight') || pick('DLC unknown'); if (!c) return 'NOT FOUND'; c.click(); return 'ok: ' + c.querySelector('.pstat').textContent; })()"
     },
     {
       "wait": 900
     },
     {
-      "clickText": "Run save check"
-    },
-    {
-      "wait": 1400
-    },
-    {
-      "shot": "dev/out/validation_c_restored_warning.png"
-    },
-    {
-      "eval": "(() => { const c = [...document.querySelectorAll('.picker .card:not(.cur)')].find((x) => x.querySelector('.pstat')?.textContent === 'Custom'); if (!c) return 'NOT FOUND'; c.click(); return 'ok'; })()"
-    },
-    {
-      "wait": 900
+      "shot": "dev/out/validation_d_preview_unknown_weight.png"
     },
     {
       "clickText": "Bolt on this"
@@ -106,16 +64,7 @@
       "wait": 1400
     },
     {
-      "shot": "dev/out/validation_d_kept_panel.png"
-    },
-    {
-      "clickText": "Run save check"
-    },
-    {
-      "wait": 1400
-    },
-    {
-      "shot": "dev/out/validation_e_kept_save_check.png"
+      "shot": "dev/out/validation_e_kept_panel.png"
     }
   ]
 }

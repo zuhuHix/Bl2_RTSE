@@ -22,9 +22,6 @@ const PAGE = 90;
 
 const stage = { host: null, viewer: null }; // the main 3D view; its canvas survives re-renders
 let hover3d = null;
-// The "CHECK BEFORE APPLY" answers, keyed by item, mode, slot and part. Cleared when the item changes or after any apply.
-const checkCache = new Map();
-let checkGen = 0; // bumped on every clear, so a check still in flight never writes a stale answer
 let lastKept = null; // what the game kept after the last bolt-on or level change: { id, what, kept, removing }
 
 // ---------- which gun a part comes from ----------
@@ -62,11 +59,12 @@ function ownerTooltip(option, detail) {
   return `${option.id}\n${owned[0] > owned.length - 1 ? `On ${owned[0]} guns, e.g. ${names}` : `On: ${names}`}`;
 }
 
-/** A small coloured chip with the status's short label; nothing when the option has no status. */
+/** A small coloured chip with the status's short label (an unknown part says what is unknown); nothing when the option has no status. */
 function statusChip(option) {
   const meta = option && PART_STATUS[option.status];
   if (!meta) return null;
-  return h("span", { class: "pstat", vars: { "--c": meta.color }, title: statusTitle(option) }, h("i", { class: "pdot" }), meta.short);
+  const text = option.status === "unknown" ? statusText(option) : meta.short;
+  return h("span", { class: "pstat", vars: { "--c": meta.color }, title: statusTitle(option) }, h("i", { class: "pdot" }), text);
 }
 
 /** A small plate for the card: the SVG sketch at first, replaced by a render of the real part once it is on screen. */
@@ -117,19 +115,13 @@ export async function loadDetail() {
   if (detail) setDetail(detail);
 }
 
-function forgetChecks() {
-  checkCache.clear();
-  checkGen += 1;
-}
-
 /** Keeps what the game kept after an edit, for the panel on the gear page (none from an older backend). */
 function keepResult(result, removing = false) {
   const kept = result.applied && result.applied.kept;
-  lastKept = kept ? { id: result.id, what: result.applied.what, kept, removing, check: null } : null;
+  lastKept = kept ? { id: result.id, what: result.applied.what, kept, removing } : null;
 }
 
 function setDetail(detail) {
-  if (!state.detail || state.detail.id !== detail.id) forgetChecks();
   state.detail = detail;
   state.selected = detail.id; // the game can change an item's id when it rebuilds it
   state.mode = detail.mode;
@@ -397,7 +389,7 @@ function keptPanel(detail) {
       h("tbody", {}, rows.map((part) => keptRow(part, removing))))),
     stats.length > 0 && h("div", { class: "kept-line" }, h("b", { text: "Stats" }), h("span", { text: stats.join("  /  ") })),
     keptChecks(kept),
-    keptSaveCheck(kept));
+    h("div", { class: "chk-note", text: SAVE_PLACEHOLDER }));
 }
 
 function keptRow(part, removing) {
@@ -415,13 +407,12 @@ function keptRow(part, removing) {
 async function applyLevel(level) {
   if (!Number.isInteger(level)) return toast("Enter a whole number", true);
   const result = await guarded(() => api("POST", "/api/item/set_level", { id: state.selected, mode: state.mode, level }));
-  if (result) { forgetChecks(); keepResult(result); setDetail(result); toast(`Level ${result.level}`); if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true)); }
+  if (result) { keepResult(result); setDetail(result); toast(`Level ${result.level}`); if (result.warnings?.length) result.warnings.forEach((w) => toast(w, true)); }
 }
 
 async function applyStat(stat, value) {
   const result = await guarded(() => api("POST", "/api/item/set_stat", { id: state.selected, mode: state.mode, stat: stat.name, value }));
   if (!result) return;
-  forgetChecks();
   lastKept = null;
   setDetail(result);
   const now = result.stats.find((s) => s.name === stat.name);
@@ -432,7 +423,6 @@ async function applyStat(stat, value) {
 async function applyPart(slotName, option) {
   const result = await guarded(() => api("POST", "/api/item/set_part", { id: state.selected, mode: state.mode, slot: slotName, part: option ? option.id : null }));
   if (!result) return;
-  forgetChecks();
   keepResult(result, !option);
   closePicker();
   setDetail(result);
@@ -697,54 +687,15 @@ function renderResults(append = false) {
 
 // ---------- check before apply ----------
 
-const SAVE_REASON = "A serial round-trip in the game's own encoder; not confirmed in game";
 const STATUS_REASON = "Read from the game's balance data; not confirmed in game";
 const QUICK_REASON = "A game query; what it means is not confirmed in game";
-const CHECK_NOTE = "Encodes the gun with this part the way a save does, using unverified game functions. Not run on equipped gear.";
-const UNEQUIP_NOTE = "Unequip this item to run the experimental save check.";
-const RESTORED_NOTE = "The check changed the live item and RTSE put it back. Don't run it again on this item; save a validation dump and report it.";
+// The save check is not built yet (it waits for the offline serial decoder): the picker and the kept panel say so.
+const SAVE_PLACEHOLDER = "Save/reload check: coming back as an offline round-trip (no game calls) once the serial decoder lands.";
 
 const yesNo = (ok) => (ok === true ? "yes" : ok === false ? "no" : "n/a");
 
-function checkKey(option, slotName) {
-  return `${state.selected}|${state.mode}|${slotName}|${option.id}`;
-}
-
-/** GET /api/item/save_check for the selected item and mode, plus whatever params (a slot and part, or none for the item as it is). */
-function fetchSaveCheck(params) {
-  const query = new URLSearchParams({ id: state.selected, mode: state.mode, ...params });
-  return api("GET", `/api/item/save_check?${query}`);
-}
-
-function rerenderPreview() {
-  if (state.picker) renderPreview();
-}
-
-/** The experimental save check of one part. Only ever run on a click; the answer is kept until the next apply, like before. */
-function runSaveCheck(option, slotName) {
-  const key = checkKey(option, slotName);
-  const gen = checkGen;
-  const settle = (value) => { if (gen === checkGen) checkCache.set(key, value); };
-  checkCache.set(key, { loading: true });
-  rerenderPreview();
-  fetchSaveCheck({ slot: slotName, part: option.id })
-    .then((result) => settle({ result }), (error) => settle({ error: error.message }))
-    .then(rerenderPreview);
-}
-
-/** The CHECK BEFORE APPLY block: the status and DLC line, then the experimental save check (a button, never automatic). Advisory: Apply is never blocked. */
-function checkSection(option, slotName) {
-  const entry = checkCache.get(checkKey(option, slotName));
-  const equipped = state.detail.location === "Equipped";
-  let save;
-  if (entry && entry.loading) save = h("div", { class: "hint", text: "Running the experimental save check..." });
-  else if (entry && entry.result) save = saveCheckBlock(entry.result);
-  else {
-    save = h("div", { class: "chk-run" },
-      entry && entry.error && h("div", { class: "chk-sum bad" }, icon("alert", 16), h("span", { text: `Could not check: ${entry.error}` })),
-      h("button", { class: "btn sm", disabled: equipped, onclick: () => runSaveCheck(option, slotName) }, "Run save check (experimental)"),
-      h("div", { class: "chk-note", text: equipped ? UNEQUIP_NOTE : CHECK_NOTE }));
-  }
+/** The CHECK BEFORE APPLY block: the status and DLC line, then the save check placeholder. Advisory: Apply is never blocked. */
+function checkSection(option) {
   const meta = PART_STATUS[option.status];
   return h("div", { class: "check" },
     h("div", { class: "label", text: "CHECK BEFORE APPLY" }),
@@ -752,38 +703,7 @@ function checkSection(option, slotName) {
       h("i", { class: "pdot" }), h("b", { text: statusText(option) }), unverifiedBadge(STATUS_REASON),
       option.status_reason && h("span", { class: "chk-reason", text: option.status_reason })),
     option.dlc && h("div", { class: "chk-dlc", text: `DLC: ${option.dlc.name} (${dlcOwnership(option.dlc)})` }),
-    save);
-}
-
-/** The answer in one line: a tick, an alert or a neutral mark by survives, then the summary and the unverified tag. */
-function saveSummary(save) {
-  const tone = save.survives === true ? "ok" : save.survives === false ? "bad" : "neutral";
-  const glyph = save.survives === true ? "check" : save.survives === false ? "alert" : "info";
-  return h("div", { class: `chk-sum ${tone}` }, icon(glyph, 16), h("span", { text: save.summary }), unverifiedBadge(SAVE_REASON));
-}
-
-/** The whole save and reload check: the summary, each check's result, and anything a save lost. */
-function saveCheckView(save) {
-  return h("div", { class: "chk-body" },
-    saveSummary(save),
-    h("ul", { class: "chk-list" }, (save.checks || []).map((c) => h("li", {},
-      h("span", { text: c.name }), h("b", { class: `yn ${yesNo(c.ok)}`, text: yesNo(c.ok) }), h("small", { text: c.detail })))),
-    save.lost && save.lost.length > 0 && h("div", { class: "chk-lost" },
-      save.lost.map((l) => h("div", { title: `${l.field}: ${l.expected} -> ${l.got}`, text: `${l.field}: ${partName(l.expected)} -> ${partName(l.got)}` }))));
-}
-
-/** One save check's answer: a loud warning first when RTSE had to put the live item back, then the check and who decoded it. */
-function saveCheckBlock(result) {
-  const save = result.save_check;
-  return h("div", { class: "chk-result" },
-    save.restored && h("div", { class: "chk-restored", role: "alert" }, icon("alert", 20), h("span", { text: RESTORED_NOTE })),
-    saveCheckView(save),
-    save.decoder && h("div", { class: "chk-decoder", text: `decoded by: ${save.decoder}` }));
-}
-
-/** A part path from a check, as a readable name ("none" for nothing). */
-function partName(path) {
-  return path ? parsePart(path.split(".").pop()).title : "none";
+    h("div", { class: "chk-note", text: SAVE_PLACEHOLDER }));
 }
 
 /** The game's quick queries after an edit (weapons: CanBeSaved). Each one is a game query, unverified. */
@@ -793,27 +713,6 @@ function keptChecks(kept) {
   return h("div", { class: "kept-line" }, h("b", { text: "Checks" }),
     h("ul", { class: "chk-list kept-qc" }, checks.map((c) => h("li", {},
       h("span", { text: c.name }), h("b", { class: `yn ${yesNo(c.ok)}`, text: yesNo(c.ok) }), h("small", { text: c.detail }), unverifiedBadge(QUICK_REASON)))));
-}
-
-/** The experimental save check in the kept panel: asked for by a button, on the item as it is now. */
-function keptSaveCheck(kept) {
-  if (!kept.save_check_available) return h("div", { class: "kept-line" }, h("span", { class: "kept-muted", text: "Experimental save check: unequip the item to run it." }));
-  const check = lastKept.check;
-  if (check && check.loading) return h("div", { class: "kept-line" }, h("span", { class: "kept-muted", text: "Running the experimental save check..." }));
-  if (check && check.result) return saveCheckBlock(check.result);
-  return h("div", { class: "kept-line" },
-    h("button", { class: "btn sm", onclick: runKeptSaveCheck }, "Run save check (experimental)"),
-    check && check.error && h("span", { class: "kept-bad", text: `Could not check: ${check.error}` }));
-}
-
-/** Runs the kept panel's save check. The answer is kept on the panel's entry, so it stays until the panel is dismissed or replaced. */
-function runKeptSaveCheck() {
-  const entry = lastKept;
-  if (!entry) return;
-  entry.check = { loading: true };
-  shell.renderWorkspace();
-  fetchSaveCheck({}).then((result) => { entry.check = { result }; }, (error) => { entry.check = { error: error.message }; })
-    .then(() => { if (lastKept === entry) shell.renderWorkspace(); });
 }
 
 async function choose(option) {
@@ -877,7 +776,7 @@ function renderPreview() {
         info.rarity && h("span", { text: info.rarity }))),
     h("div", {}, h("div", { class: "label", text: "WHAT IT DOES" }), effects),
     h("div", { class: "path", text: option.id }),
-    checkSection(option, slot.slot),
+    checkSection(option),
     h("div", { class: "actions" },
       h("button", { class: "btn primary", disabled: isCurrent || null, onclick: () => applyPart(slot.slot, option) },
         icon("check", 16), isCurrent ? "Already on the gun" : `Bolt on this ${slotLabel(slot.slot).toLowerCase()}`),
