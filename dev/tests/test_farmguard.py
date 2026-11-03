@@ -364,11 +364,53 @@ def test_enabling_a_mission_missing_from_the_list_is_404(farm):
     assert farmguard._state[PROFILE]["enabled"] is False
 
 
-def test_enabling_a_completed_mission_adds_a_warning(farm):
+@pytest.mark.parametrize("record", ["tracker", "saved", "both"])
+def test_enabling_a_completed_mission_is_refused(farm, record):
+    if record in ("tracker", "both"):
+        farm.entry.Status = st("MS_Complete")
+    if record in ("saved", "both"):
+        farm.saved.Status = st("MS_Complete")
+    with pytest.raises(farmguard.FarmError) as err:
+        enable()
+    assert err.value.status == 409 and "farm is over" in str(err.value)
+    view_ = view(farmguard.read())
+    assert view_["enabled"] is False and view_["snapshot"] is None
+
+
+def test_undo_is_off_whenever_a_record_is_complete_even_if_the_snapshot_was(farm):
+    """The old exemption: a snapshot that somehow holds Complete must not make Undo available on a turned-in mission."""
+    enable()
+    snapshot = farmguard._state[PROFILE]["snapshot"]
+    for state in snapshot["entries"].values():
+        state["status"] = "complete"  # as if snapshotted while already Complete
     farm.entry.Status = st("MS_Complete")
     farm.saved.Status = st("MS_Complete")
-    result = enable()
-    assert "already complete" in result["applied"]["warning"]
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    alert = only_alert()
+    assert alert["actions"] == ["keep"] and alert["note"] == farmguard.NO_UNDO_AFTER_TURN_IN
+    farmguard._alerts[0]["actions"] = ["keep", "undo", "undo_reload"]  # even a stale alert offering Undo is refused live
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo")
+    assert err.value.status == 409 and err.value.args[0] == farmguard.NO_UNDO_AFTER_TURN_IN
+    assert farm.entry.ObjectivesProgress == [1]
+
+
+def test_retaking_a_snapshot_of_a_completed_mission_is_refused(farm):
+    enable()
+    farm.saved.Status = st("MS_Complete")
+    with pytest.raises(farmguard.FarmError) as err:
+        farmguard.retake_snapshot({"profile": PROFILE})
+    assert err.value.status == 409 and "farm is over" in str(err.value)
+
+
+def test_keep_after_a_turn_in_switches_the_guard_off(farm):
+    enable()
+    farm.pc.ServerCompleteMission(Mission=farm.mdef)
+    alert = only_alert()
+    result = resolve(alert["id"], "keep")
+    assert result["applied"]["guard"] == "off" and "farm is over" in result["applied"]["note"]
+    assert view(result)["enabled"] is False and view(result)["snapshot"] is None and result["alerts"] == []
+    assert farmguard._by_mission == {}
 
 
 # ---------- 3. guard detection ----------
