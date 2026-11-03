@@ -888,3 +888,59 @@ def test_a_pending_hit_with_a_different_amount_is_not_taken_as_the_same_hit(worl
     notify(world, 40.0)  # InitialDamage 100: a different hit on the same target
     clock.tick(5)
     assert sorted(h["via"] for h in damage._active_hits()) == ["notify", "take_damage"]
+
+
+# --- Round 3: dedupe ordering, idle primary, full queue, tick -----------------------------------------------------------
+
+
+def test_an_expired_pending_hit_is_committed_not_consumed(world, clock):
+    start()
+    take(world, 100.0)
+    clock.tick(damage.DEDUPE_WINDOW + 0.01)  # expired, but nothing has flushed it yet
+    notify(world, 40.0)  # same target and amount: must not take the expired hit
+    assert sorted(h["via"] for h in damage._active_hits()) == ["notify", "take_damage"]
+
+
+def test_a_primary_hit_from_another_weapon_does_not_take_the_pending_hit(world, clock):
+    start(weapon="WillowWeapon.Pistol")
+    take(world, 100.0, causer=world.gun)  # waiting fallback hit from the pistol
+    clock.tick(0.05)
+    other = Fake("WillowWeapon.Other", Class=SimpleNamespace(Name="WillowWeapon"))
+    take(world, 1.0, causer=other, inside=lambda: notify(world, 40.0))  # weapon B: filtered out, but after dedupe
+    clock.tick(5)
+    hits = damage._active_hits()
+    assert [(h["via"], h["source"]) for h in hits] == [("take_damage", "WillowWeapon.Pistol")]
+
+
+def test_the_primary_counts_as_working_even_when_it_fires_while_idle(world, clock):
+    notify(world, 40.0)  # no session yet
+    assert damage._primary_ever is True
+    assert damage._active_hits() == [] and damage._fired[damage.PRIMARY] == 0  # the idle path recorded nothing else
+    start()
+    take(world, 80.0)
+    clock.tick(5)
+    assert damage._active_hits() == []
+
+
+def test_a_full_pending_queue_commits_its_oldest_hit_and_counts_it(world, monkeypatch):
+    monkeypatch.setattr(damage, "MAX_PENDING", 3)
+    start()
+    for amount in (1.0, 2.0, 3.0, 4.0):
+        take(world, amount)
+    session = damage.state()["session"]
+    assert session["pending_early"] == 1 and session["pending"] == 3
+    assert [h["amount"] for h in damage._active_hits()] == [1.0]
+
+
+def test_the_tick_hook_never_raises(world, monkeypatch):
+    start()
+    damage._calls.append({"victim": world.enemy, "player": False, "weapon": None, "how": "held", "notified": False})
+
+    class Broken(list):
+        def clear(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(damage, "_calls", Broken(damage._calls))
+    world.hooks[damage.TICK](None, None, None, None)
+    assert damage._hooks_state()["errors"] == 1
+    monkeypatch.setattr(damage, "_calls", [])  # a plain list again before teardown clears it

@@ -30,8 +30,10 @@ is cleared and "unpaired" counts it (debug dump).
 ONE SOURCE PER MOD LIFETIME, ONE EVENT PER HIT. The fallback records only while NotifyDamageDealt has NEVER fired since
 the mod was loaded ("primary_ever"). Once it fires, the fallback is off for good, in this and every later session.
 Until then a fallback hit waits DEDUPE_WINDOW (0.25 s) in "pending" before it is committed and published; a primary hit
-in that time takes one pending hit on the same target with a near-equal amount (the fallback's pre-mitigation Damage vs
-the summary's InitialDamage) out of the queue, as the same hit. Pending hits that match nothing are committed. A primary
+in that time takes one pending hit younger than the window, on the same target, from the same weapon when both sides
+know it, with a near-equal amount (the fallback's pre-mitigation Damage vs the summary's InitialDamage) out of the
+queue, as the same hit, before the weapon filter runs. Pending hits that match nothing are committed; if more than
+MAX_PENDING wait at once, the oldest is committed early ("pending_early"). A primary
 report made inside its own TakeDamage call marks the frame "notified", and that call's fallback is skipped outright.
 Consequence: the first few hits of the very first session after loading the mod may come from the fallback (marked
 estimated). A duplicate is only possible if the very first primary report of the mod's lifetime arrives more than
@@ -171,7 +173,8 @@ def _new_session(session_id: int, cap: int, weapon: str | None, started: float |
         "recorded": 0,
         "dropped": 0,
         "notify_hits": 0,  # hits this session from NotifyDamageDealt
-        "pending": collections.deque(maxlen=MAX_PENDING),  # (time, hit): fallback hits waiting out DEDUPE_WINDOW
+        "pending": collections.deque(),  # (time, hit): fallback hits waiting out DEDUPE_WINDOW, at most MAX_PENDING
+        "pending_early": 0,  # waiting hits committed before their window ended because the queue was full
         "shots": collections.deque(maxlen=cap),
         "shots_seen": 0,
         "shots_dropped": 0,
@@ -403,14 +406,20 @@ def _same_amount(fallback: float, initial: float | None) -> bool:
     return abs(fallback - initial) <= AMOUNT_MATCH * max(abs(fallback), abs(initial), 1.0)
 
 
-def _take_pending_match(target_id: str, initial: float | None) -> None:
-    """A primary report arrived: the oldest waiting fallback hit on the same target with a near-equal amount is the
-    same hit, so it is dropped (one-to-one). Everything else stays and is committed when its window ends."""
+def _take_pending_match(target_id: str, initial: float | None, source: str | None) -> None:
+    """A primary report arrived: the oldest waiting fallback hit that is the same hit is dropped (one-to-one). Same hit
+    means: younger than DEDUPE_WINDOW (older ones are committed first), the same target, a near-equal amount, and the
+    same source weapon when both sides have one. Everything else stays and is committed when its window ends."""
+    _flush_pending()  # expired hits are settled before matching, never consumed by it
     pending = _s["pending"]
-    for index, (_at, hit) in enumerate(pending):
-        if hit["target_id"] == target_id and _same_amount(hit["amount"], initial):
-            del pending[index]
-            return
+    now = _now()
+    for index, (at, hit) in enumerate(pending):
+        if now - at >= DEDUPE_WINDOW or hit["target_id"] != target_id or not _same_amount(hit["amount"], initial):
+            continue
+        if source is not None and hit["source"] is not None and hit["source"] != source:
+            continue
+        del pending[index]
+        return
 
 
 def _record_shot(*, weapon: str | None, pellets: int | None, cost: float | None, fire_mode: int | None) -> None:
@@ -451,6 +460,7 @@ def _fail(path: str, ex: BaseException) -> None:
 def _on_notify(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
     """NotifyDamageDealt on the player controller: one call per hit the player deals."""
     global _primary_ever  # noqa: PLW0603
+    _primary_ever = True  # the hook fires: from now on, for the mod's lifetime, the fallback records nothing
     if not _session_active:
         return
     _bump(PRIMARY)
@@ -458,7 +468,6 @@ def _on_notify(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
         pc = get_pc(possibly_loading=True)
         if pc is None or obj != pc:
             return
-        _primary_ever = True  # from now on, for the mod's lifetime, the fallback records nothing
         summary = args.DamageSummary
         if len(_raw) < RAW_KEEP:  # the full field read is only for the debug dump: the first hits of a session do
             _remember_raw(summary)
@@ -471,9 +480,8 @@ def _on_notify(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
         source, how = _attribute(pc, call["weapon"] if call else None, call["how"] if call else ATTR_HELD)
         target, target_id = _target_names(victim)
         initial = _opt_float(summary.InitialDamage)
-        _take_pending_match(target_id, initial)
-        _flush_pending()
-        if not _weapon_ok(source, how):
+        _take_pending_match(target_id, initial, source)
+        if not _weapon_ok(source, how):  # after dedupe: a filtered-out hit still takes its own fallback copy
             return
         _commit(
             _hit(
@@ -551,6 +559,9 @@ def _on_take_damage(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
             attribution=how,
             estimated=True,
         )
+        if len(_s["pending"]) >= MAX_PENDING:  # full: commit the oldest now (it may miss its dedupe) rather than lose it
+            _s["pending_early"] += 1
+            _commit(_s["pending"].popleft()[1])
         _s["pending"].append((_now(), hit))
     except Exception as ex:  # noqa: BLE001
         _fail(FALLBACK, ex)
@@ -561,8 +572,11 @@ def _on_tick(_obj: Any, _args: Any, _ret: Any, _func: Any) -> None:
     global _stale  # noqa: PLW0603
     if not _calls:
         return
-    _calls.clear()
-    _stale += 1
+    try:
+        _calls.clear()
+        _stale += 1
+    except Exception as ex:  # noqa: BLE001
+        _fail(TICK, ex)
 
 
 def _on_consume_ammo(obj: Any, args: Any, _ret: Any, _func: Any) -> None:
@@ -728,6 +742,7 @@ def _session_state() -> dict[str, Any]:
         "kept": len(_s["hits"]),
         "dropped": _s["dropped"],
         "pending": len(_s["pending"]),
+        "pending_early": _s["pending_early"],
         "approximate": sum(1 for h in _s["hits"] if h["attribution"] == ATTR_HELD),
         "shots": _s["shots_seen"],
         "via": _session_via(),
