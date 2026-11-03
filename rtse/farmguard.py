@@ -14,9 +14,10 @@ midget spawns.") and offers:
   dismiss      close an alert about a change that was blocked (nothing to undo)
 With the profile's auto_block on (off by default), the change is blocked in a pre-hook instead (the game function
 never runs), so there is nothing to undo.
-No undo after a turn-in: once ANY current record of the guarded mission (tracker or saved copy) is Complete (and
-wasn't in the snapshot), its rewards are already given and can't be taken back, so the alert offers keep only (with
-"note" saying why) and resolve refuses undo, checked live. A record whose status can't be read turns undo off too.
+No undo after a turn-in: once ANY current record of the guarded mission (tracker or saved copy) is Complete, its
+rewards are already given and can't be taken back, so the alert offers keep only (with "note" saying why) and resolve
+refuses undo, checked live. A record whose status can't be read turns undo off too. A mission that is already Complete
+can't be snapshotted (enable / retake answer 409: the farm is over), and Keep after a turn-in switches the guard off.
 
 Game hooks (names checked with dev/class_index.py; what they do at runtime is NOT verified in a live game):
   WillowGame.MissionTracker:SetMissionStatus(InMission, MissionStatus, WillowPC)  pre + post
@@ -376,19 +377,18 @@ def _add_alert(profile: dict[str, Any], change: str, *, objective: str | None = 
 
 def _undo_blocker(profile: dict[str, Any], change: str) -> str | None:
     """Why undo must be off right now, or None. Reads EVERY current record of the mission (tracker and saved copy):
-    a turn-in, any record confirmed Complete that wasn't Complete in the snapshot, or any record whose status can't be
-    read (or no records at all) turns undo off. Unknown means no undo."""
+    a turn-in, any record that is Complete (whatever the snapshot's status), or any record whose status can't be read
+    (or no records at all) turns undo off. Unknown means no undo."""
     if change == "complete":
         return NO_UNDO_AFTER_TURN_IN
     records = world.mission_records(profile["mission"])
     if not records:
         return NO_UNDO_UNREADABLE
-    entries = (_state[profile["id"]]["snapshot"] or {}).get("entries") or {}
-    for source, state in records.items():
+    for state in records.values():
         if "status" in (state.get("unreadable") or ()) or state.get("status") not in world.STATUS_ORDER:
             return NO_UNDO_UNREADABLE
-        if state["status"] == "complete" and ((entries.get(source) or {}).get("status") != "complete"):
-            return NO_UNDO_AFTER_TURN_IN
+    if any(state["status"] == "complete" for state in records.values()):  # whatever the snapshot said
+        return NO_UNDO_AFTER_TURN_IN
     return None
 
 
@@ -756,11 +756,27 @@ def _bool(params: dict[str, Any], key: str) -> bool:
     return value
 
 
-def _take_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
+def _read_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
     try:
-        snapshot = world.mission_snapshot(profile["mission"])
+        return world.mission_snapshot(profile["mission"])
     except world.WorldError as ex:
         raise FarmError(ex.status, str(ex)) from None
+
+
+def _is_complete(snapshot: dict[str, Any]) -> bool:
+    return any((state or {}).get("status") == "complete" for state in (snapshot.get("entries") or {}).values())
+
+
+def _farm_over(profile: dict[str, Any]) -> str:
+    name = profile.get("mission_name") or _readable(profile["mission"])
+    return f"{name} is already turned in on this playthrough, so this farm is over and there's nothing to guard."
+
+
+def _take_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
+    """Snapshots the profile's mission. Refused (409) once any record of it is Complete: the farm is over."""
+    snapshot = _read_snapshot(profile)
+    if _is_complete(snapshot):
+        raise FarmError(409, _farm_over(profile))
     _state[profile["id"]].update({"snapshot": snapshot, "snapshot_at": time.time()})
     return snapshot
 
@@ -782,9 +798,6 @@ def set_enabled(params: dict[str, Any]) -> dict[str, Any]:
         else:
             applied["snapshot"] = "kept"  # enabling an enabled profile is a no-op
         state["enabled"] = True
-        primary = _primary(state["snapshot"]) or {}
-        if primary.get("status") == "complete":
-            applied["warning"] = f"{profile.get('mission_name')} is already complete, so this farm is probably over on this playthrough."
     else:
         state.update({"enabled": False, "snapshot": None, "snapshot_at": None})
         _close_alerts(profile["id"])
@@ -885,7 +898,14 @@ def resolve(params: dict[str, Any]) -> dict[str, Any]:
             if not safe:
                 raise FarmError(409, f"quick reload isn't safe right now: {why}. Nothing was changed; try again, or use Undo and reload by hand.")
     if action == "keep":
-        applied["after"] = _summary(_primary(_take_snapshot(profile)))
+        snapshot = _read_snapshot(profile)
+        if _is_complete(snapshot):  # turned in: nothing left to guard, so the guard switches itself off
+            _state[profile["id"]].update({"enabled": False, "snapshot": None, "snapshot_at": None})
+            _rebuild_index()
+            applied.update({"after": None, "guard": "off", "note": _farm_over(profile)})
+        else:
+            _state[profile["id"]].update({"snapshot": snapshot, "snapshot_at": time.time()})
+            applied["after"] = _summary(_primary(snapshot))
     elif action in ("undo", "undo_reload"):
         try:
             applied["restore"] = _restore(profile)

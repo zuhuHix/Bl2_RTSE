@@ -179,7 +179,7 @@ const resolve = (alert, action) => write("/api/farm/resolve", { alert: alert.id,
     undo_reload: "Put back the snapshot. Quick reload queued (the game saves and quits to the title screen)",
     dismiss: "Alert dismissed",
   };
-  C.toast(texts[action] || action);
+  C.toast(a.note || texts[action] || action);
 });
 
 const sessionAction = (action, extra = {}) => write("/api/farm/session", { action, ...extra }, (a) => {
