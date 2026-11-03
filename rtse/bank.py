@@ -296,6 +296,28 @@ def _snap(index: int, entry: Any) -> Snap:
     return Snap(index, entry_unique_id(entry), balance, _entry_bytes(entry), entry)
 
 
+def identity_of(snap: Snap) -> tuple[Any, ...] | None:
+    """The entry's identity signature (codes.definition_signature): from its live item's DefinitionData, else from the
+    game decode of its serial bytes (UNVERIFIED). None when it cannot be read, which never matches anything."""
+    try:
+        if snap.entry is not None and snap.entry.Inventory is not None:
+            item = snap.entry.Inventory
+            return codes.signature_or_none(item.DefinitionData, gear_inventory._is_weapon(item))  # noqa: SLF001
+        if snap.data is None:
+            return None
+        definition, is_weapon, _path = codes.definition_of_code_bytes(snap.data)  # UNVERIFIED game decode
+        return codes.signature_or_none(definition, is_weapon)
+    except Exception as ex:  # noqa: BLE001
+        logging.warning(f"RTSE: could not read the identity of bank entry {snap.index}: {ex!r}")
+        return None
+
+
+def _gained_entry(before: list[Snap], unique_id: int) -> Snap | None:
+    """The one entry with `unique_id` that is new since `before`, or None when there is not exactly one."""
+    new = [snap for snap in diff(before, snapshot())[1] if snap.unique_id == unique_id]
+    return new[0] if len(new) == 1 else None
+
+
 def snapshot() -> list[Snap]:
     """Every occupied bank slot, in TheChest order. ApiError 409 when the bank is not loaded."""
     return [_snap(index, entry) for index, entry in bank_entries()]
@@ -371,7 +393,9 @@ def remove_gained(reference: list[Snap], keep: Counter[int] | None = None, *, de
 
 
 def _put_back_one(snap: Snap, depth: int, out: PutBack) -> None:
-    """Re-adds one entry and verifies it by snapshots: the bank ends up with exactly one more entry with its UniqueId.
+    """Re-adds one entry and verifies it by snapshots: the bank ends up with exactly one more entry, with its UniqueId
+    AND its identity (every definition field, codes.definition_signature); a same-UniqueId entry that is a different
+    item is removed again and counts as NOT restored.
 
     An add that raised is never trusted: whatever it added is removed again and the entry counts as NOT restored. An
     add that returned False is accepted only when the snapshots show exactly the expected entry. When the add put in
@@ -388,6 +412,7 @@ def _put_back_one(snap: Snap, depth: int, out: PutBack) -> None:
         logging.error(f"RTSE: decoding a bank entry to put it back failed: {ex!r}")
         out.failed.append(describe(snap))
         return
+    expected = codes.signature_or_none(definition, is_weapon)
     before = snapshot()
     raised: Exception | None = None
     said = False
@@ -397,12 +422,20 @@ def _put_back_one(snap: Snap, depth: int, out: PutBack) -> None:
         raised = ex
         logging.error(f"RTSE: putting a bank entry back raised: {ex!r}")
     _lost, gained = uid_changes(before, snapshot())
-    keep = Counter({uid: 1}) if raised is None and gained[uid] >= 1 else Counter()
+    keep = Counter()
+    if raised is None and gained[uid] >= 1:
+        # Keep one only if one of the new entries with this UniqueId really is the expected item.
+        candidates = [s for s in diff(before, snapshot())[1] if s.unique_id == uid]
+        if any(codes.matches(identity_of(s), expected) for s in candidates):
+            keep = Counter({uid: 1})
+        else:
+            out.notes.append(f"the entry put back with UniqueId {uid} was a different item, so it was removed again")
     # Extras are removed one level down (depth + 1, which may put back but never removes again); deeper, reported.
     out.notes.extend(remove_gained(before, keep, depth=depth + 1 if depth == 0 else None))
     final = snapshot()
     lost_f, gained_f = uid_changes(before, final)
-    if raised is None and gained_f == Counter({uid: 1}):
+    survivor = _gained_entry(before, uid) if gained_f == Counter({uid: 1}) else None
+    if raised is None and survivor is not None and codes.matches(identity_of(survivor), expected):
         out.restored.append(f"UniqueId {uid}")
         if not said:
             logging.warning(f"RTSE: the bank add for UniqueId {uid} returned False, but the snapshots show the entry")

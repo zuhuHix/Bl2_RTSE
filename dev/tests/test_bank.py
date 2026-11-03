@@ -476,3 +476,50 @@ def test_the_inventory_export_never_decodes(monkeypatch):
     named = gear_inventory.inventory_export({})["items"]
     assert world.decodes == 0 and named[0]["name"] != "Not decoded yet" and named[0]["level"] == 30
     assert named[-1]["name"] == "Not decoded yet"
+
+
+# --- final review: a put-back must restore the SAME item, not just something with its UniqueId -----------------
+
+
+def _shield_for_pistol(world):
+    """The reviewer's reproduction: the bank add inserts a SHIELD serial carrying the pistol's UniqueId."""
+    adds = []
+
+    def wrong_item(definition, ignore_size, unique):
+        adds.append(definition.UniqueId)
+        data = s.with_unique_id(SHIELD_BYTES, definition.UniqueId)
+        world.bank.TheChest.append(chest_entry(data, weapon=False))
+        return True
+
+    world.bank.AddWeaponFromDef = wrong_item
+    return adds
+
+
+def _shields_with(world, unique_id: int) -> int:
+    return sum(
+        1 for e in world.bank.TheChest
+        if bank.entry_unique_id(e) == unique_id and not s.read_header(bank._entry_bytes(e))["is_weapon"]  # noqa: SLF001
+    )  # fmt: skip
+
+
+def test_put_back_of_a_pistol_that_comes_back_as_a_shield_is_not_restored(monkeypatch):
+    world = install(monkeypatch)
+    gone, lost = _taken(world, [], [PISTOL_BYTES])
+    _shield_for_pistol(world)
+    result = bank.put_back(gone, lost)
+    assert result.restored == [], "a same-UniqueId shield is not the pistol"
+    assert result.failed == [s.bytes_to_code(PISTOL_BYTES)], "the pistol is reported by its code"
+    assert any("different item" in note for note in result.notes)
+    assert _shields_with(world, _uid(PISTOL_BYTES)) == 0, "the wrong entry was removed again"
+
+
+def test_remove_exact_never_succeeds_when_the_twin_comes_back_as_a_shield(monkeypatch):
+    """ByDef takes both pistol twins; putting the twin back inserts a shield with the pistol's UniqueId."""
+    world = install(monkeypatch)
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
+    _shield_for_pistol(world)
+    with pytest.raises(ApiError) as info:
+        bank.remove_exact(0, world.bank.TheChest[0])
+    assert info.value.status == 409
+    assert s.bytes_to_code(PISTOL_BYTES) in str(info.value), "the lost pistol is named by its code for re-import"
+    assert _shields_with(world, _uid(PISTOL_BYTES)) == 0, "no stray shield is left in the bank"

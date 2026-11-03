@@ -341,6 +341,27 @@ def _field_value(definition: Any, name: str) -> Any:
         raise FieldUnreadable(f"{name}: {ex!r}") from None
 
 
+def definition_signature(definition: Any, is_weapon: bool) -> tuple[Any, ...]:
+    """What makes an item THAT item: every WEAPON_/ITEM_DEFINITION_FIELDS value (objects by path name, UniqueId
+    included), plus the kind. The same fields verified_backup compares. Raises FieldUnreadable when any read fails, so
+    an unreadable item never matches anything."""
+    fields = WEAPON_DEFINITION_FIELDS if is_weapon else ITEM_DEFINITION_FIELDS
+    return (bool(is_weapon), *(_field_value(definition, field) for field in fields))
+
+
+def signature_or_none(definition: Any, is_weapon: bool) -> tuple[Any, ...] | None:
+    """definition_signature, or None when a field cannot be read (None never matches: compare with `matches`)."""
+    try:
+        return definition_signature(definition, is_weapon)
+    except FieldUnreadable:
+        return None
+
+
+def matches(found: tuple[Any, ...] | None, expected: tuple[Any, ...] | None) -> bool:
+    """True only when both signatures were read and are equal."""
+    return found is not None and expected is not None and found == expected
+
+
 def verified_backup(source: Any, definition: Any, is_weapon: bool, *, name: str = "the item", action: str = "deleted") -> str:
     """The code of `source`, checked to restore the same item (see the module docstring). ApiError 409 otherwise.
 
@@ -570,11 +591,17 @@ def _add_verified_backpack(definition: Any, is_weapon: bool, unique_id: int, mar
     lost = Counter(row[1] for row in before) - Counter(row[1] for row in after)
     gained = Counter(row[1] for row in after) - Counter(row[1] for row in before)
     new = _unmatched(after, before, key=lambda row: row[0])
+    expected = signature_or_none(definition, is_weapon)
+    wrong_item = False
     if problem is None and gained == Counter({unique_id: 1}) and not lost:
         row = next((r for r in reversed(new) if r[1] == unique_id), None) or next(
             r for r in reversed(after) if r[1] == unique_id
         )
-        return {"id": row[0], "name": row[2].GetHumanReadableName()}
+        # The UniqueId alone proves nothing: the new item must BE the item we added (every definition field).
+        found = _safe(lambda: signature_or_none(row[2].DefinitionData, gear_inventory._is_weapon(row[2])))  # noqa: SLF001
+        if matches(found, expected):
+            return {"id": row[0], "name": row[2].GetHumanReadableName()}
+        wrong_item = True
     # Remove only what is really new (as many per UniqueId as the backpack gained), never an existing item whose
     # object the game may have re-created.
     extra = _take(new, gained, lambda row: row[1])
@@ -587,6 +614,8 @@ def _add_verified_backpack(definition: Any, is_weapon: bool, unique_id: int, mar
     gone = _unmatched(before, after, key=lambda row: row[0])
     vanished = [_vanished_code(row[2]) for row in _take(gone, lost, lambda row: row[1])]
     message = _add_problem(problem, "backpack", unique_id, len(extra))
+    if wrong_item:
+        message += "; the item that appeared was not the item that was added (its parts or balance differ), so it was removed"
     if extra or lost:
         message += _cleanup_note(failures, vanished)
     raise ApiError(409, message)
@@ -598,11 +627,18 @@ def _add_verified_bank(definition: Any, is_weapon: bool, unique_id: int) -> dict
     after = bank.snapshot()
     lost, gained = bank.uid_changes(before, after)
     gone, new = bank.diff(before, after)
+    expected = signature_or_none(definition, is_weapon)
+    wrong_item = False
     if problem is None and gained == Counter({unique_id: 1}) and not lost:
         snap = next((s for s in reversed(new) if s.unique_id == unique_id), None)
         if snap is None:
             snap = next(s for s in reversed(after) if s.unique_id == unique_id)
-        return {"id": bank.bank_id(snap.index, unique_id), "name": bank.entry_card(snap.index, snap.entry)[0]["name"]}
+        # The UniqueId alone proves nothing: the new entry must BE the item we added (every definition field).
+        if matches(bank.identity_of(snap), expected):
+            return {"id": bank.bank_id(snap.index, unique_id), "name": bank.entry_card(snap.index, snap.entry)[0]["name"]}
+        wrong_item = True
+        new = [snap]
+        gained = Counter({unique_id: 1})
     # Remove only the entries that are really new: as many per UniqueId as the bank gained (a merely re-serialized
     # entry keeps its UniqueId count and is left alone). remove_gained lets one removal take the other new twins too.
     extra = _take(new, gained, lambda snap: snap.unique_id)
@@ -610,6 +646,8 @@ def _add_verified_bank(definition: Any, is_weapon: bool, unique_id: int) -> dict
     put =bank.put_back(gone, lost) if lost else bank.PutBack()  # each put-back verified by its own snapshots
     vanished = put.failed
     message = _add_problem(problem, "bank", unique_id, len(extra))
+    if wrong_item:
+        message += "; the entry that appeared was not the item that was added (its parts or balance differ), so it was removed"
     if extra or lost:
         message += _cleanup_note(failures, vanished)
         if lost and not vanished:

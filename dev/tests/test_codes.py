@@ -576,3 +576,42 @@ def test_crafted_asset_reference_never_reaches_the_game(monkeypatch):
     assert entry["ok"] is False and entry["card"] is None and "out of range" in entry["error"]
     result = codes.import_items([crafted], "backpack")
     assert result["imported"] == 0 and "out of range" in result["results"][0]["error"]
+
+
+# --- final review: add_verified checks the new entry's identity, not just its UniqueId -------------------------
+
+
+def test_add_verified_bank_rejects_a_different_item_with_the_right_unique_id(monkeypatch):
+    world = install(monkeypatch)
+
+    def shield_instead(definition, ignore_size, unique):
+        world.bank.TheChest.append(chest_entry(s.with_unique_id(SHIELD_BYTES, definition.UniqueId), weapon=False))
+        return True
+
+    world.bank.AddWeaponFromDef = shield_instead
+    with pytest.raises(ApiError) as info:
+        codes.add_verified(make_definition(31, weapon=True), True, "bank", 31)
+    assert info.value.status == 409 and "not the item that was added" in str(info.value)
+    assert world.bank.used() == 0, "the wrong entry was removed"
+
+
+def test_add_verified_backpack_rejects_a_different_item_with_the_right_unique_id(monkeypatch):
+    world = install(monkeypatch)
+
+    def other_maker(definition, mark, ready=False):  # same kind and UniqueId, different manufacturer
+        world.manager.Backpack.append(
+            Item(make_definition(definition.UniqueId, weapon=True, maker="Jakobs"), weapon=True, name="Wrong", data=PISTOL_BYTES)
+        )
+
+    world.manager.ClientAddWeaponToBackpack = other_maker
+    with pytest.raises(ApiError) as info:
+        codes.add_verified(make_definition(32, weapon=True), True, "backpack", 32)
+    assert info.value.status == 409 and "not the item that was added" in str(info.value)
+    assert world.manager.Backpack == [], "the wrong item was removed"
+
+
+def test_definition_signature_never_matches_an_unreadable_definition():
+    good = make_definition(5, weapon=True)
+    assert codes.matches(codes.signature_or_none(good, True), codes.signature_or_none(make_definition(5, weapon=True), True))
+    assert not codes.matches(codes.signature_or_none(SimpleNamespace(), True), codes.signature_or_none(SimpleNamespace(), True))
+    assert not codes.matches(codes.signature_or_none(good, True), codes.signature_or_none(make_definition(5, weapon=True, maker="Jakobs"), True))
