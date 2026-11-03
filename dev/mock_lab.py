@@ -165,7 +165,7 @@ def _session() -> dict:
     kept = min(recorded, s["cap"])
     return {
         "active": s["active"], "id": s["id"], "elapsed": round(_elapsed(), 3), "cap": s["cap"], "weapon": s["weapon"],
-        "recorded": recorded, "kept": kept, "dropped": recorded - kept, "shots": s["shots"], "pending": 0,
+        "recorded": recorded, "kept": kept, "dropped": recorded - kept, "shots": s["shots"], "pending": 0, "pending_early": 0,
         "approximate": sum(1 for h in _kept() if h["attribution"] == "held"),
         "via": VIA if recorded else None,
     }
