@@ -406,25 +406,34 @@ def test_delete_a_bank_entry_whose_serial_cannot_be_decoded_is_refused(monkeypat
 
 
 def test_delete_one_bank_twin_keeps_the_other(monkeypatch):
+    """ByDef (the primary removal) takes both twins; the other one is put back, verified, and the delete is OK."""
     world = install(monkeypatch)
-    world.bank.TheChest.refuse_delete = True  # only ByDef works, and it takes both twins
+    world.bank.TheChest.refuse_delete = True  # the direct edit is not needed: ByDef plus the put-back do it
     world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
-    with pytest.raises(ApiError) as info:
-        gear_inventory.delete({"id": f"bank:1:{_uid(PISTOL_BYTES)}"})
-    assert info.value.status == 409
-    assert world.bank.used() == 2 and world.journal == []
+    out = gear_inventory.delete({"id": f"bank:1:{_uid(PISTOL_BYTES)}"})
+    assert out["ok"] and out["method"] == "game"
+    assert world.bank.used() == 1 and world.journal[-1][0] == "inventory.delete"
 
 
 def test_delete_a_bank_entry_when_the_game_removes_more(monkeypatch):
-    """The old delete reported success with a warning while the shield was gone too; now both stay."""
+    """The game's removal took the shield too: it is put back (verified) and only the pistol is deleted."""
     world = install(monkeypatch)
-    world.bank.TheChest.refuse_delete = True
     world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
     world.bank.RemoveWeaponsByDef = lambda definition: world.bank.TheChest.clear()
+    out = gear_inventory.delete({"id": f"bank:0:{_uid(PISTOL_BYTES)}"})
+    assert out["method"] == "game"
+    assert [bank.entry_unique_id(e) for e in world.bank.TheChest] == [_uid(SHIELD_BYTES)]
+
+
+def test_delete_a_bank_entry_when_the_game_removes_more_and_cannot_put_it_back(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(SHIELD_BYTES, weapon=False)])
+    world.bank.RemoveWeaponsByDef = lambda definition: world.bank.TheChest.clear()
+    world.bank.AddItemFromDef = lambda definition, ignore_size, unique: False
     with pytest.raises(ApiError) as info:
         gear_inventory.delete({"id": f"bank:0:{_uid(PISTOL_BYTES)}"})
-    assert info.value.status == 409
-    assert sorted(bank.entry_unique_id(e) for e in world.bank.TheChest) == sorted([_uid(PISTOL_BYTES), _uid(SHIELD_BYTES)])
+    assert info.value.status == 409 and f"re-import them: {SHIELD_CODE}" in str(info.value)
+    assert [bank.entry_unique_id(e) for e in world.bank.TheChest] == [_uid(PISTOL_BYTES)]
     assert world.journal == []
 
 
@@ -519,11 +528,117 @@ def test_move_to_backpack_removes_the_copy_when_the_bank_keeps_the_item(monkeypa
     assert world.bank.used() == 1 and world.manager.Backpack == []
 
 
-def test_move_to_backpack_with_twins_put_back_keeps_one_copy_each(monkeypatch):
-    """ByDef takes both twins; both are put back, so the backpack copy is removed again: nothing lost, nothing doubled."""
+def test_move_to_backpack_with_twins_moves_one_and_keeps_the_other(monkeypatch):
+    """ByDef takes both twins; the other is put back (verified), so one moves and one stays: nothing lost or doubled."""
     world = install(monkeypatch)
     world.bank.TheChest.refuse_delete = True
     world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
-    with pytest.raises(ApiError):
+    out = gear_inventory.move({"id": f"bank:0:{_uid(PISTOL_BYTES)}", "to": "backpack"})
+    assert out["method"] == "game"
+    assert world.bank.used() == 1 and len(world.manager.Backpack) == 1
+
+
+def test_move_to_backpack_with_twins_whose_put_back_fails_keeps_the_copy_and_names_the_code(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(PISTOL_BYTES)])
+    world.bank.AddWeaponFromDef = lambda definition, ignore_size, unique: False  # no put-back works
+    with pytest.raises(ApiError) as info:
         gear_inventory.move({"id": f"bank:0:{_uid(PISTOL_BYTES)}", "to": "backpack"})
-    assert world.bank.used() == 2 and world.manager.Backpack == []
+    assert "could NOT be put back" in str(info.value) and PISTOL_CODE in str(info.value)
+    assert len(world.manager.Backpack) == 1, "the bank lost both twins, so the backpack copy is kept (and reported)"
+    assert world.journal == []
+
+
+# --- review round 2: the reply says how a bank removal was done -----------------------------------------
+
+
+def test_delete_and_move_reply_with_the_method(monkeypatch):
+    world = install(monkeypatch)
+    item = add_backpack(world, SHIELD_BYTES, weapon=False, name="Shield")
+    world.bank.TheChest.extend([chest_entry(PISTOL_BYTES), chest_entry(s.with_unique_id(PISTOL_BYTES, 4242))])
+    assert gear_inventory.delete({"id": f"bank:0:{_uid(PISTOL_BYTES)}"})["method"] == "game"
+    assert gear_inventory.move({"id": "bank:0:4242", "to": "backpack"})["method"] == "game"
+    assert gear_inventory.move({"id": item._path_name(), "to": "bank"})["method"] == "game"
+    moved = next(i for i in world.manager.Backpack if i.DefinitionData.UniqueId == 4242)
+    assert gear_inventory.delete({"id": moved._path_name()})["method"] == "game"
+
+
+def test_a_bank_delete_by_direct_array_edit_says_unverified(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
+    world.bank.RemoveWeaponsByDef = lambda definition: None  # the game removal does nothing
+    out = gear_inventory.delete({"id": f"bank:0:{_uid(PISTOL_BYTES)}"})
+    assert out["method"] == bank.METHOD_DIRECT == "direct array edit (unverified)"
+    assert world.bank.used() == 0 and ("del", 0) in world.bank.calls
+
+
+def test_a_bank_move_by_direct_array_edit_says_unverified(monkeypatch):
+    world = install(monkeypatch)
+    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
+
+    def boom(definition):
+        raise RuntimeError("no such function")
+
+    world.bank.RemoveWeaponsByDef = boom
+    out = gear_inventory.move({"id": f"bank:0:{_uid(PISTOL_BYTES)}", "to": "backpack"})
+    assert out["method"] == "direct array edit (unverified)"
+    assert world.bank.used() == 0 and len(world.manager.Backpack) == 1
+
+
+# --- review round 2: an unreadable definition field refuses the delete or move ----------------------------
+
+
+def _unreadable(definition, field: str) -> None:
+    """Makes reading `field` of this fake definition raise, like a game read that fails."""
+
+    class Unreadable(type(definition)):
+        def __getattribute__(self, name):
+            if name == field:
+                raise RuntimeError(f"cannot read {name}")
+            return super().__getattribute__(name)
+
+    definition.__class__ = Unreadable
+
+
+def _unreadable_decodes(monkeypatch, field: str) -> None:
+    real = codes.definition_of_code_bytes
+
+    def decode(data, template=None):
+        definition, is_weapon, path = real(data, template)
+        _unreadable(definition, field)
+        return definition, is_weapon, path
+
+    monkeypatch.setattr(codes, "definition_of_code_bytes", decode)
+
+
+@pytest.mark.parametrize("side", ["item", "decoded", "both"])
+@pytest.mark.parametrize("action", ["deleted", "moved"])
+def test_an_unreadable_field_refuses_delete_and_move(monkeypatch, side, action):
+    world = install(monkeypatch)
+    item = add_backpack(world, PISTOL_BYTES, weapon=True, name="Infinity")
+    if side in ("item", "both"):
+        _unreadable(item.DefinitionData, "ManufacturerGradeIndex")
+    if side in ("decoded", "both"):
+        _unreadable_decodes(monkeypatch, "ManufacturerGradeIndex")
+    with pytest.raises(ApiError) as info:
+        if action == "deleted":
+            gear_inventory.delete({"id": item._path_name()})
+        else:
+            gear_inventory.move({"id": item._path_name(), "to": "bank"})
+    message = str(info.value)
+    assert info.value.status == 409
+    assert message.startswith("could not read ManufacturerGradeIndex of Infinity") and f"so it was not {action}" in message
+    assert world.manager.Backpack == [item] and world.bank.used() == 0 and world.journal == []
+    assert not any(call[0] == "remove" for call in world.manager.calls) and world.bank.calls == []
+
+
+def test_an_unreadable_field_refuses_a_bank_delete(monkeypatch):
+    """A bank entry's own definition is decoded too, so both sides fail here; nothing may be removed."""
+    world = install(monkeypatch)
+    world.bank.TheChest.append(chest_entry(PISTOL_BYTES))
+    _unreadable_decodes(monkeypatch, "GameStage")
+    with pytest.raises(ApiError) as info:
+        gear_inventory.delete({"id": f"bank:0:{_uid(PISTOL_BYTES)}"})
+    assert info.value.status == 409 and "could not read GameStage of" in str(info.value)
+    assert "not deleted" in str(info.value)
+    assert world.bank.used() == 1 and world.bank.calls == []

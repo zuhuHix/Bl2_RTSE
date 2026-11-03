@@ -11,6 +11,11 @@ const ARM_MS = 4000; // a delete needs its second click within this long
 const TABS = [["bank", "Bank"], ["backpack", "Backpack"], ["import", "Import codes"], ["export", "Export / JSON"]];
 const CODE_DESTS = [["backpack", "Backpack"], ["bank", "Bank"]];
 const JSON_DESTS = [["original", "Original locations"], ["backpack", "Backpack"], ["bank", "Bank"]];
+const BANK_POLL_MS = 300; // while the server is still decoding bank entries ("pending"), ask again this soon
+const BANK_STALLS = 2; // stop asking after the pending count failed to fall this many times in a row
+const DIRECT_EDIT = "direct array edit (unverified)"; // a delete/move "method": the server used `del TheChest[i]`
+const DIRECT_REASON = "The game's own removal did not work, so RTSE edited the bank array directly. Nobody has checked "
+  + "that the bank and the save follow that edit.";
 
 const state = {
   tab: "bank",
@@ -29,8 +34,11 @@ const state = {
   progress: null, // "Decoding 20 / 120..." while a chunked call runs
   stopped: null, // "Stopped after N of M: <error>" when a chunked call failed part way
   deleted: [], // [{ name, code }] deleted this session, newest first, so a delete can be undone by re-importing
+  bankStopped: null, // why the page stopped asking for the bank's pending (not yet decoded) entries
+  directEdit: null, // the last delete/move that the server did by a direct array edit (unverified)
 };
 let current = null; // the last ctx we were rendered with, for load() calls without one
+const bankPoll = { timer: null, last: null, stalls: 0 }; // re-reads /api/bank while entries are pending
 
 // ---------- data ----------
 
@@ -47,8 +55,60 @@ async function refresh(ctx) {
   else Object.assign(state, { bank: null, bankError: bank.reason.message });
   if (items.status === "fulfilled") Object.assign(state, { inventory: items.value.items, inventoryError: null });
   else Object.assign(state, { inventory: null, inventoryError: items.reason.message });
+  watchBank(ctx, true);
   ctx.rerender();
 }
+
+const pendingCount = () => (state.bank?.available ? state.bank.pending || 0 : 0);
+
+/**
+ * The server decodes big banks a slice per request and marks the rest "pending". While any are pending, ask again
+ * after BANK_POLL_MS. Stop when a request fails, or when the count has not fallen BANK_STALLS times in a row.
+ */
+function watchBank(ctx, restart) {
+  clearTimeout(bankPoll.timer);
+  bankPoll.timer = null;
+  if (restart) {
+    Object.assign(bankPoll, { last: null, stalls: 0 });
+    state.bankStopped = null;
+  }
+  const pending = pendingCount();
+  if (!(pending > 0)) return;
+  bankPoll.stalls = bankPoll.last != null && pending >= bankPoll.last ? bankPoll.stalls + 1 : 0;
+  bankPoll.last = pending;
+  if (bankPoll.stalls >= BANK_STALLS) {
+    state.bankStopped = `Stopped reading the bank: ${plural(pending, "item")} still not decoded. Reopen the page to try again.`;
+    return;
+  }
+  bankPoll.timer = setTimeout(() => readMoreBank(ctx), BANK_POLL_MS);
+}
+
+async function readMoreBank(ctx) {
+  bankPoll.timer = null;
+  try {
+    Object.assign(state, { bank: await ctx.api("GET", "/api/bank"), bankError: null });
+  } catch (error) {
+    state.bankStopped = `Stopped reading the bank: ${error.message}`;
+    ctx.rerender();
+    return;
+  }
+  watchBank(ctx, false);
+  ctx.rerender();
+}
+
+/** The toast after a delete or move, flagged when the server had to use the unverified direct array edit. */
+function reportMethod(ctx, reply, done) {
+  if (reply.method !== DIRECT_EDIT) {
+    ctx.toast(done);
+    return;
+  }
+  state.directEdit = `${done}, by a direct array edit. Close and reopen the bank in game, then save and reload, to check it stuck.`;
+  ctx.toast(`${done} (unverified: direct array edit)`, true);
+}
+
+const directEditNote = () => state.directEdit && h("div", { class: "warn-banner bk-direct" },
+  icon("alert", 18), state.directEdit, unverifiedBadge(DIRECT_REASON),
+  h("button", { class: "btn sm ghost", onclick: () => { state.directEdit = null; current?.rerender(); } }, "Dismiss"));
 
 /** One write, then the page reloads and the sidebar polls. `report` gets the reply when the write worked. */
 async function write(ctx, path, body, report) {
@@ -216,7 +276,7 @@ function deleteButton(ctx, item) {
     idle: "Delete", armed: `Click again to delete ${cleanItemName(item.name)}`, cls: "sm danger",
   }, () => write(ctx, "/api/inventory/delete", { id: item.id }, (r) => {
     if (r.deleted.code) state.deleted.unshift({ name: r.deleted.name, code: r.deleted.code });
-    ctx.toast(`Deleted ${r.deleted.name}. Its code is kept under Import codes, in case you want it back.`);
+    reportMethod(ctx, r, `Deleted ${r.deleted.name}. Its code is kept under Import codes, in case you want it back`);
   }));
 }
 
@@ -227,8 +287,8 @@ function duplicate(ctx, item) {
 }
 
 function moveTo(ctx, item, to) {
-  return write(ctx, "/api/inventory/move", { id: item.id, to }, () => {
-    ctx.toast(`Moved ${cleanItemName(item.name)} to the ${to}`);
+  return write(ctx, "/api/inventory/move", { id: item.id, to }, (r) => {
+    reportMethod(ctx, r, `Moved ${cleanItemName(item.name)} to the ${to}`);
   });
 }
 
@@ -266,8 +326,12 @@ function bankTab(ctx) {
   if (!state.bank) return note("Loading...");
   const { bank } = state;
   if (!bank.available) return warnBanner(bank.reason || "The bank is not available right now.");
+  const pending = pendingCount();
   return [
+    directEditNote(),
     meter(bank.slots),
+    pending > 0 && !state.bankStopped && h("div", { class: "bk-progress", role: "status", text: `Reading bank... ${pending} left` }),
+    state.bankStopped && warnBanner(state.bankStopped),
     bank.warnings.map((text) => warnBanner(text)),
     bank.items.length ? grid(bank.items.map((item) => itemCard(item, bankActions(ctx, item)))) : note("The bank is empty."),
   ];
@@ -279,6 +343,7 @@ function backpackTab(ctx) {
   const backpack = state.inventory.filter((item) => item.location === "Backpack");
   const equipped = state.inventory.filter((item) => item.location === "Equipped");
   return [
+    directEditNote(),
     h("h4", { class: "bk-h", text: `Backpack (${backpack.length})` }),
     backpack.length ? grid(backpack.map((item) => itemCard(item, backpackActions(ctx, item)))) : note("The backpack is empty."),
     h("h4", { class: "bk-h", text: `Equipped (${equipped.length}, read only)` }),
