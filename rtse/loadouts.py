@@ -862,7 +862,7 @@ def _basis(sections: list[str]) -> str:
         if tree.get("available"):
             state["skills"] = sorted([s.get("path") or "", s.get("level")] for s in tree.get("skills", []))
         else:
-            state["skills"] = tree.get("reason")
+            state["skills"] = "unavailable"  # a fixed marker: never fingerprint error text
     if SECTION_GEAR in sections:
         state["gear"] = sorted([g["id"], g["class"], g["balance"], g["location"], g["level"], sorted(g["parts"].items())]
                                for g in _live_gear())
@@ -946,10 +946,18 @@ def _slot_part(detail: dict[str, Any], slot: str) -> str | None:
     raise _StepFailed(f"the {slot} slot is missing from the item after the change")
 
 
+def _read_xp() -> int:
+    """The character's XP now. Raises when it can't be read: a level step depends on it (see _forward/_undo)."""
+    xp = character.read()["xp"]
+    if type(xp) is not int:
+        raise _StepFailed("experience can't be read")
+    return xp
+
+
 def _current_xp() -> int | None:
     try:
-        return character.read()["xp"]
-    except Exception:  # noqa: BLE001 - without a reading, rollback just can't restore XP separately
+        return _read_xp()
+    except Exception:  # noqa: BLE001 - callers treat None as "can't tell"
         return None
 
 
@@ -967,7 +975,13 @@ def _forward(step: dict[str, Any], ids: dict[str, str], context: dict[int, int |
     kind, params = step["kind"], step["params"]
     if kind.startswith("character."):
         if kind == "character.level":
-            context[step["n"]] = _current_xp()  # the level write rewrites XP: remember it for the rollback
+            # The level write rewrites XP, so the XP before it is what a rollback must put back. Without that reading
+            # the step could not be undone, so it is refused before anything is written.
+            try:
+                context[step["n"]] = _read_xp()
+            except Exception as ex:  # noqa: BLE001
+                raise _StepFailed(f"the experience before this level change can't be read ({str(ex) or ex.__class__.__name__}), "
+                                  "so it couldn't be undone - nothing was written") from None
         applied = character.set_field(dict(params))["applied"]
         return _expect(applied["after"], params["value"])
     if kind == "skills.level":
@@ -990,9 +1004,13 @@ def _undo(step: dict[str, Any], ids: dict[str, str], context: dict[int, int | No
     kind, params, before = step["kind"], step["params"], step["before"]
     if kind.startswith("character."):
         _expect(character.set_field({"field": params["field"], "value": before})["applied"]["after"], before)
-        xp = context.get(step["n"])
-        if kind == "character.level" and xp is not None:
+        if kind == "character.level":
+            # Restoring the level resets XP to that level's minimum: always put the recorded XP back and read it again.
+            if step["n"] not in context:
+                raise _StepFailed("the experience before this step wasn't recorded, so it can't be restored")
+            xp = context[step["n"]]
             _expect(character.set_field({"field": "xp", "value": xp})["applied"]["after"], xp)
+            _expect(_read_xp(), xp)
         return
     if kind == "skills.level":
         over = _skill_is_over(params["id"], before)
@@ -1046,9 +1064,9 @@ def _left_behind(step: dict[str, Any], ids: dict[str, str], context: dict[int, i
         return f"it can't be read back ({str(ex) or ex.__class__.__name__})"
     if now != step["before"]:
         return f"the game reads {now!r}, not the old {step['before']!r}"
-    if step["kind"] == "character.level":
-        xp = context.get(step["n"])
-        if xp is not None and _current_xp() != xp:
+    if step["kind"] == "character.level" and step["n"] in context:  # absent: refused before writing anything
+        xp = context[step["n"]]
+        if _current_xp() != xp:
             return f"experience is no longer {xp}"
     return None
 
