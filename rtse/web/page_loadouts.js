@@ -683,21 +683,28 @@ function reportCard(ctx) {
     ? `All ${plural(r.summary.ok, "step")} ran and read back. Not tested in a live game: check the save in game.`
     : `${failed ? `Step ${failed.n} failed` : "A step failed"}. ${r.rolled_back ? "The steps that worked were rolled back" : "The steps that worked were kept"}, and the steps after it did not run.`;
   const earlier = !r.ok && r.chunks.some((c) => c.status === "applied");
+  // The History pointer only when the server found the earlier chunks in the journal; otherwise the table is the record.
+  const hint = !earlier ? null : r.history === true
+    ? "Earlier chunks stay applied and History lists them: you can undo them there."
+    : "Earlier chunks stay applied. History doesn't list them, so the Before and After columns are the record of what changed.";
   return h("section", { class: `lo-card lo-report${r.ok ? "" : " bad"}`, id: "lo-report" },
     h("div", { class: "lo-head" }, h("h2", { class: "lo-h", text: `Result: ${r.name}` })),
     r.notice && h("div", { class: "warn-banner" }, icon("alert", 18), r.notice),
     h("p", { class: "lo-msg", text: r.message || fallback }),
-    earlier && h("p", { class: "lo-earlier", text: "Earlier chunks stay applied — use History to undo them." }),
+    hint && h("p", { class: "lo-earlier", text: hint }),
     r.summary.rollback_failed > 0 && h("div", { class: "warn-banner" }, icon("alert", 18),
       "An undo step failed. Reload the save before playing: the game may not match the build."),
     r.chunks.length > 0 && chunkList(ctx, r.chunks),
     h("div", { class: "lo-chips" }, Object.keys(STATUS_TEXT).map((key) => h("span", { class: "lo-chip" }, STATUS_TEXT[key], h("b", { text: String(r.summary[key]) })))),
     h("div", { class: "lo-tablewrap" },
       h("table", { class: "lo-table" },
-        h("thead", {}, h("tr", {}, h("th", { text: "#" }), h("th", { text: "Step" }), h("th", { text: "Result" }), h("th", { text: "Detail" }))),
+        h("thead", {}, h("tr", {}, h("th", { text: "#" }), h("th", { text: "Step" }), h("th", { text: "Before" }), h("th", { text: "After" }), h("th", { text: "Result" }), h("th", { text: "Detail" }))),
         h("tbody", {}, r.steps.map((s) => h("tr", {},
           h("td", { class: "lo-num", text: String(s.n) }),
           h("td", { text: s.label }),
+          h("td", { class: "lo-mono", text: show(s.before) }),
+          // after = the game's readback once the step ran; empty for steps that never ran
+          h("td", { class: "lo-mono", text: s.status === "ok" || s.status === "rolled_back" ? show(s.after) : "" }),
           h("td", {}, h("span", { class: `lo-pill ${s.status}`, text: STATUS_TEXT[s.status] || s.status })),
           h("td", { class: "lo-why", text: s.error || "" })))))));
 }

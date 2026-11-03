@@ -1017,41 +1017,81 @@ def _undo(step: dict[str, Any], ids: dict[str, str], context: dict[int, int | No
 
 
 def _result(step: dict[str, Any]) -> dict[str, Any]:
-    return {"n": step["n"], "label": step["label"], "status": "ok", "before": step["before"], "after": None, "error": None}
-
-
-def _wrote(result: dict[str, Any], error: Exception) -> bool:
-    """A failed step whose write function returned but read back wrong: its change may be in the save, so a rollback
-    puts it back too. A write function that raised already restored its own change (gear) or never wrote."""
-    return result["status"] == "failed" and isinstance(error, _StepFailed)
-
-
-def _not_run(step: dict[str, Any]) -> dict[str, Any]:
-    return {"n": step["n"], "label": step["label"], "status": "not_run", "before": step["before"], "after": None,
+    return {"n": step["n"], "label": step["label"], "status": "pending", "before": step["before"], "after": None,
             "error": None}
+
+
+def _read_target(step: dict[str, Any], ids: dict[str, str]) -> Any:
+    """What the game holds now for a step's target (the same reads the plan used). Raises when it can't be read."""
+    kind, params = step["kind"], step["params"]
+    if kind.startswith("character."):
+        state = character.read()
+        field = params["field"]
+        if field in state:
+            return state[field]
+        return next((c["value"] for c in state.get("currencies", []) if c["key"] == field), None)
+    if kind == "skills.level":
+        return next((s["level"] for s in skills.read()["skills"] if s.get("path") == params["id"]), None)
+    raw, location = gear_inventory._find_item({"id": _current_id(ids, params["id"])})  # noqa: SLF001
+    live = _live_item(raw, location)
+    return live["parts"].get(params["slot"]) if kind == "gear.part" else live["level"]
+
+
+def _left_behind(step: dict[str, Any], ids: dict[str, str], context: dict[int, int | None]) -> str | None:
+    """None when the step's target verifiably still holds its `before` value, else what is different (or why it
+    couldn't be checked). A level write also moves XP, so for a level step XP must be back too."""
+    try:
+        now = _read_target(step, ids)
+    except Exception as ex:  # noqa: BLE001 - unreadable means "can't tell", never "unchanged"
+        return f"it can't be read back ({str(ex) or ex.__class__.__name__})"
+    if now != step["before"]:
+        return f"the game reads {now!r}, not the old {step['before']!r}"
+    if step["kind"] == "character.level":
+        xp = context.get(step["n"])
+        if xp is not None and _current_xp() != xp:
+            return f"experience is no longer {xp}"
+    return None
+
+
+def _settle_failed(step: dict[str, Any], result: dict[str, Any], ids: dict[str, str],
+                   context: dict[int, int | None]) -> None:
+    """A write step that raised or read back wrong may still have changed the game (a setter can write and then
+    raise). Whatever on_failure says, the failed step itself must leave nothing behind: read its target back and, if
+    it differs from before, put `before` back through the same write function and check again. If that can't be
+    verified, the step is reported rollback_failed."""
+    changed = _left_behind(step, ids, context)
+    if changed is None:
+        return
+    try:
+        _undo(step, ids, context)
+        still = _left_behind(step, ids, context)
+        if still is not None:
+            raise _StepFailed(still)
+    except Exception as ex:  # noqa: BLE001 - reported below
+        logging.error(f"RTSE: build step {step['n']} left a change behind and it couldn't be put back: {ex}")
+        result.update(status="rollback_failed",
+                      error=f"{result['error']}; it left a change behind ({changed}) and putting it back failed "
+                            f"({str(ex) or ex.__class__.__name__}) - reload the save before playing")
+    else:
+        result["error"] = f"{result['error']} (it had changed the game - {changed} - and that was put back)"
 
 
 def _undo_chunk(results: list[dict[str, Any]], steps: list[dict[str, Any]], indexes: range, ids: dict[str, str],
                 context: dict[int, int | None]) -> None:
-    """Undoes, last first, every step of one chunk that went ok, plus a failed step whose write went through but read
-    back wrong. Each undo uses the same write function as the step; a failed undo is reported and the rest still run."""
+    """Undoes, last first, every step of one chunk that went ok. Each undo uses the same write function as the step
+    and reads back; a failed undo is reported and the rest still run. (The failed step was settled already.)"""
     for index in reversed(indexes):
         result = results[index]
-        half_done = result.pop("_wrote", False)
-        if result["status"] != "ok" and not half_done:
+        if result["status"] != "ok":
             continue
         try:
             _undo(steps[index], ids, context)
         except Exception as ex:  # noqa: BLE001 - every failed undo is reported, the rest still run
             message = str(ex) or ex.__class__.__name__
             logging.error(f"RTSE: could not undo build step {steps[index]['n']}: {message}")
-            prefix = f"{result['error']}; putting it back also failed: " if half_done else ""
-            result.update(status="rollback_failed", error=f"{prefix}{message} - reload the save before playing")
+            result.update(status="rollback_failed", error=f"{message} - reload the save before playing")
         else:
-            if half_done:
-                result["error"] = f"{result['error']} (put back)"
-            else:
-                result["status"] = "rolled_back"
+            result["status"] = "rolled_back"
 
 
 def _counts(results: list[dict[str, Any]]) -> dict[str, int]:
@@ -1066,11 +1106,12 @@ class _Run:
 
     def __init__(self, preset: dict[str, Any], fresh: dict[str, Any], on_failure: str) -> None:
         self.run_id = os.urandom(12).hex()
+        self.plan_id: str = fresh["plan_id"]
         self.name = preset["name"]
         self.on_failure = on_failure
         self.sections: list[str] = fresh["sections"]
         self.steps: list[dict[str, Any]] = fresh["steps"]
-        self.results = [{**_result(step), "status": "pending"} for step in self.steps]
+        self.results = [_result(step) for step in self.steps]
         self.missing = fresh["missing"]
         self.blocked = fresh["blocked"]
         self.cursor = 0
@@ -1079,7 +1120,7 @@ class _Run:
         self.ids: dict[str, str] = {}
         self.context: dict[int, int | None] = {}
         self.state = "running"
-        self.basis: str | None = None  # the game state when the previous chunk ended
+        self.basis: str | None = None  # the game state when the previous chunk ended (always a real reading)
         self.message = f"Ready to apply {len(self.steps)} steps."
         self.touched = _clock()
 
@@ -1088,18 +1129,31 @@ _runs: dict[str, _Run] = {}
 _clock = time.monotonic  # tests replace it to simulate slow steps
 
 
-def _forget_old_runs() -> None:
+def _forget_expired_runs() -> None:
+    """Drops runs nobody has touched for RUN_TTL_SECONDS (finished, or abandoned mid-way by a closed page)."""
     now = _clock()
     for run_id in [r for r, run in _runs.items() if now - run.touched > RUN_TTL_SECONDS]:
         del _runs[run_id]
+
+
+def _make_room() -> None:
+    """Frees a slot for a new run. Only finished runs are ever dropped early; a run still in progress is never evicted,
+    so with MAX_RUNS of those the new run is refused."""
+    _forget_expired_runs()
     while len(_runs) >= MAX_RUNS:
-        del _runs[min(_runs, key=lambda r: _runs[r].touched)]
+        finished = [run for run in _runs.values() if run.state != "running"]
+        if not finished:
+            raise LoadoutError(409, f"{len(_runs)} builds are still being applied - let one finish, or wait "
+                                    f"{RUN_TTL_SECONDS // 60} minutes for an abandoned one to expire")
+        del _runs[min(finished, key=lambda run: run.touched).run_id]
 
 
 def _find_run(raw: Any) -> _Run:
+    _forget_expired_runs()  # expiry is enforced on every lookup, not only when a run starts
     run = _runs.get(raw) if isinstance(raw, str) else None
     if run is None:
         raise LoadoutError(404, "that apply run is unknown or expired - preview the build again")
+    run.touched = _clock()
     return run
 
 
@@ -1107,15 +1161,39 @@ def _steps_text(first: int, last: int) -> str:
     return f"step {first}" if first == last else f"steps {first}-{last}"
 
 
-def _applied_so_far(run: _Run) -> str:
-    """The chunks that stay applied, as the end of a sentence ("" when none)."""
-    applied = [c for c in run.chunks if c["status"] == "applied"]
+def _in_history(run: _Run, chunk: dict[str, Any]) -> bool:
+    """Whether the journal's committed entries show this chunk. Checked at runtime, never assumed: the journal may be
+    a stub that keeps nothing (journal.entries() empty), and its entry format belongs to the journal, so this looks for
+    the chunk's label, or the request that ran it (chunk 1: the plan id; later chunks: the run id and cursor)."""
+    try:
+        texts = [json.dumps(entry, default=str) for entry in journal.entries()]
+    except Exception:  # noqa: BLE001 - a journal that can't be read doesn't count as History
+        return False
+    for text in texts:
+        if chunk["label"] in text:
+            return True
+        if chunk["chunk"] == 1 and run.plan_id in text:
+            return True
+        if chunk["chunk"] > 1 and run.run_id in text and f'"cursor": {chunk["from"] - 1}' in text:
+            return True
+    return False
+
+
+def _earlier_chunks(run: _Run, current: dict[str, Any] | None) -> tuple[str, bool | None]:
+    """The chunks that stay applied (all but `current`, whose request is still open), as the end of a sentence, and
+    whether History holds every one of them (None when there are none)."""
+    applied = [c for c in run.chunks if c["status"] == "applied" and c is not current]
     if not applied:
-        return ""
-    last = applied[-1]
-    which = f"chunk {applied[0]['chunk']}" if len(applied) == 1 else f"chunks {applied[0]['chunk']}-{last['chunk']}"
-    return (f" Earlier {which} ({_steps_text(applied[0]['from'], last['to'])}) stay applied: they are separate entries "
-            "in History, so undo them there if you want them gone.")
+        return "", None
+    for chunk in applied:
+        chunk["in_history"] = _in_history(run, chunk)
+    found = all(c["in_history"] for c in applied)
+    which = f"chunk {applied[0]['chunk']}" if len(applied) == 1 else f"chunks {applied[0]['chunk']}-{applied[-1]['chunk']}"
+    span = _steps_text(applied[0]["from"], applied[-1]["to"])
+    if found:
+        return f" Earlier {which} ({span}) stay applied; History lists them, so you can undo them there.", True
+    return (f" Earlier {which} ({span}) stay applied. RTSE can't find them in History, so the result lists each "
+            "value before and after: put back by hand whatever you don't want."), False
 
 
 def _stop_rest(run: _Run, state: str) -> None:
@@ -1135,22 +1213,25 @@ def _label(tx: Any, label: str) -> None:
 
 
 def _run_chunk(run: _Run) -> dict[str, Any]:
-    """Runs the next chunk: at most CHUNK_MAX_STEPS steps, and no new step once CHUNK_SECONDS have passed. Each chunk
-    is one journal transaction. A failure stops the run; with on_failure "rollback" only THIS chunk is undone (its
-    transaction is then discarded), earlier chunks stay applied and committed."""
+    """Runs the next chunk: at most CHUNK_MAX_STEPS steps, and no new step once CHUNK_SECONDS have passed. The deadline
+    is soft: it is checked before each step, so one slow step can overrun it, and the game-state fingerprints read
+    before and after the chunk are outside it; the step cap is what bounds the work. Each chunk is one journal
+    transaction. A failure stops the run; with on_failure "rollback" only THIS chunk is undone (its transaction is
+    then discarded); earlier chunks stay applied and committed."""
     if run.state != "running":
         raise LoadoutError(409, f"this apply run has already {'finished' if run.state == 'done' else 'stopped'}")
-    run.touched = _clock()
-    if run.basis is not None:  # a continuation: did the game change since the previous chunk ended?
+    if run.chunk:  # a continuation: did the game change since the previous chunk ended?
         try:
-            now = _basis(run.sections)
-        except Exception as ex:  # noqa: BLE001 - unreadable counts as changed
-            now = f"unreadable: {ex}"
-        if now != run.basis:
+            now: str | None = _basis(run.sections)
+            problem = None if now == run.basis else "the game changed"
+        except Exception as ex:  # noqa: BLE001 - a state that can't be read is never treated as unchanged
+            problem = f"the game state couldn't be read ({str(ex) or ex.__class__.__name__})"
+        if problem is not None:
             _stop_rest(run, "stopped")
-            run.message = (f"The game changed since chunk {run.chunk} ended, so the build stopped before step "
-                           f"{run.cursor + 1}; nothing more was written.{_applied_so_far(run)}")
-            logging.error(f"RTSE: build {run.name!r} stopped: the game changed between chunks")
+            earlier, _found = _earlier_chunks(run, None)
+            run.message = (f"{problem.capitalize()} since chunk {run.chunk} ended, so the build stopped before step "
+                           f"{run.cursor + 1}; nothing more was written.{earlier}")
+            logging.error(f"RTSE: build {run.name!r} stopped: {problem}")
             return _reply(run, ran=None)
 
     run.chunk += 1
@@ -1167,29 +1248,26 @@ def _run_chunk(run: _Run) -> dict[str, Any]:
             while index < len(run.steps) and index - first < CHUNK_MAX_STEPS:
                 if index > first and _clock() >= deadline:
                     break
-                result = run.results[index]
+                step, result = run.steps[index], run.results[index]
                 result["status"] = "ok"
                 try:
-                    result["after"] = _forward(run.steps[index], run.ids, run.context)
+                    result["after"] = _forward(step, run.ids, run.context)
                 except Exception as ex:  # noqa: BLE001 - any refusal or failed readback is this step's failure
                     result.update(status="failed", error=str(ex) or ex.__class__.__name__)
-                    if _wrote(result, ex):
-                        result["_wrote"] = True
-                    logging.error(f"RTSE: build step {run.steps[index]['n']} failed: {result['error']}")
+                    logging.error(f"RTSE: build step {step['n']} failed: {result['error']}")
+                    _settle_failed(step, result, run.ids, run.context)
                     failed_at = index
                     index += 1
                     break
                 index += 1
             if failed_at is not None and run.on_failure == "rollback":
-                _undo_chunk(run.results, run.steps, range(first, index), run.ids, run.context)
+                _undo_chunk(run.results, run.steps, range(first, failed_at), run.ids, run.context)
                 raise _Undone  # aborts this chunk's journal transaction: History keeps none of it
     except _Undone:
         pass
-    for result in run.results:
-        result.pop("_wrote", None)
 
     run.cursor = index
-    chunk = {"chunk": run.chunk, "from": first + 1, "to": index}
+    chunk = {"chunk": run.chunk, "from": first + 1, "to": index, "label": label, "in_history": None}
     span = _steps_text(first + 1, index)
     if failed_at is None:
         chunk["status"] = "applied"
@@ -1201,26 +1279,32 @@ def _run_chunk(run: _Run) -> dict[str, Any]:
             run.message = f"Chunk {run.chunk} applied ({span} of {len(run.steps)})."
             try:
                 run.basis = _basis(run.sections)
-            except Exception as ex:  # noqa: BLE001 - the next chunk will then stop rather than guess
-                run.basis = f"unreadable: {ex}"
+            except Exception as ex:  # noqa: BLE001 - without a reading the next chunk can't be checked: stop now
+                _stop_rest(run, "stopped")
+                earlier, _found = _earlier_chunks(run, chunk)
+                run.message = (f"Chunk {run.chunk} applied ({span}), but the game state couldn't be read afterwards "
+                               f"({str(ex) or ex.__class__.__name__}), so the build stopped rather than guess.{earlier}")
     else:
         n = run.steps[failed_at]["n"]
         chunk["status"] = "rolled_back" if run.on_failure == "rollback" else "kept_partial"
-        earlier = _applied_so_far(run)
+        earlier, _found = _earlier_chunks(run, None)
         run.chunks.append(chunk)
         _stop_rest(run, "failed")
         if run.on_failure == "rollback":
             run.message = f"Step {n} failed, so chunk {run.chunk} ({span}) was rolled back.{earlier}"
         else:
-            run.message = (f"Step {n} failed. The steps before it stay applied (nothing was rolled back); undo them "
-                           "from History if you want them gone.")
+            run.message = (f"Step {n} failed. The steps before it stay applied (nothing was rolled back); the result "
+                           f"lists each value before and after.{earlier}")
     logging.info(f"RTSE: build {run.name!r} chunk {run.chunk}: {run.message}")
     return _reply(run, ran=chunk)
 
 
 def _reply(run: _Run, *, ran: dict[str, Any] | None) -> dict[str, Any]:
+    """The run as JSON. Every step carries `before` (the plan's reading) and `after` (the game's readback), so the
+    page can show exactly what stayed applied even when the journal keeps no History."""
     global _last_report  # noqa: PLW0603
     last = ran or (run.chunks[-1] if run.chunks else None)
+    settled = [c for c in run.chunks if c["status"] == "applied" and c is not ran and c["in_history"] is not None]
     report = {
         "run_id": run.run_id,
         "name": run.name,
@@ -1233,7 +1317,8 @@ def _reply(run: _Run, *, ran: dict[str, Any] | None) -> dict[str, Any]:
         "chunk": last["chunk"] if last else 0,
         "chunk_from": last["from"] if last else None,
         "chunk_to": last["to"] if last else None,
-        "chunks": [dict(c) for c in run.chunks],
+        "chunks": [{k: v for k, v in c.items() if k != "label"} for c in run.chunks],
+        "history": all(c["in_history"] for c in settled) if settled else None,
         "rolled_back": bool(ran and ran.get("status") == "rolled_back"),
         "steps": [dict(r) for r in run.results],
         "summary": _counts(run.results),
@@ -1270,7 +1355,7 @@ def apply(params: Params) -> dict[str, Any]:
     fresh = plan(preset, sections=sections, over_max=over_max, skip=skip)
     if fresh["plan_id"] != plan_id:
         raise LoadoutError(409, "the game changed since the preview - preview again")
-    _forget_old_runs()
+    _make_room()
     run = _Run(preset, fresh, on_failure)
     _runs[run.run_id] = run
     if not run.steps:

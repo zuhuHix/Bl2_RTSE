@@ -468,6 +468,8 @@ def _reply(run: dict) -> dict:
         "ok": run["ok"], "done": run["state"] != "running", "total": len(rows), "cursor": run["cursor"],
         "chunk": run["chunk"], "chunk_from": run["chunk_from"], "chunk_to": run["chunk_to"], "chunks": run["chunks"],
         "rolled_back": run["rolled_back"], "message": run["message"], "steps": rows,
+        # the mock has no journal, like the real one before stream A: earlier chunks are never found in History
+        "history": False if run["state"] in ("failed", "stopped") and run["chunk"] > 1 else None,
         "summary": {k: sum(1 for r in rows if r["status"] == k) for k in keys},
         "missing": run["missing"], "blocked": run["blocked"],
     }
@@ -484,9 +486,9 @@ def _finish(run: dict) -> None:
 def _earlier(number: int) -> str:
     if number <= 1:
         return ""
-    if number == 2:
-        return " Chunk 1 stays applied and can be undone from History."
-    return f" Chunks 1 to {number - 1} stay applied and can be undone from History."
+    which = "chunk 1" if number == 2 else f"chunks 1-{number - 1}"
+    return (f" Earlier {which} stay applied. RTSE can't find them in History, so the result lists each value before and "
+            "after: put back by hand whatever you don't want.")
 
 
 def _start(params: dict) -> dict:
@@ -573,7 +575,7 @@ def _chunk(run: dict, cursor: int | None = None) -> dict:
             run["rolled_back"] = True
             run["message"] = (f"Step {n} failed. The steps that worked were rolled back, and the steps after it did not run."
                               if number == 1 else
-                              f"Step {n} failed. Chunk {number} was rolled back;{_earlier(number)}")
+                              f"Step {n} failed. Chunk {number} was rolled back.{_earlier(number)}")
         else:
             status = "kept_partial"
             run["message"] = (f"Step {n} failed. The steps that worked were kept, and the steps after it did not run."

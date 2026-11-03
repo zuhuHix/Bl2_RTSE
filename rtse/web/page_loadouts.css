@@ -49,7 +49,7 @@
 .lo-table th, .lo-table td { text-align: left; padding: 7px 10px; border-bottom: 1px dashed var(--line); vertical-align: top; overflow-wrap: anywhere; }
 .lo-table th { background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .lo-table td.lo-num { width: 44px; color: var(--muted); font-weight: 700; }
-.lo-mono { font-family: Consolas, monospace; font-size: 12.5px; }
+.lo-mono { font-family: Consolas, monospace; font-size: 12.5px; white-space: nowrap; }
 .lo-fold { margin-top: 14px; border: 2px solid #000; background: var(--ink); }
 .lo-fold summary { padding: 8px 12px; cursor: pointer; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; font-size: 12.5px; }
 .lo-fold ul { list-style: none; margin: 0; padding: 4px 12px 10px; display: grid; gap: 6px; }
