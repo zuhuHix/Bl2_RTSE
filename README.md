@@ -18,12 +18,13 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 - **Weapon lab:** snapshot a gun, swap a part, and see every stat that changed side by side. Then record the damage you actually deal (hits, crits, DPS, per-pellet) and chart it.
 - **Bank & codes:** copy any item as a `BL2(...)` code (the format the Gibbed editor uses), paste codes to add items, look through your bank, move items between backpack and bank, duplicate or delete them, and save or load your whole inventory as a JSON file.
 - **Farm guard:** protects a farm that a mission step would ruin (the Wildlife Exploitation Preserve loot midgets in Doctor's Orders, the Space Cowboy porta-potty midget). It warns you, then lets you keep the change or undo it. It also counts attempts, time and drops while you farm.
+- **History:** every change RTSE made, what you asked for and what the game kept, with **Undo**. Your save file is backed up before your first change each session, and you can back up or restore it yourself.
 
 ## A tour of the editor
 
 The screenshots below were taken with the demo data from `dev/mock_server.py` (see [For tinkerers](#for-tinkerers)), not from a live game, so the names and numbers are placeholders. In the real thing they come from your character.
 
-The left side is always your **Loadout**: seven pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector, Weapon lab), then a search box and everything you have equipped or in your backpack.
+The left side is always your **Loadout**: ten pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector, Weapon lab, Bank & codes, Farm guard, History), then a search box and everything you have equipped or in your backpack.
 
 ![The editor with nothing selected](docs/screenshots/01-home.png)
 
@@ -185,9 +186,27 @@ Some farms only work while a mission stays at one step. In the **Wildlife Exploi
 9. Press F8 twice and disable and re-enable the mod, then check the farm dump: each hook must be listed once.
 10. Click **Save farm dump** (dev tools at the bottom of the page) and attach `rtse/debug_farm.json` to your report.
 
+### History
+
+![The history page's timeline, with an undone change and a change the game capped](docs/screenshots/17-history.png)
+
+- **Timeline.** Every change RTSE made to your game, newest first: what it was before, what you asked for and what the game actually kept. If you asked for 900 and the game kept 600, it says so.
+- **Undo.** Puts the old value back, using the same write as the page you made the change on, so it gets the same checks. It only works on the character the change was made to: each change remembers the save, class and name, and the undo is refused on any other character, or when RTSE can't tell who is loaded. It also only works when the game still holds exactly what that change left, all of it: a level change counts as level and XP together, and a skill tree reset as every skill's rank. If anything changed since (you, the game or another change), the undo is refused instead of overwriting the newer value. An undo shows up on the timeline too, and undoing an undo redoes the change. If an undo fails halfway, RTSE puts back what it had already changed, and if even that fails, the timeline gets a "partial" entry listing exactly what changed.
+- **What can be undone:** gear parts, gear level, gun stats, character values, ammo, SDUs, skill ranks and a skill tree reset. **World** changes (missions, objectives, challenges, fast travel, playthrough) and **Inspector** writes are listed but can't be undone: a mission or a raw field ripples into other game state, so putting one number back isn't safe. Restore a save backup instead.
+- The timeline keeps the last 200 changes and is also saved to `rtse/history.json`, so after a restart you can still see the last session's changes (they can't be undone any more).
+
+![The save backups tab with a restore staged](docs/screenshots/18-history-backups.png)
+
+- **Save backups.** Before your first change each session (and for each character you change), RTSE copies that character's `.sav` and your `profile.bin` into `rtse/backups/<date-time>/`. **Back up now** makes one whenever you like. It only ever reads your save folder.
+- The page says where it found your save: read from the game, the file name from the game with the folder guessed, or a guess (the newest save in `Documents\My Games\Borderlands 2\WillowGame\SaveData`).
+- **No backup, no change.** RTSE only backs a save up on its own when the game told it which file is yours. If it could only guess, or the copy failed, your first change is refused with "Couldn't back up your save before the first change: ...". Open History > Save backups, check the path, and either **Back up now** or choose **Continue without a backup** for this session.
+- **Keep** sets how many backups to keep (20 by default, 1 to 200). The oldest go first. Backups a restore still needs are kept no matter what, and so is a safety copy from a restore that went wrong, until you **Unpin** it.
+- Each backup shows the file a restore would overwrite. If that isn't the save RTSE found for your current character, the page warns you.
+- **Restore…** never touches your save while you're playing. It's staged: quit to the main menu (the game saves on the way out). RTSE writes it only when you're on the main menu with no character loaded and the save file hasn't changed for 5 seconds. It copies what's there to a safety backup first, replaces each file in one step, checks it, and checks again 5 seconds later. If any step fails, your original files are put back from the safety backup. If the game wrote over the restored file, the page says so and keeps the safety backup. Then load your character. Tick **also restore profile.bin** only if you want your profile (settings, badass rank, golden keys) back too. **Cancel restore** drops a staged restore. The restore's progress is saved to disk, so if the game closes mid-restore, RTSE puts your original files back the next time it runs. Writing the restore briefly pauses the game at the main menu: RTSE checks it's safe and writes the files in one go, so the game can't load or save in between. Save files are small, so the pause is short, and the restore result says how long it took.
+
 ## Heads up before you start
 
-- **Back up your saves first.** They're in `Documents\My Games\Borderlands 2\WillowGame\SaveData`. Copy that folder somewhere. It takes ten seconds and saves you if you break something.
+- **Back up your saves first.** They're in `Documents\My Games\Borderlands 2\WillowGame\SaveData`. Copy that folder somewhere. It takes ten seconds and saves you if you break something. RTSE also backs up the character you're editing before its first change each session (see [History](#history)), but your own copy of the whole folder is the safe one.
 - **Play solo.** Don't use this in public online games.
 - **This is early.** Gear is the page that's had the most real use. Character, Ammo, Upgrades, Skills, World (including objectives) and Inspector were built from the game's own data files, so the names they use are real, but nobody has confirmed every button does what it says in a live game yet. If something shows "unavailable" or does nothing, see [When something doesn't work](#when-something-doesnt-work).
 
@@ -269,7 +288,7 @@ Every feature is a backend module, a page and a mock. None of them needs edits t
 3. **Mock:** write `dev/mock_<feature>.py` with `handle(path, params, shared) -> dict | None` (`None` means "not my route"; raise `LookupError` for 404, `ValueError` for 400). `dev/mock_server.py` picks it up automatically.
 4. **Tests:** put them in `dev/tests/test_<feature>.py`. The game modules are already stubbed, and the `game` fixture lets you set `game.pc` and the objects `find_object` returns. Run them with `python -I -m pytest dev/tests -k <feature>`.
 
-Shared building blocks: `rtse/events.py` (`subscribe` / `publish` for game.damage, game.pickup, game.mission and rtse.edit), `rtse/journal.py` (the edit history; a no-op for now), `rtse/session_guard.py` (`can_write(route) -> (bool, reason)`; always allows for now) and `rtse/limits.py` (level caps). Their docstrings are the contracts.
+Shared building blocks: `rtse/events.py` (`subscribe` / `publish` for game.damage, game.pickup, game.mission and rtse.edit), `rtse/journal.py` (the edit timeline the History page shows; `add_begin_hook` runs before each write), `rtse/session_guard.py` (`can_write(route) -> (bool, reason)`; always allows for now) and `rtse/limits.py` (level caps). Their docstrings are the contracts.
 
 ### What is not verified in a live game
 
@@ -290,7 +309,27 @@ Tests and `audit_names.py` prove that names exist and that the logic does what i
   - "Unsupported" is a rule based on part class names.
 - **Farm guard**: the hook names exist in the game, but none of this has run in a live game. Still unconfirmed: that writing a mission's stored objective numbers back makes the game forget the progress (and brings the midgets back after a reload), that blocking a hook stops a pickup cleanly, which Space Cowboy step ends the porta-potty midget, the quick reload relaunch and its "not saving" check (the save manager's state 0 is assumed to mean idle), item rarity numbers (1 white to 5 orange), and spotting a fresh map from the world clock.
 
-The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
+- **History and save backups**: undo is tied to the character by `SaveGameFileId` and `PlayerClass` on the player controller and `PlayerName` on its replication info. If any of those can't be read in the real game, undo refuses every change. Finding the save reads `WillowSaveGameManager.LastLoadedFilePath` (it isn't known whether that's a full path or just a file name), then `SaveGameFileId`, then guesses the newest save in the Documents folder. If neither game value works in practice, every session's first change asks you to back up or skip. A staged restore waits for the map name `menumap` (assumed to be the main menu) and a player controller with no `Pawn` (assumed to mean no character is loaded). If either assumption is wrong, a staged restore never applies: the page keeps showing what it's waiting for, and **Cancel restore** drops it. Undo replays each page's own write with the old value, so it's exactly as verified as those pages are.
+
+The debug dumps on each page (Character, Ammo, Upgrades, Weapon lab, History, gear "Dump") save what's needed to settle each of these. Send them along with a bug report.
+
+### In-game test checklist: History and save backups
+
+Do these on a throwaway character, with your SaveData folder copied somewhere first.
+
+1. Load a character and press F8. Open **History**, then **Save backups**. Note what "where it was found" says, then click **Save history dump** in dev tools and keep `rtse/debug_history.json`.
+2. Change your cash on the Character page. If "where it was found" said read from the game, the automatic backup should now say "made as <id>", and `rtse/backups/<id>/` should hold your `SaveXXXX.sav` and `profile.bin`. Check it's the character you're playing. If it said guessed, the change should be refused with "Couldn't back up your save...". **Back up now**, then the change works.
+3. On the Timeline, the cash change shows before, asked and kept. Click **Undo**. Your cash goes back, and the timeline shows the undo.
+4. Change cash, then change it again. Undo the **older** one. It should be refused with "...is now..., undo refused". Undo the newer one, then the older one: both should work.
+5. Try one of each: ammo amount, an SDU level, a skill rank, **Reset tree**, a gear part, a gear level, a gun stat. Undo each and check the game shows the old value. Note anything that comes back different.
+6. Complete a mission on the World page. The timeline lists it with no Undo button, and the reason is shown.
+7. **Back up now** with a note. Change something, then save the game (quit to the menu or use a save point). **Restore…** the backup you just made and confirm it. The banner should say it's staged. Quit to the main menu. The banner should go from waiting for the main menu, to waiting for the file to stop changing, to verifying. About 10 seconds after you reach the menu, the last restore line should say OK, and there should be a new "before restore" backup. Load the character: the change should be gone. Keep `rtse/debug_history.json` from a dump taken at the menu: it shows the map name and whether a character counted as loaded.
+8. Stage a restore, then **Cancel restore**, then quit to the menu. Nothing should be restored.
+9. Set **Keep** to 2 and make three backups. Only the newest two stay.
+10. Restart the game. The timeline still lists the last session's changes as "earlier session", with no Undo.
+11. Change cash, undo it, then undo the undo (a redo). The original change should show Undo again, and cash should be back at the changed value.
+12. Change cash on one character, quit to the menu, load another character. On History, that change should show no Undo, and say it was made to the other character. Load the first character again: Undo works.
+13. Set your level, then earn some XP (kill something). Undo of the level change should be refused (level and XP changed since).
 
 ### In-game test: check before apply
 

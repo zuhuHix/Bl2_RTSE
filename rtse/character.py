@@ -387,7 +387,12 @@ def set_field(params: dict[str, Any]) -> dict[str, Any]:
                             "before": {"level": before["level"], "xp": before["xp"]},
                             "after": {"level": after["level"], "xp": after["xp"]}, "restored": None})
     logging.info(f"RTSE: character {applied}")
-    journal.record(f"character.{field}", target=field, before=applied["before"], after=applied["after"])
+    if field in ("level", "xp"):
+        # Level and XP move together, so both are recorded: an undo then puts back both and refuses if either changed
+        journal.record(f"character.{field}", target=field, before={"level": before["level"], "xp": before["xp"]},
+                       after={"level": after["level"], "xp": after["xp"]})
+    else:
+        journal.record(f"character.{field}", target=field, before=applied["before"], after=applied["after"])
     return {**after, "applied": applied}
 
 

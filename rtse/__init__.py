@@ -6,7 +6,7 @@ from typing import Any
 from mods_base import build_mod, hook, keybind
 from unrealsdk import logging, unreal
 
-from . import gamethread, gear_inventory, server, stats
+from . import checkpoints, gamethread, gear_inventory, journal, server, stats
 from . import damage
 from . import farmguard
 
@@ -28,6 +28,8 @@ def _enable() -> None:
     stats.install_hooks()
     damage.install_hooks()
     farmguard.install_hooks()
+    journal.use_log_file(journal.DEFAULT_LOG_FILE)
+    checkpoints.enable()
     _announce()
 
 
@@ -35,6 +37,7 @@ def _disable() -> None:
     stats.remove_hooks()
     damage.remove_hooks()
     farmguard.remove_hooks()
+    checkpoints.disable()
     server.stop()
 
 
@@ -52,6 +55,7 @@ def on_tick(
 ) -> None:
     global _ticks, _periodic_enabled  # noqa: PLW0603
     gamethread.pump()
+    checkpoints.pump()
 
     _ticks += 1
     if _ticks < REAPPLY_EVERY_TICKS:
