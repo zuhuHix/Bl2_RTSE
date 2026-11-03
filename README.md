@@ -25,7 +25,7 @@ It runs on the [bl-sdk](https://bl-sdk.github.io/willow2-mod-db/) mod loader, so
 
 The screenshots below were taken with the demo data from `dev/mock_server.py` (see [For tinkerers](#for-tinkerers)), not from a live game, so the names and numbers are placeholders. In the real thing they come from your character.
 
-The left side is always your **Loadout**: eight pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector, Weapon lab, Builds), then a search box and everything you have equipped or in your backpack.
+The left side is always your **Loadout**: eleven pages pinned at the top (Character, Ammo, Upgrades, Skills, World, Inspector, Weapon lab, Bank & codes, Farm guard, History, Builds), then a search box and everything you have equipped or in your backpack.
 
 ![The editor with nothing selected](docs/screenshots/01-home.png)
 
