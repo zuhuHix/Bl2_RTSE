@@ -1048,3 +1048,159 @@ def test_an_unreadable_net_mode_never_blocks(farm, monkeypatch):
     assert "can't tell" in farmguard.read()["writes"]["reason"]
     farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
     assert farm.entry.ObjectivesProgress == [1]  # not blocked: auto-block needs a confirmed host
+
+
+# ---------- review round 2: missing records, null fields, field-by-field rollback, undo reads every record ----------
+
+
+def test_a_record_the_snapshot_holds_but_the_game_lost_refuses_before_any_write(farm):
+    enable()  # snapshot holds tracker + saved
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    alert = only_alert()
+    farm.pc.MissionPlaythroughs[0].MissionList.clear()  # the saved copy is gone
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo")
+    assert err.value.status == 409 and "saved record" in str(err.value) and "partial" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]  # the tracker copy was not touched
+    assert only_alert()["id"] == alert["id"]  # still open
+
+
+def test_a_record_the_snapshot_did_not_capture_refuses_too(farm):
+    saved = farm.pc.MissionPlaythroughs[0].MissionList.pop()
+    snap = world.mission_snapshot(M)  # tracker only
+    assert snap["entries"]["saved"] is None
+    farm.pc.MissionPlaythroughs[0].MissionList.append(saved)
+    farm.entry.ObjectivesProgress = [1]
+    with pytest.raises(world.WorldError) as err:
+        world.restore_mission_snapshot(snap)
+    assert err.value.status == 409 and "didn't capture" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]
+
+
+def test_a_null_active_set_is_verified_like_any_other_value(farm):
+    farm.entry.ActiveObjectiveSet = None
+    farm.saved.ActiveObjectiveSet = None
+    snap = world.mission_snapshot(M)
+    assert snap["entries"]["tracker"]["active_set"] is None and snap["entries"]["tracker"]["unreadable"] == []
+    farm.entry.ActiveObjectiveSet = farm.set2
+    farm.entry.frozen = ("ActiveObjectiveSet",)  # the game ignores the clear
+    with pytest.raises(world.WorldError) as err:
+        world.restore_mission_snapshot(snap)
+    assert err.value.status == 500 and "tracker.active_set" in str(err.value)
+    del farm.entry.__dict__["frozen"]
+    world.restore_mission_snapshot(snap)  # and a clear that takes succeeds
+    assert farm.entry.ActiveObjectiveSet is None
+
+
+class UnreadableSubSets(Entry):
+    @property
+    def SubObjectiveSets(self):  # noqa: N802 - the game's field name
+        raise RuntimeError("unreadable")
+
+
+def test_a_snapshot_with_an_unreadable_field_is_refused(farm):
+    fields = {k: v for k, v in vars(farm.entry).items() if not k.startswith("_") and k != "SubObjectiveSets"}
+    farm.tracker.MissionList[0] = UnreadableSubSets("tracker entry", **fields)
+    with pytest.raises(world.WorldError) as err:
+        world.mission_snapshot(M)
+    assert err.value.status == 409 and "tracker.sub_sets" in str(err.value)
+    with pytest.raises(farmguard.FarmError):
+        enable()
+
+
+def test_an_unknown_status_value_is_unreadable_and_refused(farm):
+    farm.saved.Status = object()  # not an EMissionStatus
+    with pytest.raises(world.WorldError) as err:
+        world.mission_snapshot(M)
+    assert "saved.status" in str(err.value)
+
+
+def test_restore_refuses_when_the_current_state_cannot_be_read(farm):
+    snap = world.mission_snapshot(M)
+    farm.entry.ObjectivesProgress = [1]
+    farm.saved.Status = object()  # a failed undo couldn't put this back
+    with pytest.raises(world.WorldError) as err:
+        world.restore_mission_snapshot(snap)
+    assert err.value.status == 409 and "saved.status" in str(err.value) and "nothing was changed" in str(err.value)
+    assert farm.entry.ObjectivesProgress == [1]
+
+
+class FlakyEntry(Entry):
+    """Refuses ObjectivesProgress writes once `refuse_progress` is set (kept as a tuple, so the element fallback fails too)."""
+
+    def __setattr__(self, name, value):
+        if name == "ObjectivesProgress":
+            if self.__dict__.get("refuse_progress"):
+                raise RuntimeError("refused")
+            value = tuple(value)
+        super().__setattr__(name, value)
+
+
+class TrippingEntry(Entry):
+    """Raises on its ActiveObjectiveSet write once armed, and then makes `partner` refuse progress writes."""
+
+    def __setattr__(self, name, value):
+        if name == "ActiveObjectiveSet" and self.__dict__.get("armed"):
+            self.__dict__["partner"].__dict__["refuse_progress"] = True
+            raise RuntimeError("refused")
+        super().__setattr__(name, value)
+
+
+def test_rollback_continues_through_every_field_and_reports_all_that_stay_off(farm):
+    fields = {k: v for k, v in vars(farm.entry).items() if not k.startswith("_")}
+    tracker = FlakyEntry("tracker entry", **fields)
+    farm.tracker.MissionList[0] = tracker
+    saved = TrippingEntry("saved entry", **{k: v for k, v in vars(farm.saved).items() if not k.startswith("_")})
+    farm.pc.MissionPlaythroughs[0].MissionList[0] = saved
+    snap = world.mission_snapshot(M)  # progress [0], set1, active
+    tracker.ObjectivesProgress = [1]
+    tracker.ActiveObjectiveSet = farm.set2
+    tracker.Status = st("MS_ReadyToTurnIn")
+    saved.ObjectivesProgress = [1]
+    saved.partner = tracker
+    saved.armed = True  # forward: tracker fully restored, then saved raises; rollback: tracker refuses its progress
+
+    with pytest.raises(world.WorldError) as err:
+        world.restore_mission_snapshot(snap)
+    text = str(err.value)
+    assert err.value.status == 500 and "ALSO failed" in text
+    # the whole-array write raises and so does the element-by-element fallback (a tuple); saved still refuses its set
+    assert "tracker.progress (" in text and "saved.active_set (RuntimeError)" in text
+    assert "still not as before: tracker.progress)" in text  # the only field left off, every other one was put back
+    # every other field of the tracker record was still rolled back after its progress write failed
+    assert tracker.ActiveObjectiveSet is farm.set2 and tracker.Status is st("MS_ReadyToTurnIn")
+    assert "tracker.active_set" not in text.split("still not as before:")[1] and "tracker.status" not in text.split("still not as before:")[1]
+    assert saved.ObjectivesProgress == [1]
+
+
+def test_undo_is_off_when_the_saved_record_is_complete_even_if_the_tracker_is_not(farm):
+    enable()
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    assert "undo" in only_alert()["actions"]
+    farm.saved.Status = st("MS_Complete")  # the tracker still says Active
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(only_alert()["id"], "undo")
+    assert err.value.status == 409 and err.value.args[0] == farmguard.NO_UNDO_AFTER_TURN_IN
+    assert farm.entry.ObjectivesProgress == [1]
+    assert only_alert()["actions"] == ["keep"]
+
+
+@pytest.mark.parametrize("record", ["tracker", "saved"])
+def test_undo_is_off_when_any_record_status_is_unknown(farm, record):
+    enable()
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    alert = only_alert()
+    (farm.entry if record == "tracker" else farm.saved).Status = object()
+    with pytest.raises(farmguard.FarmError) as err:
+        resolve(alert["id"], "undo")
+    assert err.value.status == 409 and err.value.args[0] == farmguard.NO_UNDO_UNREADABLE
+    assert farm.entry.ObjectivesProgress == [1]
+    assert only_alert()["actions"] == ["keep"] and only_alert()["note"] == farmguard.NO_UNDO_UNREADABLE
+
+
+def test_a_new_alert_offers_keep_only_when_a_record_is_unreadable(farm):
+    enable()
+    farm.saved.Status = object()
+    farm.tracker.UpdateObjective(MissionObjective=farm.obj, ObjectiveBit=1)
+    alert = only_alert()
+    assert alert["actions"] == ["keep"] and alert["note"] == farmguard.NO_UNDO_UNREADABLE
