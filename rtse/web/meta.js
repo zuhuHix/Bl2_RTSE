@@ -210,12 +210,14 @@ export const PART_STATUS = {
   dlc: { label: "Needs DLC", short: "DLC", color: "#59c8d8" },
   custom: { label: "Custom", short: "Custom", color: "#e0a050" },
   unsupported: { label: "Unsupported", short: "Unsupported", color: "#ff5a2c" },
+  unknown: { label: "Unknown", short: "Unknown", color: "#a79fc4" },
 };
 
-/** The status text: its label, and for a DLC part the DLC's name. "" when the option has no status. */
+/** The status text: its label, and for a DLC part the DLC's name. An unknown part says what could not be told. "" when the option has no status. */
 export function statusText(option) {
   const meta = option && PART_STATUS[option.status];
   if (!meta) return "";
+  if (option.status === "unknown") return option.unknown === "weight" ? "Unknown weight" : option.unknown === "dlc" ? "DLC unknown" : "Unknown";
   return option.status === "dlc" && option.dlc && option.dlc.name ? `${meta.label}: ${option.dlc.name}` : meta.label;
 }
 
@@ -230,9 +232,9 @@ export function dlcOwnership(dlc) {
 export function statusTitle(option) {
   const meta = option && PART_STATUS[option.status];
   if (!meta) return "";
-  const lines = [meta.label];
+  const lines = [option.status === "unknown" ? statusText(option) : meta.label];
   if (option.status_reason) lines.push(option.status_reason);
   if (option.status === "dlc" && option.dlc) lines.push(`${option.dlc.name}: ${dlcOwnership(option.dlc)}`);
-  lines.push("(unverified)");
+  if (!/\(unverified\)$/.test(option.status_reason || "")) lines.push("(unverified)"); // a reason may already say so
   return lines.join("\n");
 }

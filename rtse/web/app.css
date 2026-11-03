@@ -322,13 +322,6 @@ h1, h2, h3 { margin: 0; font-weight: 400; font-family: var(--display); letter-sp
 .chk-status .unv { vertical-align: 2px; }
 .chk-reason { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; font-weight: 600; }
 .chk-dlc { font-size: 13px; font-weight: 600; color: var(--bone); }
-.chk-body { display: grid; gap: 8px; }
-.chk-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-weight: 700; }
-.chk-sum > span:not(.icon):not(.unv) { flex: 1 1 200px; min-width: 0; }
-.chk-sum.ok { color: var(--good); }
-.chk-sum.bad { color: var(--blaze); }
-.chk-sum.neutral { color: var(--muted); }
-.chk-sum .unv { margin-left: 0; }
 .chk-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 13px; }
 .chk-list li { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; align-items: baseline; }
 .chk-list li > span { font-weight: 700; }
@@ -336,7 +329,6 @@ h1, h2, h3 { margin: 0; font-weight: 400; font-family: var(--display); letter-sp
 .chk-list b.no { color: var(--blaze); }
 .chk-list b.na { color: var(--muted); }
 .chk-list small { grid-column: 1 / -1; color: var(--muted); font-weight: 600; line-height: 1.3; }
-.chk-lost { font: 12px Consolas, monospace; color: var(--blaze); word-break: break-word; display: grid; gap: 3px; }
 
 /* What the game kept: a panel under the warning banner on the gear page, after a bolt-on or a level change. */
 .kept { margin: 18px 22px 0; padding: 14px 16px 16px; border: 3px solid #000; background: var(--panel-2); box-shadow: 4px 4px 0 #000; display: grid; gap: 10px; }
@@ -353,19 +345,11 @@ h1, h2, h3 { margin: 0; font-weight: 400; font-family: var(--display); letter-sp
 .kept td { padding: 5px 10px 5px 0; border-top: 1px solid var(--line); }
 .kept .tick { color: var(--good); display: inline-flex; align-items: center; gap: 5px; }
 .kept .warn { color: var(--blaze); display: inline-flex; align-items: center; gap: 5px; }
-.kept-muted { color: var(--muted); }
-.kept-bad { color: var(--blaze); font-weight: 700; }
 .kept-qc { flex: 1 1 320px; min-width: 0; }
 .kept-qc li .unv { grid-column: 1 / -1; justify-self: start; margin: 2px 0 0; }
-.kept-save { display: grid; gap: 8px; }
 
-/* The experimental save check: the button and its note in the picker, the warning above a result that restored the item, and the decoder line. */
-.chk-run { display: grid; gap: 6px; justify-items: start; }
+/* The save check placeholder: one muted line in the picker's CHECK BEFORE APPLY and under the kept panel's checks. */
 .chk-note { color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.35; }
-.chk-result { display: grid; gap: 8px; }
-.chk-restored { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 3px solid #000; background: var(--blaze); color: var(--ink); font-weight: 700; line-height: 1.35; box-shadow: 3px 3px 0 #000; }
-.chk-restored .icon { flex: none; margin-top: 1px; }
-.chk-decoder { font-size: 12px; font-weight: 600; color: var(--muted); }
 
 /* Part list scan age under the picker's mode bar, with its Rescan button. */
 .scan-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 12.5px; font-weight: 600; }

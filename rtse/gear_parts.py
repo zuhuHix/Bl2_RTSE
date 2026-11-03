@@ -135,13 +135,14 @@ def _weighted_parts(weighted: unreal.WrappedStruct | None) -> list[unreal.UObjec
 # carry Part, DefaultWeightIndex (a byte INDEX, not a probability) and Manufacturers (each with its own index).
 
 
-def _slot_data(balance: Any, slot: str, *, weapon: bool) -> Any:
-    """One balance level's struct for a slot (the shield's <Slot>Parts too), or None when this level has none."""
+def _slot_data(balance: Any, slot: str, *, weapon: bool) -> tuple[Any, Any]:
+    """One balance level's struct for a slot, and the object it sits on: the part list collection, or the shield
+    definition for its <Slot>Parts. (None, None) when this level has no collection for the slot."""
     if weapon:
         collection = _attr(balance, "RuntimePartListCollection")
         if collection is None:
             collection = _attr(balance, "WeaponPartListCollection")
-        return None if collection is None else _attr(collection, f"{slot}PartData")
+        return (None, None) if collection is None else (_attr(collection, f"{slot}PartData"), collection)
     inventory_definition = _attr(balance, "InventoryDefinition")
     if (
         inventory_definition is not None
@@ -149,10 +150,10 @@ def _slot_data(balance: Any, slot: str, *, weapon: bool) -> Any:
         and not _attr(balance, "PartListCollection")
     ):
         # Shields without a part list collection keep their parts on the definition itself
-        return _attr(inventory_definition, f"{slot}Parts")
+        return _attr(inventory_definition, f"{slot}Parts"), inventory_definition
     is_class_mod = _attr(_attr(balance, "Class"), "Name") == "ClassModBalanceDefinition"
     collection = _attr(balance, "RuntimePartListCollection" if is_class_mod else "PartListCollection")
-    return None if collection is None else _attr(collection, f"{slot}PartData")
+    return (None, None) if collection is None else (_attr(collection, f"{slot}PartData"), collection)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -175,19 +176,26 @@ def _slot_enabled(data: Any) -> bool:
     return bool(_as_list(_attr(data, "WeightedParts")))
 
 
-def _slot_entries(balance: Any, slot: str, *, weapon: bool) -> list[Any]:
+class _OwnList(NamedTuple):
+    """One slot's WeightedParts entries, and the object whose ConsolidatedAttributeInitData their weights index into."""
+
+    entries: list[Any]
+    source: Any  # the part list collection (or shield definition) the slot came from; None when there is no list
+
+
+def _slot_entries(balance: Any, slot: str, *, weapon: bool) -> _OwnList:
     """The WeightedParts entries that govern one slot: this balance's when enabled, else the first enabled parent's.
 
     UNVERIFIED: the inheritance through bEnabled is inferred from class data and modding knowledge.
     """
     for level in _balance_chain(balance):
-        data = _slot_data(level, slot, weapon=weapon)
+        data, source = _slot_data(level, slot, weapon=weapon)
         if _slot_enabled(data):
-            return _as_list(_attr(data, "WeightedParts"))
-    return []
+            return _OwnList(_as_list(_attr(data, "WeightedParts")), source)
+    return _OwnList([], None)
 
 
-def _effective_entries(balance: Any, *, weapon: bool) -> dict[str, list[Any]]:
+def _effective_entries(balance: Any, *, weapon: bool) -> dict[str, _OwnList]:
     return {slot: _slot_entries(balance, slot, weapon=weapon) for slot in (WEAPON_SLOTS if weapon else ITEM_SLOTS)}
 
 
@@ -206,7 +214,7 @@ def _is_partless(item: unreal.UObject) -> bool:
     return definition is not None and definition.Class.Name in PARTLESS_ITEM_DEFINITIONS
 
 
-def _legal_entries(item: unreal.UObject) -> dict[str, list[Any]]:
+def _legal_entries(item: unreal.UObject) -> dict[str, _OwnList]:
     """Each slot's own WeightedParts entries for this item's balance, inherited parts included. {} without a balance."""
     balance = item.DefinitionData.BalanceDefinition
     if balance is None:
@@ -214,51 +222,93 @@ def _legal_entries(item: unreal.UObject) -> dict[str, list[Any]]:
     return _effective_entries(balance, weapon=_is_weapon(item))
 
 
-def _zero_weight(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value == 0
-
-
 def _manufacturer_names(manufacturers: list[Any]) -> str:
-    names = [_text(_attr(_attr(m, "Manufacturer"), "Name")) for m in manufacturers]
+    named = [m for m in manufacturers if _attr(m, "Manufacturer") is not None]
+    names = [_text(_attr(_attr(m, "Manufacturer"), "Name")) for m in named]
     return ", ".join([n for n in names if n][:3]) or "unknown"
 
 
-def _drop_problem(entry: Any, item: unreal.UObject, slot: str) -> str | None:
-    """Why an own-list entry cannot drop on this item, or None when it can. UNVERIFIED: weights are read as indexes."""
-    if _zero_weight(_attr(entry, "DefaultWeightIndex")):
-        return f"In this item's own {slot} list, but with weight index 0, so it probably never drops (unverified)"
-    manufacturers = _as_list(_attr(entry, "Manufacturers"))
-    mine = _path_of(_attr(item.DefinitionData, "ManufacturerDefinition"))
-    if not manufacturers or mine is None:
+def _resolve_weight(source: Any, index: Any) -> float | None:
+    """The drop weight a DefaultWeightIndex points at: the ConsolidatedAttributeInitData entry at that index, scaled.
+
+    The index is an index into that array, not a probability. None when anything is missing or unreadable, when the
+    index is not an int or is out of range, or when the entry depends on a runtime value (BaseValueAttribute or
+    InitializationDefinition set). UNVERIFIED: the index-to-entry reading and BaseValueConstant x BaseValueScaleConstant
+    come from class data and the BLCMods wiki page "Understanding Item and Weapon Parts Definitions", not the game.
+    """
+    try:
+        caid = list(source.ConsolidatedAttributeInitData)
+    except Exception:  # noqa: BLE001
         return None
-    matching = [m for m in manufacturers if _path_of(_attr(m, "Manufacturer")) == mine]
-    if not matching:
-        names = _manufacturer_names(manufacturers)
-        return f"In this item's own {slot} list, but only for other manufacturers ({names})"
-    if all(_zero_weight(_attr(m, "DefaultWeightIndex")) for m in matching):
-        return (
-            f"In this item's own {slot} list, but with weight index 0 for this manufacturer, "
-            "so it probably never drops (unverified)"
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(caid):
+        return None
+    entry = caid[index]
+    if entry is None or _attr(entry, "BaseValueAttribute") is not None:
+        return None
+    if _attr(entry, "InitializationDefinition") is not None:
+        return None
+    constant = _plain_number(_attr(entry, "BaseValueConstant"))
+    scale = _plain_number(_attr(entry, "BaseValueScaleConstant"))
+    return None if constant is None or scale is None else constant * scale
+
+
+def _entry_outcome(entry: Any, item: unreal.UObject, slot: str, source: Any) -> tuple[str, str]:
+    """How one own-list entry stands on this item: ("natural", ""), ("custom", reason) or ("unknown", reason).
+
+    Which index applies: an entry for this item's manufacturer uses that entry's DefaultWeightIndex. With no
+    manufacturer list, or with a default entry (Manufacturer None, which applies to every manufacturer), the
+    part-level DefaultWeightIndex applies. A list that names only other manufacturers means the part cannot drop
+    on this item.
+    UNVERIFIED: see _resolve_weight.
+    """
+    index = _attr(entry, "DefaultWeightIndex")
+    manufacturers = _as_list(_attr(entry, "Manufacturers"))
+    if manufacturers:
+        mine = _path_of(_attr(item.DefinitionData, "ManufacturerDefinition"))
+        matching = [m for m in manufacturers if mine is not None and _path_of(_attr(m, "Manufacturer")) == mine]
+        has_default = any(_attr(m, "Manufacturer") is None for m in manufacturers)
+        if matching:
+            index = _attr(matching[0], "DefaultWeightIndex")
+        elif not has_default:
+            if mine is None:
+                index = None  # this item's manufacturer cannot be read, so its weight cannot be told
+            else:
+                names = _manufacturer_names(manufacturers)
+                return "custom", f"In this item's own {slot} list, but only for other manufacturers ({names})"
+    weight = _resolve_weight(source, index)
+    if weight is not None and weight > 0:
+        return STATUS_NATURAL, ""
+    if weight == 0:
+        return STATUS_CUSTOM, (
+            f"In this item's own {slot} list, but its drop weight is 0, so it never drops naturally (unverified)"
         )
-    return None
+    return STATUS_UNKNOWN, f"In this item's own {slot} list, but its drop weight could not be read (unverified)"
 
 
-def _own_restrictions(entries: list[Any], item: unreal.UObject, slot: str) -> dict[str, str]:
-    """Own-list parts that cannot drop on this item: part id -> reason. A part counts only if every entry for it is stuck."""
-    found: dict[str, str | None] = {}
-    for entry in entries:
+def _own_problems(own: _OwnList | None, item: unreal.UObject, slot: str) -> dict[str, tuple[str, str]]:
+    """Own-list parts that are not natural on this item: part id -> (STATUS_CUSTOM | STATUS_UNKNOWN, reason).
+
+    A part is natural when any of its entries is. Otherwise unknown beats custom: an unreadable weight is not evidence
+    that the part can never drop. An entry that raises counts as unknown, never as custom.
+    """
+    outcomes: dict[str, list[tuple[str, str]]] = {}
+    for entry in (own.entries if own is not None else []):
         part_id = _path_of(_attr(entry, "Part"))
         if part_id is None:
             continue
         try:
-            problem = _drop_problem(entry, item, slot)
+            outcome = _entry_outcome(entry, item, slot, own.source)
         except Exception:  # noqa: BLE001
-            problem = None  # an unreadable entry is not treated as a restriction
-        if problem is None:
-            found[part_id] = None
-        else:
-            found.setdefault(part_id, problem)
-    return {part_id: reason for part_id, reason in found.items() if reason is not None}
+            reason = f"In this item's own {slot} list, but its drop weight could not be read (unverified)"
+            outcome = (STATUS_UNKNOWN, reason)
+        outcomes.setdefault(part_id, []).append(outcome)
+    problems: dict[str, tuple[str, str]] = {}
+    for part_id, found in outcomes.items():
+        if any(kind == STATUS_NATURAL for kind, _reason in found):
+            continue
+        unknown = [outcome for outcome in found if outcome[0] == STATUS_UNKNOWN]
+        problems[part_id] = unknown[0] if unknown else found[0]
+    return problems
 
 
 # Every part currently loaded, by kind then slot. Built once because scanning every balance
@@ -347,7 +397,8 @@ def _part_universe(*, weapon: bool) -> dict[str, dict[str, PartRef]]:
 
     universe: dict[str, dict[str, PartRef]] = {s: {} for s in (WEAPON_SLOTS if weapon else ITEM_SLOTS)}
     owners: dict[str, dict[str, None]] = {}  # part id -> names of the guns/items that can roll it
-    dlc_entries: dict[str, dict[str, Any]] = {}  # part id -> {"base": a non-DLC balance owns it, "dlcs": {id: DlcRef}}
+    # part id -> {"base": a base-game owner, "dlcs": {id: DlcRef}, "unknown": an owner that says neither}
+    dlc_entries: dict[str, dict[str, Any]] = {}
     scanned = 0
     for balance in _balances(weapon):
         try:
@@ -358,20 +409,19 @@ def _part_universe(*, weapon: bool) -> dict[str, dict[str, PartRef]]:
         label = _balance_label(balance, weapon=weapon)
         balance_path = _path_of(balance) or ""
         balance_dlc = _balance_dlc(balance)  # once per balance; cached
-        for slot, entries in lists.items():
-            for part in _parts_of(entries):
+        for slot, own in lists.items():
+            for part in _parts_of(own.entries):
                 ref = _ref(part)
                 universe[slot].setdefault(ref.id, ref)
                 owners.setdefault(ref.id, {})[label] = None
-                # The owner's DLC: its DlcItemSet, else a guess from its package name, else one from the part's name
-                dlc = balance_dlc if balance_dlc is not None else _dlc_from_package(balance_path)
-                if dlc is None:
-                    dlc = _dlc_from_package(ref.id)
-                entry = dlc_entries.setdefault(ref.id, {"base": False, "dlcs": {}})
-                if dlc is None:
-                    entry["base"] = True  # no DLC information at all: this owner counts as base game
-                else:
+                kind, dlc = _owner_dlc(balance_dlc, balance_path, ref.id)
+                entry = dlc_entries.setdefault(ref.id, {"base": False, "dlcs": {}, "unknown": False})
+                if kind == "dlc" and dlc is not None:
                     entry["dlcs"].setdefault(dlc.id, dlc)
+                elif kind == "base":
+                    entry["base"] = True
+                else:
+                    entry["unknown"] = True
 
     logging.info(
         f"RTSE: scanned {scanned} {'weapon' if weapon else 'item'} balances, "
@@ -399,6 +449,8 @@ STATUS_NATURAL = "natural"  # in this item's own balance part list for the slot:
 STATUS_DLC = "dlc"  # only used by DLC gear
 STATUS_CUSTOM = "custom"  # comes from another balance, not this item's own list
 STATUS_UNSUPPORTED = "unsupported"  # the wrong part family for this item
+# Not known yet: "weight" (own list, drop weight unreadable) or "dlc" (see the "unknown" field of the status)
+STATUS_UNKNOWN = "unknown"
 
 MAX_BASE_LEVELS = 6  # BaseDefinition links followed when looking for a DLC set (also stops a loop)
 
@@ -429,6 +481,18 @@ DLC_PACKAGE_HINTS = {
     "Lilac": "Psycho Pack",
     "Flax": "T.K. Baha's Bloody Harvest",
 }
+
+# Hand-written, NOT verified in game: a guess from Borderlands 2 package names. Only positive evidence that a balance
+# is base game. DLC packages use codenames like GD_Orchid_ / GD_Iris_ / GD_Sage_ / GD_Aster_ (see DLC_PACKAGE_HINTS).
+BASE_GAME_PACKAGE_PREFIXES = ("GD_Weap_", "GD_Shields", "GD_GrenadeMods", "GD_Artifacts", "GD_ClassMods")
+
+
+def _is_base_package(path: str) -> bool:
+    """True when the first dotted segment starts with a base-game prefix and names no DLC token. UNVERIFIED."""
+    package = path.partition(".")[0]
+    if not package.startswith(BASE_GAME_PACKAGE_PREFIXES):
+        return False
+    return not any(token in DLC_PACKAGE_HINTS for token in package.split("_"))
 
 # Caches for the DLC lookups, cleared by rescan_parts. Balances by path, DLC sets by path (IsLicensed runs once each).
 _balance_dlc_cache: dict[str, DlcRef | None] = {}
@@ -562,18 +626,40 @@ def _dlc_from_package(part_id: str) -> DlcRef | None:
     return None
 
 
-def part_dlc(part_id: str, *, weapon: bool) -> DlcRef | None:
-    """Which DLC a part belongs to, judged from every balance that can roll it. None when it is base game.
+def _owner_dlc(balance_dlc: DlcRef | None, balance_path: str, part_id: str) -> tuple[str, DlcRef | None]:
+    """What one balance that can roll a part says about DLC: ("dlc", ref), ("base", None) or ("unknown", None).
 
-    Without a scanned universe for this part (legal mode, or a part no loaded balance uses) it falls back to the
-    package-name guess.
+    Its DlcItemSet first, then a DLC hint in its package name, then one in the part's package name. It counts as base
+    game only with a base-game package name (positive evidence). UNVERIFIED: all of this is a guess from names.
+    """
+    if balance_dlc is not None:
+        return "dlc", balance_dlc
+    hinted = _dlc_from_package(balance_path) or _dlc_from_package(part_id)
+    if hinted is not None:
+        return "dlc", hinted
+    if _is_base_package(balance_path):
+        return "base", None
+    return "unknown", None
+
+
+def part_dlc(part_id: str, *, weapon: bool) -> tuple[str, DlcRef | None]:
+    """Whether a part is base game, DLC or unknown: ("base", None), ("dlc", ref) or ("unknown", None). UNVERIFIED.
+
+    Judged from every loaded balance that can roll it. Base wins over DLC; unknown only when no owner says base or DLC.
+    Without a scanned universe for this part (legal mode, or a part no loaded balance uses) it uses the package names.
     """
     entry = _part_dlc.get(weapon, {}).get(part_id)
     if entry is None:
-        return _dlc_from_package(part_id)
+        hinted = _dlc_from_package(part_id)
+        if hinted is not None:
+            return "dlc", hinted
+        return ("base", None) if _is_base_package(part_id) else ("unknown", None)
     if entry["base"]:
-        return None  # some balance that owns it has no DLC
-    return next(iter(entry["dlcs"].values()), None)
+        return "base", None
+    dlc = next(iter(entry["dlcs"].values()), None)
+    if dlc is not None:
+        return "dlc", dlc
+    return "unknown", None
 
 
 _EQUIPABLE_FAMILIES = (
@@ -599,8 +685,9 @@ def _family_problem(ref: PartRef, *, weapon: bool, own_classes: set[str]) -> str
     return None
 
 
-def _status(status: str, reason: str, dlc: DlcRef | None = None) -> dict[str, Any]:
-    return {"status": status, "status_reason": reason, "dlc": dlc_dict(dlc)}
+def _status(status: str, reason: str, dlc: DlcRef | None = None, unknown: str | None = None) -> dict[str, Any]:
+    """One part's status. "unknown" says what is unknown ("weight" or "dlc") and is None for every other status."""
+    return {"status": status, "status_reason": reason, "dlc": dlc_dict(dlc), "unknown": unknown}
 
 
 def part_status(
@@ -610,27 +697,33 @@ def part_status(
     weapon: bool,
     legal_ids: set[str],
     own_classes: set[str],
-    restricted: dict[str, str] | None = None,
+    own_problems: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """How one part stands on one item's slot. Precedence: natural > unsupported > dlc > custom.
+    """How one part stands on one item's slot.
 
+    Precedence: natural > unsupported > own-list custom > unknown weight > dlc > unknown dlc > custom.
     legal_ids are the part ids in this item's own balance list for the slot; own_classes are the class names of those
-    parts; restricted maps own-list part ids that cannot drop on this item to their reason (those are not natural).
+    parts; own_problems maps own-list part ids that are not natural to (STATUS_CUSTOM | STATUS_UNKNOWN, reason).
     The DLC, weight and family results are UNVERIFIED in game.
     """
-    restriction = (restricted or {}).get(ref.id) if ref.id in legal_ids else None
-    if ref.id in legal_ids and restriction is None:
+    problem = (own_problems or {}).get(ref.id) if ref.id in legal_ids else None
+    if ref.id in legal_ids and problem is None:
         return _status(STATUS_NATURAL, f"In this item's own balance list for the {slot} slot")
-    problem = _family_problem(ref, weapon=weapon, own_classes=own_classes)
+    family = _family_problem(ref, weapon=weapon, own_classes=own_classes)
+    if family is not None:
+        return _status(STATUS_UNSUPPORTED, family[:1].upper() + family[1:])
     if problem is not None:
-        return _status(STATUS_UNSUPPORTED, problem[:1].upper() + problem[1:])
-    dlc = part_dlc(ref.id, weapon=weapon)
-    if dlc is not None:
+        kind, reason = problem
+        if kind == STATUS_UNKNOWN:
+            return _status(STATUS_UNKNOWN, reason, unknown="weight")
+        return _status(STATUS_CUSTOM, reason)
+    kind, dlc = part_dlc(ref.id, weapon=weapon)
+    if kind == "dlc" and dlc is not None:
         if dlc.source == "DlcItemSet":
             return _status(STATUS_DLC, f"Only used by DLC gear: {dlc.name}", dlc)
         return _status(STATUS_DLC, f"Looks like DLC content from its package name: {dlc.name} (guess)", dlc)
-    if restriction is not None:
-        return _status(STATUS_CUSTOM, restriction)
+    if kind == "unknown":
+        return _status(STATUS_UNKNOWN, "From another balance; whether it needs a DLC could not be told", unknown="dlc")
     return _status(STATUS_CUSTOM, f"From another balance, not this item's own {slot} slot")
 
 
@@ -640,7 +733,7 @@ def _slots(item: unreal.UObject, mode: str) -> list[Slot]:
 
     weapon = _is_weapon(item)
     entries = _legal_entries(item)
-    legal = {slot: [_ref(p) for p in _parts_of(found)] for slot, found in entries.items()}
+    legal = {slot: [_ref(p) for p in _parts_of(own.entries)] for slot, own in entries.items()}
     if mode == MODE_LEGAL and not any(legal.values()):
         return []
 
@@ -667,12 +760,13 @@ def _slots(item: unreal.UObject, mode: str) -> list[Slot]:
         here = legal.get(name, ())
         legal_ids = {r.id for r in here}
         own_classes = {r.class_name for r in here}
-        restricted = _own_restrictions(entries.get(name, []), item, name)
+        own_problems = _own_problems(entries.get(name), item, name)
         statuses: dict[str, dict[str, Any]] = {}
         for ref in ordered:
             try:
                 statuses[ref.id] = part_status(
-                    ref, slot=name, weapon=weapon, legal_ids=legal_ids, own_classes=own_classes, restricted=restricted,
+                    ref, slot=name, weapon=weapon, legal_ids=legal_ids, own_classes=own_classes,
+                    own_problems=own_problems,
                 )
             except Exception:  # noqa: BLE001, S112
                 continue  # one odd part must never break the picker

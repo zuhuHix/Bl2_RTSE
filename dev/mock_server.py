@@ -285,7 +285,7 @@ def discover_feature_mocks(directory: Path) -> list:
 
 
 FEATURE_MOCKS = discover_feature_mocks(Path(__file__).resolve().parent)
-VALIDATION = next(m for m in FEATURE_MOCKS if m.__name__ == "mock_validation")  # part status, save checks: dev/mock_validation.py
+VALIDATION = next(m for m in FEATURE_MOCKS if m.__name__ == "mock_validation")  # part status, kept checks: dev/mock_validation.py
 
 
 # Same shape as limits.gear_level_cap(): gear level = character cap (80) + Overpower levels (10)
@@ -421,8 +421,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {**detail(item, mode), "applied": applied})
         except LookupError as ex:
             return self.send_json(404, {"error": str(ex)})
-        except VALIDATION.MockConflict as ex:
-            return self.send_json(409, {"error": str(ex)})
         except KeyError as ex:
             return self.send_json(400, {"error": f"missing {ex}"})
         except ValueError as ex:
