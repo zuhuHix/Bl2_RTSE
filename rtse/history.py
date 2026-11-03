@@ -12,7 +12,8 @@ anything differs, the undo is refused with a 409 instead of overwriting the newe
 
 Undoable: gear (part, level, stat override), character fields, ammo, SDU levels and capacities, skill ranks and a skill
 tree reset. Listed but NOT undoable (see NOT_UNDOABLE for the reasons shown in the UI): world edits (missions,
-objectives, challenges, fast travel, playthrough), inspector writes, and checkpoint actions. Entries left by an earlier
+objectives, challenges, fast travel, playthrough), inspector writes, inventory changes (items added, duplicated,
+deleted or moved by Bank & codes) and checkpoint actions. Entries left by an earlier
 game session are shown but never undone: the objects they name may be gone.
 
 Nothing here has been run in a live game yet: undo calls the same routes as the pages do, so it is exactly as verified as
@@ -45,6 +46,9 @@ NOT_UNDOABLE = {
     "inspect.": "Inspector writes are raw field writes with no game-side checks; set the old value by hand on the "
     "Inspector page, or restore a save backup.",
     "checkpoint.": "This is a save-backup action, not a change to the game.",
+    "inventory.": "Adding, duplicating, deleting or moving items reshuffles your backpack and bank (slots and item ids), "
+    "so undo isn't offered. A deleted item's code is kept in this entry, so you can paste it on Bank & codes to bring "
+    "it back, or restore a save backup.",
 }
 EARLIER_REASON = "From an earlier game session: the objects it changed may not exist any more, so it can't be undone."
 

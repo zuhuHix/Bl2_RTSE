@@ -157,6 +157,20 @@ def test_world_edits_are_listed_but_not_undoable():
     assert err.value.status == 400
 
 
+def test_inventory_changes_are_recorded_but_not_undoable():
+    """Bank & codes (items added, duplicated, deleted, moved) record their changes with undo callables; History lists
+    them but doesn't offer undo: the backpack and bank reshuffle as a whole."""
+    for kind, before, after in (("inventory.add", None, {"code": "BL2(x)"}), ("inventory.delete", {"code": "BL2(x)"}, None),
+                                ("inventory.move", {"location": "backpack"}, {"location": "bank"})):
+        with journal.transaction("/api/inventory/x", {"id": "item"}):
+            journal.record(kind, target="item", before=before, after=after, undo=lambda: None)
+    for view in history.timeline()["entries"]:
+        assert view["undo"]["possible"] is False and "reshuffles your backpack and bank" in view["undo"]["reason"]
+    with pytest.raises(ApiError) as err:
+        undo(journal.entries()[0]["id"])
+    assert err.value.status == 400
+
+
 def test_inspector_and_unknown_kinds_are_not_undoable():
     for kind in ("inspect.value", "something.new"):
         with journal.transaction("/api/x", {}):
