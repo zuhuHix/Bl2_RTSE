@@ -619,7 +619,9 @@ def test_apply_all_ok_changes_the_save_and_commits_the_journal(save, stored_in_t
     assert report["ok"] is True and report["rolled_back"] is False
     assert statuses(report) == ["ok", "ok", "ok", "ok"]
     assert report["summary"] == {"ok": 4, "failed": 0, "rolled_back": 0, "rollback_failed": 0, "not_run": 0, "pending": 0}
-    assert report["state"] == "done" and report["chunks"] == [{"chunk": 1, "from": 1, "to": 4, "status": "applied"}]
+    assert report["state"] == "done"
+    assert report["chunks"] == [{"chunk": 1, "from": 1, "to": 4, "status": "applied", "in_history": None}]
+    assert [(s["before"], s["after"]) for s in report["steps"]] == [(3, 5), (2, 4), ("Barrel.A", "Barrel.B"), (10, 12)]
     assert save.character["skill_points"] == 5
     assert save.skill_tree["GD_Assassin_Skills.Sniping.Headshot"]["level"] == 4
     item = save._item("Guns.Pistol.A")
@@ -808,7 +810,7 @@ def test_a_step_that_wrote_but_read_back_wrong_is_put_back_by_the_rollback(save,
     monkeypatch.setattr(skills, "set_level", half)
     report = loadouts.apply({**request, "plan_id": result["plan_id"]})
     assert statuses(report) == ["rolled_back", "failed", "not_run", "not_run"]
-    assert report["steps"][1]["error"].endswith("(put back)")
+    assert report["steps"][1]["error"].endswith("and that was put back)")
     assert save.skill_tree["GD_Assassin_Skills.Sniping.Headshot"]["level"] == 2
     assert all("_wrote" not in step for step in report["steps"])
 
@@ -984,3 +986,139 @@ def test_left_out_is_validated():
     with pytest.raises(LoadoutError, match="left_out"):
         loadouts.validate(build(left_out=["x"] * 21))
     assert loadouts.validate(build(left_out=["skills left out"]))["left_out"] == ["skills left out"]
+
+
+# --- review round 2 ------------------------------------------------------------------------------
+
+
+def test_a_setter_that_writes_and_then_raises_is_put_back_in_both_modes(save, stored_in_tmp, monkeypatch):
+    for on_failure in ("rollback", "keep"):
+        save.character.update(level=10, xp=xp_for(10), skill_points=3)
+        store(build(character={"skill_points": 5, "xp": 4321}), overwrite=True)
+        real = save.set_field
+
+        def writes_then_raises(params: dict[str, Any]) -> dict[str, Any]:
+            if params["field"] == "xp" and params["value"] == 4321:
+                save.character["xp"] = 4321  # the write lands...
+                raise character.CharacterError(500, "the pool setter blew up")  # ...and then the setter raises
+            return real(params)
+
+        monkeypatch.setattr(character, "set_field", writes_then_raises)
+        result = preview("Test build")
+        assert [s["kind"] for s in result["steps"]] == ["character.xp", "character.skill_points"]
+        report = loadouts.apply({"name": "Test build", "plan_id": result["plan_id"], "on_failure": on_failure})
+        assert statuses(report) == ["failed", "not_run"], on_failure
+        assert "that was put back" in report["steps"][0]["error"]
+        assert save.character["xp"] == xp_for(10)  # the stray write is gone, whatever on_failure said
+
+
+def test_a_stray_write_that_cannot_be_put_back_is_rollback_failed(save, stored_in_tmp, monkeypatch):
+    store(build(character={"xp": 4321}), overwrite=True)
+    real = save.set_field
+
+    def stuck(params: dict[str, Any]) -> dict[str, Any]:
+        if params["field"] == "xp":
+            save.character["xp"] = 4321
+            raise character.CharacterError(500, "the pool setter blew up")
+        return real(params)
+
+    monkeypatch.setattr(character, "set_field", stuck)
+    report = loadouts.apply({"name": "Test build", "plan_id": preview("Test build")["plan_id"]})
+    assert statuses(report) == ["rollback_failed"]
+    assert report["steps"][0]["error"].endswith("reload the save before playing")
+
+
+def test_a_target_that_cannot_be_read_back_counts_as_changed(save, stored_in_tmp, monkeypatch):
+    store(build(character={"skill_points": 5}), overwrite=True)
+    result = preview("Test build")
+    save.explode = lambda name, _params: name == "character.set_field"
+    monkeypatch.setattr(loadouts, "_read_target", lambda _step, _ids: (_ for _ in ()).throw(RuntimeError("no pri")))
+    report = loadouts.apply({"name": "Test build", "plan_id": result["plan_id"]})
+    assert statuses(report) == ["rollback_failed"]  # it couldn't be verified, so it is not reported as clean
+
+
+def test_earlier_chunks_point_to_history_only_when_the_journal_lists_them(save, stored_in_tmp, monkeypatch):
+    for listed in (False, True):
+        save.items.clear()
+        save.explode = None
+        request = many_guns(save, 15)
+        first = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+        entries = [{"label": "Build 'Test build': chunk 1/2", "records": []}] if listed else []
+        monkeypatch.setattr(journal, "entries", lambda e=entries: e)
+        save.explode = lambda name, params: name == "set_level" and params["id"] == "Guns.Pistol.12"
+        second = loadouts.apply({"run_id": first["run_id"], "cursor": 20})
+        assert second["history"] is listed
+        assert second["chunks"][0]["in_history"] is listed
+        if listed:
+            assert "History lists them, so you can undo them there" in second["message"]
+        else:
+            assert "can't find them in History" in second["message"] and "before and after" in second["message"]
+        applied = [s for s in second["steps"] if s["status"] == "ok"]
+        assert len(applied) == 20 and all(s["before"] is not None and s["after"] is not None for s in applied)
+
+
+def test_the_stub_journal_never_claims_history(save, stored_in_tmp):
+    request = many_guns(save, 15)
+    first = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    save._item("Guns.Pistol.14").ExpLevel = 5
+    second = loadouts.apply({"run_id": first["run_id"], "cursor": 20})
+    assert journal.entries() == [] and second["history"] is False
+    assert "can't find them in History" in second["message"]
+
+
+def test_an_unreadable_state_after_a_chunk_stops_the_run_at_once(save, stored_in_tmp, monkeypatch):
+    request = many_guns(save, 15)
+    result = preview(request["name"])
+    first = loadouts.apply({**request, "plan_id": result["plan_id"]})
+    run = loadouts._runs[first["run_id"]]
+    assert first["state"] == "running" and isinstance(run.basis, str) and not run.basis.startswith("unreadable")
+    monkeypatch.setattr(loadouts, "_basis", lambda _sections: (_ for _ in ()).throw(RuntimeError("chain broke")))
+    calls = len(save.calls)
+    second = loadouts.apply({"run_id": first["run_id"], "cursor": 20})
+    assert second["state"] == "stopped" and len(save.calls) == calls
+    assert "couldn't be read" in second["message"]
+
+
+def test_the_same_read_error_twice_never_lets_a_run_continue(save, stored_in_tmp, monkeypatch):
+    request = many_guns(save, 25)
+    result = preview(request["name"])
+    real = loadouts._basis
+    reads = {"n": 0}
+
+    def flaky(sections: list[str]) -> str:
+        reads["n"] += 1
+        if reads["n"] >= 2:  # the plan's read works; the read after chunk 1 fails
+            raise RuntimeError("chain broke")
+        return real(sections)
+
+    monkeypatch.setattr(loadouts, "_basis", flaky)
+    first = loadouts.apply({**request, "plan_id": result["plan_id"]})
+    assert first["state"] == "stopped" and first["summary"]["ok"] == 20 and first["summary"]["not_run"] == 30
+    assert "couldn't be read afterwards" in first["message"]
+
+
+def test_a_run_in_progress_is_never_evicted(save, stored_in_tmp, monkeypatch):
+    monkeypatch.setattr(loadouts, "MAX_RUNS", 2)
+    request = many_guns(save, 25)  # 50 steps: each new run still has chunks left
+    plan_id = preview(request["name"])["plan_id"]
+    first = loadouts.apply({**request, "plan_id": plan_id})
+    second = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    assert first["state"] == second["state"] == "running"
+    with pytest.raises(LoadoutError) as caught:
+        loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    assert caught.value.status == 409 and "still being applied" in str(caught.value)
+    assert loadouts.run_route({"run_id": first["run_id"]})["cursor"] == 20  # both reports survive
+    loadouts._runs[first["run_id"]].state = "done"  # once one is finished, its slot can be reused
+    third = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    assert third["run_id"] in loadouts._runs and first["run_id"] not in loadouts._runs
+
+
+def test_expiry_is_enforced_on_lookup(save, stored_in_tmp, monkeypatch):
+    now = {"t": 1000.0}
+    monkeypatch.setattr(loadouts, "_clock", lambda: now["t"])
+    request = many_guns(save, 15)
+    first = loadouts.apply({**request, "plan_id": preview(request["name"])["plan_id"]})
+    now["t"] += loadouts.RUN_TTL_SECONDS + 1
+    with pytest.raises(LoadoutError) as caught:
+        loadouts.run_route({"run_id": first["run_id"]})
+    assert caught.value.status == 404 and first["run_id"] not in loadouts._runs
