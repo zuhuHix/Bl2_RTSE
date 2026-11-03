@@ -380,6 +380,13 @@ def set_level(params: dict[str, Any]) -> dict[str, Any]:
     return {**state, "applied": applied}
 
 
+def _tree_record(state: dict[str, Any]) -> dict[str, Any]:
+    """A tree's state as the journal records it for a reset: unspent points and every rank."""
+    return {"spent": state["spent"], "skill_points": state["skill_points"],
+            "levels": [{"id": s["id"], "name": s["name"], "level": s["level"]} for s in state["skills"]
+                       if not (s.get("action") or s.get("hidden"))]}
+
+
 def reset(params: dict[str, Any]) -> dict[str, Any]:
     if params.get("confirm") is not True:
         raise SkillsError(400, 'resetting the skill tree needs {"confirm": true}')
@@ -434,7 +441,9 @@ def reset(params: dict[str, Any]) -> dict[str, Any]:
         "skill_points": state["skill_points"],
     }
     logging.info(f"RTSE: skills reset {applied}")
-    journal.record("skills.reset", target="skill tree", before=applied["before"], after=applied["after"])
+    # Every skill's rank and the unspent points, before and after, so the History page can undo the reset and refuse
+    # to when any rank changed since (action and hidden skills are left out: the game grants those itself)
+    journal.record("skills.reset", target="skill tree", before=_tree_record(before), after=_tree_record(state))
     return {**state, "applied": applied}
 
 

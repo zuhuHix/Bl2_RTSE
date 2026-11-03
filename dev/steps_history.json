@@ -1,0 +1,30 @@
+{
+  "url": "http://127.0.0.1:8771/?t=mock",
+  "width": 1440,
+  "height": 1100,
+  "steps": [
+    {"wait": 1200},
+    {"clickText": "Undo and save backups"},
+    {"wait": 1200},
+    {"shot": "dev/out/history_1_timeline.png"},
+    {"eval": "document.querySelector('.workspace').scrollTop = 470"},
+    {"wait": 400},
+    {"shot": "dev/out/history_1b_timeline_more.png"},
+    {"eval": "document.querySelector('.workspace').scrollTop = 0"},
+    {"clickText": "Save backups"},
+    {"wait": 900},
+    {"eval": "document.querySelector('.hi-cps').scrollIntoView({block: 'start'})"},
+    {"wait": 400},
+    {"shot": "dev/out/history_2_backups.png"},
+    {"eval": "(() => { const li = [...document.querySelectorAll('.hi-cp')].find(x => x.textContent.includes('Save0003.sav')); if (!li) return 'NO MISMATCH ROW'; li.querySelector('.hi-restore').click(); return 'ok'; })()"},
+    {"wait": 600},
+    {"eval": "document.querySelector('.hi-confirm') ? (document.querySelector('.hi-confirm').scrollIntoView({block: 'center'}), document.querySelector('.hi-confirm').innerText.slice(0, 200)) : 'NO CONFIRM'"},
+    {"wait": 400},
+    {"shot": "dev/out/history_3_restore_mismatch.png"},
+    {"clickText": "Stage restore"},
+    {"wait": 1000},
+    {"eval": "document.querySelector('.hi-staged') ? (document.querySelector('.hi-staged').scrollIntoView({block: 'center'}), document.querySelector('.hi-staged').innerText.slice(0, 160)) : 'NO BANNER'"},
+    {"wait": 400},
+    {"shot": "dev/out/history_4_staged.png"}
+  ]
+}

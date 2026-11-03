@@ -28,6 +28,7 @@ from . import (
     gear_edit,
     gear_inventory,
     gear_parts,
+    history,
     inspector,
     journal,
     sdu,
@@ -51,6 +52,7 @@ ROUTE_MODULES = (
     damage,
     codes, bank,
     farmguard,
+    history,
 )
 
 
@@ -94,8 +96,10 @@ def _journaled_write(path: str, route: Route) -> Route:
         if not allowed:
             raise ApiError(session_guard.BLOCKED_STATUS, reason)
         try:
-            with journal.transaction(path, params):
+            with journal.transaction(path, params) as tx:
                 result = route(params)
+            for notice in getattr(tx, "notices", ()):  # e.g. the save backup made before this write (checkpoints.py)
+                result.update(notice)
         except Exception:
             events.publish(events.EDIT_APPLIED, {"route": path, "ok": False})
             raise

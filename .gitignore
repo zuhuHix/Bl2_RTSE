@@ -5,3 +5,7 @@ __pycache__/
 *.bak
 .claude/
 rtse/overrides.*.bak*.json
+rtse/backups/
+rtse/history.json
+rtse/history.tmp
+rtse/debug_history.json

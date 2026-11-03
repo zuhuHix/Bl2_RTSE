@@ -504,6 +504,7 @@ def set_stat(params: Params) -> dict[str, Any]:
 
     raw = params.get("value")
     old_identity = stats.identity(item)
+    prior_override = stats.overrides_for(item).get(stat)  # for undo: the override to put back (None = there was none)
     try:
         value = None if raw is None else float(raw)
         applied = stats.set_override(item, stat, value)
@@ -524,7 +525,7 @@ def set_stat(params: Params) -> dict[str, Any]:
             "base": getattr(item, f"{stat}BaseValue"),
         }
     logging.info(f"RTSE: set_stat {applied}")
-    journal.record("gear.stat", target=params["id"], before=applied["before"], after=applied["after"])
+    journal.record("gear.stat", target=params["id"], before={**applied["before"], "override": prior_override}, after=applied["after"])
     _note_id_change(params["id"], item)
     return {**_detail(item, location, _mode(params)), "applied": {"what": f"{stat} ({location})", **applied},
             "warnings": warnings}
